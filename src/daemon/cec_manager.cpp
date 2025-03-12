@@ -118,7 +118,6 @@ bool CECManager::reconnect() {
         }
         
         // Try to initialize the adapter
-        LOG_INFO("Initializing CEC adapter");
         if (!m_adapter->initialize()) {
             LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
             reconnectFailures++;
