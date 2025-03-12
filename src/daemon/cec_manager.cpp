@@ -188,6 +188,9 @@ std::shared_ptr<CECOperation> CECManager::processCommandAsync(const Message& com
 }
 
 Message CECManager::handleCommand(const Message& command) {
+    // Take a read lock on the adapter mutex to check validity
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    
     if (!isAdapterValid() && command.type != MessageType::CMD_RESTART_ADAPTER) {
         LOG_ERROR("Cannot process command: CEC adapter not connected");
         return Message(MessageType::RESP_ERROR);

@@ -57,7 +57,8 @@ private:
     std::unique_ptr<SocketServer> m_socketServer;
     std::unique_ptr<DBusMonitor> m_dbusMonitor;
     std::atomic<bool> m_running;
-    std::atomic<bool> m_suspended;
+    std::atomic<bool> m_suspended;  // Keep as atomic for quick checks
+    std::mutex m_suspendMutex;      // Add mutex for suspend/resume operations
     Options m_options;
     
     static CECDaemon* s_instance;

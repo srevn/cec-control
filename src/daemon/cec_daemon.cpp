@@ -35,6 +35,10 @@ CECDaemon::~CECDaemon() {
 }
 
 bool CECDaemon::start() {
+    // Add mutex to protect initialization
+    static std::mutex startupMutex;
+    std::lock_guard<std::mutex> lock(startupMutex);
+    
     LOG_INFO("Starting CEC daemon");
     
     try {
@@ -114,6 +118,10 @@ bool CECDaemon::start() {
 }
 
 void CECDaemon::stop() {
+    // Add mutex to protect shutdown
+    static std::mutex shutdownMutex;
+    std::lock_guard<std::mutex> lock(shutdownMutex);
+    
     if (!m_running) return;
     
     LOG_INFO("Stopping CEC daemon");
@@ -180,8 +188,15 @@ void CECDaemon::run() {
     LOG_INFO("Entering main daemon loop");
     
     while (m_running) {
+        // Read suspended state atomically
+        bool isSuspended;
+        {
+            std::lock_guard<std::mutex> lock(m_suspendMutex);
+            isSuspended = m_suspended;
+        }
+        
         // Only check connection if not suspended
-        if (!m_suspended && m_cecManager && !m_cecManager->isAdapterValid()) {
+        if (!isSuspended && m_cecManager && !m_cecManager->isAdapterValid()) {
             LOG_WARNING("CEC connection lost, attempting to reconnect");
             
             // The reconnect method now handles proper synchronization
@@ -200,6 +215,9 @@ void CECDaemon::run() {
 }
 
 void CECDaemon::onSuspend() {
+    // Protect the suspended state transition
+    std::lock_guard<std::mutex> lock(m_suspendMutex);
+    
     if (m_suspended) return;
     
     LOG_INFO("System suspending, preparing CEC adapter");
@@ -208,7 +226,13 @@ void CECDaemon::onSuspend() {
     // Safety timeout: release inhibitor lock after 10 seconds no matter what
     std::thread safetyThread([this]() {
         std::this_thread::sleep_for(std::chrono::seconds(10));
-        if (m_suspended && m_dbusMonitor) {
+        bool stillSuspended;
+        {
+            std::lock_guard<std::mutex> lock(m_suspendMutex);
+            stillSuspended = m_suspended;
+        }
+        
+        if (stillSuspended && m_dbusMonitor) {
             LOG_WARNING("Safety timeout reached - releasing inhibitor lock forcibly");
             m_dbusMonitor->releaseInhibitLock();
         }
@@ -255,6 +279,9 @@ void CECDaemon::onSuspend() {
 }
 
 void CECDaemon::onResume() {
+    // Protect the suspended state transition
+    std::lock_guard<std::mutex> lock(m_suspendMutex);
+    
     if (!m_suspended) return;
     
     LOG_INFO("System resuming, reinitializing CEC adapter");
@@ -275,8 +302,13 @@ void CECDaemon::onResume() {
                 // Wait 10 seconds before attempting again
                 std::this_thread::sleep_for(std::chrono::seconds(10));
                 
-                // Only try if we're not suspended and adapter is still invalid
-                if (m_cecManager && !m_suspended && !m_cecManager->isAdapterValid()) {
+                bool shouldReconnect = false;
+                {
+                    std::lock_guard<std::mutex> lock(m_suspendMutex);
+                    shouldReconnect = !m_suspended && m_cecManager && !m_cecManager->isAdapterValid();
+                }
+                
+                if (shouldReconnect) {
                     LOG_INFO("Performing delayed reconnection attempt");
                     m_cecManager->reconnect();
                 }
@@ -397,8 +429,15 @@ Message CECDaemon::handleCommand(const Message& command) {
         return Message(MessageType::RESP_ERROR);
     }
     
+    // Get suspended state atomically
+    bool isSuspended;
+    {
+        std::lock_guard<std::mutex> lock(m_suspendMutex);
+        isSuspended = m_suspended;
+    }
+    
     // Handle suspended state
-    if (m_suspended && command.type != MessageType::CMD_RESUME) {
+    if (isSuspended && command.type != MessageType::CMD_RESUME) {
         // Commands that make sense to queue during suspend
         static const std::unordered_set<MessageType> queueableCommands = {
             MessageType::CMD_POWER_ON,
