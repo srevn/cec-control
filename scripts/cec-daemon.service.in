@@ -1,0 +1,13 @@
+[Unit]
+Description=CEC Control Daemon
+After=multi-user.target
+Wants=dbus.service
+
+[Service]
+Type=forking
+ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
+RemainAfterExit=true
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
