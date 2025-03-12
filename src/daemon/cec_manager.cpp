@@ -17,8 +17,8 @@ CECManager::CECManager(Options options)
     adapterOptions.deviceName = "CEC Controller";
     
     CommandThrottler::Options throttlerOptions;
-    throttlerOptions.baseIntervalMs = 250;
-    throttlerOptions.maxIntervalMs = 1000;
+    throttlerOptions.baseIntervalMs = 200;
+    throttlerOptions.maxIntervalMs = 800;
     throttlerOptions.maxRetryAttempts = 3;
     
     m_adapter = std::make_shared<CECAdapter>(adapterOptions);

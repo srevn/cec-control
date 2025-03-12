@@ -36,7 +36,7 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
         // even when reporting failure due to no acknowledgment
         if (attempt == 0) {
             // First retry quickly
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         } else {
             // Subsequent retries with exponential backoff
             std::this_thread::sleep_for(std::chrono::milliseconds(
@@ -83,7 +83,7 @@ bool CommandThrottler::throttleCommand() {
     // Wait until adapter is no longer busy
     if (isAdapterBusy()) {
         LOG_DEBUG("Waiting for CEC adapter to be ready");
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     
     // Update last command time
