@@ -9,6 +9,7 @@
 
 #include "cec_manager.h"
 #include "socket_server.h"
+#include "dbus_monitor.h"
 #include "../common/logger.h"
 
 namespace cec_control {
@@ -54,17 +55,12 @@ public:
 private:
     std::unique_ptr<CECManager> m_cecManager;
     std::unique_ptr<SocketServer> m_socketServer;
+    std::unique_ptr<DBusMonitor> m_dbusMonitor;
     std::atomic<bool> m_running;
     std::atomic<bool> m_suspended;
     Options m_options;
     
     static CECDaemon* s_instance;
-    
-    // Power management
-    std::thread m_powerMonitorThread;
-    std::mutex m_powerMonitorMutex;
-    std::condition_variable m_powerMonitorCV;
-    std::atomic<bool> m_powerMonitorRunning;
     
     // Command queuing during suspend
     std::mutex m_queuedCommandsMutex;
@@ -77,17 +73,11 @@ private:
     // Setup signal handlers
     void setupSignalHandlers();
     
-    // Power monitoring thread function
-    void monitorPowerEvents();
+    // D-Bus power monitoring
+    void handlePowerStateChange(DBusMonitor::PowerState state);
     
-    // Helper to monitor system sleep events via logind
+    // Setup power monitoring
     bool setupPowerMonitor();
-    
-    // Cleanup power monitor resources
-    void cleanupPowerMonitor();
-    
-    // Helper to notify system we're ready for sleep via D-Bus
-    void notifyReadyForSleep();
 };
 
 } // namespace cec_control

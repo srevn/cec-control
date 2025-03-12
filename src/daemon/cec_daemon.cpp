@@ -3,9 +3,7 @@
 
 #include <csignal>
 #include <cstdlib>
-#include <cstdio>
 #include <unistd.h>
-#include <fcntl.h>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -26,7 +24,6 @@ CECDaemon::CECDaemon(Options options)
     : m_running(false), 
       m_suspended(false), 
       m_options(options),
-      m_powerMonitorRunning(false),
       m_queueCommandsDuringSuspend(options.queueCommandsDuringSuspend) {
     // Set static instance
     s_instance = this;
@@ -119,7 +116,7 @@ bool CECDaemon::start() {
 void CECDaemon::stop() {
     if (!m_running) return;
     
-    LOG_INFO("Stopping CEC daemon");;
+    LOG_INFO("Stopping CEC daemon");
     
     // Set running flag to false to exit main loop
     m_running = false;
@@ -133,10 +130,11 @@ void CECDaemon::stop() {
         }
     }
     
-    // Track shutdown progress with detailed logging
-    LOG_INFO("Stopping power monitoring thread");
-    cleanupPowerMonitor();
-    LOG_INFO("Power monitoring shutdown complete");
+    // Stop D-Bus monitor
+    LOG_INFO("Stopping D-Bus monitor");
+    if (m_dbusMonitor) {
+        m_dbusMonitor->stop();
+    }
     
     try {
         // Shutdown components in reverse order with timeouts
@@ -171,6 +169,7 @@ void CECDaemon::stop() {
     
     // Safely release resources
     LOG_INFO("Releasing resources");
+    m_dbusMonitor.reset();
     m_socketServer.reset();
     m_cecManager.reset();
     
@@ -218,7 +217,9 @@ void CECDaemon::onSuspend() {
             LOG_INFO("CEC shutdown took ", shutdownDuration, "ms");
             
             // Notify system that we're ready for sleep
-            notifyReadyForSleep();
+            if (m_dbusMonitor) {
+                m_dbusMonitor->sendReadyForSleep();
+            }
         }
     }
     catch (const std::exception& e) {
@@ -227,39 +228,6 @@ void CECDaemon::onSuspend() {
     catch (...) {
         LOG_ERROR("Unknown exception during suspend");
     }
-}
-
-// Helper method to notify the system we're ready for sleep via D-Bus
-void CECDaemon::notifyReadyForSleep() {
-    LOG_INFO("Notifying system that CEC daemon is ready for sleep");
-    
-    // Using popen to execute dbus-send command
-    // This will send a signal indicating we're ready for sleep
-    FILE* pipe = popen(
-        "dbus-send --system --dest=org.freedesktop.login1 "
-        "--type=method_call --print-reply /org/freedesktop/login1 "
-        "org.freedesktop.login1.Manager.SleepWithInhibitors string:sleep", "r");
-        
-    if (!pipe) {
-        LOG_ERROR("Failed to execute dbus-send command");
-        return;
-    }
-    
-    // Read the response (if any)
-    char buffer[1024];
-    std::string response;
-    
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        response += buffer;
-    }
-    
-    pclose(pipe);
-    
-    if (!response.empty()) {
-        LOG_DEBUG("D-Bus sleep response: ", response);
-    }
-    
-    LOG_INFO("Sleep readiness notification sent");
 }
 
 void CECDaemon::onResume() {
@@ -332,141 +300,44 @@ void CECDaemon::processResumeCommand() {
 }
 
 bool CECDaemon::setupPowerMonitor() {
-    // Start the power monitor thread
-    LOG_INFO("Starting power monitoring thread");
-    m_powerMonitorRunning = true;
+    LOG_INFO("Setting up D-Bus power monitoring");
     
     try {
-        m_powerMonitorThread = std::thread(&CECDaemon::monitorPowerEvents, this);
-        LOG_INFO("Power monitoring thread started");
+        // Create D-Bus monitor
+        m_dbusMonitor = std::make_unique<DBusMonitor>();
+        
+        // Initialize D-Bus connection
+        if (!m_dbusMonitor->initialize()) {
+            LOG_ERROR("Failed to initialize D-Bus monitor");
+            return false;
+        }
+        
+        // Start monitoring power events
+        m_dbusMonitor->start([this](DBusMonitor::PowerState state) {
+            this->handlePowerStateChange(state);
+        });
+        
+        LOG_INFO("D-Bus power monitoring setup successfully");
         return true;
-    } catch (const std::exception& e) {
-        LOG_ERROR("Failed to start power monitoring thread: ", e.what());
-        m_powerMonitorRunning = false;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception during D-Bus power monitor setup: ", e.what());
         return false;
     }
 }
 
-void CECDaemon::cleanupPowerMonitor() {
-    // Stop the power monitor thread
-    if (m_powerMonitorRunning) {
-        LOG_INFO("Stopping power monitoring thread");
-        
-        // Signal the thread to stop
-        {
-            std::lock_guard<std::mutex> lock(m_powerMonitorMutex);
-            m_powerMonitorRunning = false;
-        }
-        m_powerMonitorCV.notify_all();
-        
-        // Try to join with timeout
-        if (m_powerMonitorThread.joinable()) {
-            auto future = std::async(std::launch::async, [this]() {
-                if (m_powerMonitorThread.joinable()) {
-                    m_powerMonitorThread.join();
-                    return true;
-                }
-                return false;
-            });
+void CECDaemon::handlePowerStateChange(DBusMonitor::PowerState state) {
+    switch (state) {
+        case DBusMonitor::PowerState::Suspending:
+            LOG_INFO("Received system suspend notification from D-Bus");
+            onSuspend();
+            break;
             
-            // Wait for join with timeout
-            if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
-                LOG_WARNING("Power monitor thread did not exit cleanly, proceeding with shutdown anyway");
-            } else {
-                LOG_INFO("Power monitor thread exited cleanly");
-            }
-        }
+        case DBusMonitor::PowerState::Resuming:
+            LOG_INFO("Received system resume notification from D-Bus");
+            onResume();
+            break;
     }
-}
-
-void CECDaemon::monitorPowerEvents() {
-    // Track D-Bus process for proper cleanup
-    FILE* pipe = nullptr;
-    
-    try {
-        // Setup D-Bus monitor for suspend/resume signals
-        // Use popen to start a process that monitors D-Bus signals
-        pipe = popen(
-            "dbus-monitor --system \"type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'\"", 
-            "r");
-        
-        if (!pipe) {
-            LOG_ERROR("Failed to start dbus-monitor");
-            return;
-        }
-        
-        // Make pipe non-blocking
-        int flags = fcntl(fileno(pipe), F_GETFL, 0);
-        fcntl(fileno(pipe), F_SETFL, flags | O_NONBLOCK);
-        
-        char buffer[1024];
-        std::string line;
-        
-        // Track last state to avoid duplicate signals
-        bool lastWasSuspend = false;
-        
-        // Keep monitoring until told to stop
-        while (m_powerMonitorRunning) {
-            // Check if there's data to read
-            if (pipe && fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                line = buffer;
-                
-                // Look for the PrepareForSleep signal
-                if (line.find("PrepareForSleep") != std::string::npos) {
-                    // The next line should contain the boolean value
-                    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                        line = buffer;
-                        
-                        // Check if going to sleep or waking up
-                        if (line.find("boolean true") != std::string::npos) {
-                            if (!lastWasSuspend) {
-                                LOG_INFO("System is preparing to sleep");
-                                onSuspend();
-                                lastWasSuspend = true;
-                            }
-                        } else if (line.find("boolean false") != std::string::npos) {
-                            if (lastWasSuspend) {
-                                LOG_INFO("System is waking up from sleep");
-                                onResume();
-                                lastWasSuspend = false;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Wait with condition variable that can be interrupted
-            {
-                std::unique_lock<std::mutex> lock(m_powerMonitorMutex);
-                if (m_powerMonitorCV.wait_for(lock, std::chrono::milliseconds(100), 
-                                       [this]() { return !m_powerMonitorRunning; })) {
-                    // If condition is met (we should stop), break out of the loop
-                    LOG_INFO("Power monitor received stop signal");
-                    break;
-                }
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in power monitoring thread: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception in power monitoring thread");
-    }
-    
-    // Clean up resources
-    if (pipe) {
-        // Close pipe with timeout to avoid hanging
-        // Create a thread to do the potentially blocking pclose
-        std::thread closer([pipe]() {
-            pclose(pipe);
-        });
-        closer.detach();  // Let it run independently
-        
-        // We don't wait for pclose to complete - if it's hung, we just continue
-    }
-    
-    LOG_INFO("Power monitoring thread exiting");
 }
 
 Message CECDaemon::handleCommand(const Message& command) {

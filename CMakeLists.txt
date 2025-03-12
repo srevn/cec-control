@@ -20,9 +20,13 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCEC REQUIRED libcec>=4.0.0)
 
+# Find D-Bus
+pkg_check_modules(DBUS REQUIRED dbus-1>=1.6)
+
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${LIBCEC_INCLUDE_DIR})
+include_directories(${DBUS_INCLUDE_DIRS})
 
 # Define source files
 set(COMMON_SOURCES
@@ -40,6 +44,7 @@ set(DAEMON_SOURCES
     src/daemon/command_queue.cpp
     src/daemon/cec_operation.cpp
     src/daemon/thread_pool.cpp
+    src/daemon/dbus_monitor.cpp
     src/daemon/main.cpp
     ${COMMON_SOURCES}
 )
@@ -57,7 +62,7 @@ add_executable(cec-daemon ${DAEMON_SOURCES})
 add_executable(cec-client ${CLIENT_SOURCES})
 
 # Link libraries
-target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} pthread)
+target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} ${DBUS_LIBRARIES} pthread)
 target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread)
 
 # Install targets
@@ -90,3 +95,4 @@ add_custom_target(uninstall
 # Print configuration summary
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "libcec version: ${LIBCEC_VERSION}")
+message(STATUS "dbus version: ${DBUS_VERSION}")
