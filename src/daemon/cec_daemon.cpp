@@ -203,6 +203,16 @@ void CECDaemon::onSuspend() {
     LOG_INFO("System suspending, preparing CEC adapter");
     m_suspended = true;
     
+    // Safety timeout: release inhibitor lock after 10 seconds no matter what
+    std::thread safetyThread([this]() {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        if (m_suspended && m_dbusMonitor) {
+            LOG_WARNING("Safety timeout reached - releasing inhibitor lock forcibly");
+            m_dbusMonitor->releaseInhibitLock();
+        }
+    });
+    safetyThread.detach();
+    
     try {
         // Only release CEC adapter resources, keep socket server running
         if (m_cecManager) {
