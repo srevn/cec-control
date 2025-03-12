@@ -117,6 +117,11 @@ private:
     static dbus_bool_t addTimeoutCallback(DBusTimeout* timeout, void* data);
     static void removeTimeoutCallback(DBusTimeout* timeout, void* data);
     static void toggleTimeoutCallback(DBusTimeout* timeout, void* data);
+    
+    // Static message filter callback for D-Bus
+    static DBusHandlerResult messageFilterCallback(DBusConnection *connection, 
+                                                  DBusMessage *message, 
+                                                  void *user_data);
 };
 
 } // namespace cec_control

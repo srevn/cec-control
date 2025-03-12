@@ -63,6 +63,12 @@ bool DBusMonitor::initialize() {
         return false;
     }
     
+    // Add message filter to intercept signals
+    if (!dbus_connection_add_filter(m_connection, messageFilterCallback, this, nullptr)) {
+        LOG_ERROR("Failed to add D-Bus message filter");
+        return false;
+    }
+    
     // Set up watch and timeout functions
     if (!dbus_connection_set_watch_functions(
             m_connection,
@@ -525,6 +531,17 @@ void DBusMonitor::toggleTimeoutCallback(DBusTimeout* timeout, void* data) {
             monitor->updateTimeoutExpiry(*it);
         }
     }
+}
+
+// Message filter implementation
+DBusHandlerResult DBusMonitor::messageFilterCallback(DBusConnection*, DBusMessage* message, void* user_data) {
+    DBusMonitor* monitor = static_cast<DBusMonitor*>(user_data);
+    if (monitor) {
+        monitor->processMessage(message);
+    }
+    
+    // Return "not yet handled" to allow other handlers to process this message too
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
 } // namespace cec_control
