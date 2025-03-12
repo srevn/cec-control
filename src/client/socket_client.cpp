@@ -82,8 +82,8 @@ Message SocketClient::receiveResponse() {
     pfd.fd = m_socketFd;
     pfd.events = POLLIN;
     
-    // Wait for up to 5 seconds for a response
-    int pollResult = poll(&pfd, 1, 5000);
+    // Wait for up to 10 seconds for a response
+    int pollResult = poll(&pfd, 1, 10000);
     
     if (pollResult < 0) {
         LOG_ERROR("Poll error: ", strerror(errno));
