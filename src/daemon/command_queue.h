@@ -76,12 +76,6 @@ private:
     
     // Clean up completed and timed out operations
     void cleanupOperations();
-    
-    // Maximum number of identical commands to merge
-    static constexpr int MAX_MERGED_COMMANDS = 3;
-    
-    // Check if an operation should be merged with an existing one
-    bool tryMergeOperation(const std::shared_ptr<CECOperation>& operation);
 };
 
 } // namespace cec_control

@@ -17,7 +17,7 @@ CECManager::CECManager(Options options)
     adapterOptions.deviceName = "CEC Controller";
     
     CommandThrottler::Options throttlerOptions;
-    throttlerOptions.baseIntervalMs = 200;
+    throttlerOptions.baseIntervalMs = 250;
     throttlerOptions.maxIntervalMs = 1000;
     throttlerOptions.maxRetryAttempts = 3;
     

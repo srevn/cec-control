@@ -80,70 +80,21 @@ std::shared_ptr<CECOperation> CommandQueue::enqueue(
     
     auto operation = std::make_shared<CECOperation>(command, priority, timeoutMs);
     
+    // Add directly to the queue without trying to merge
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
-        
-        // Try to merge with existing operations
-        if (tryMergeOperation(operation)) {
-            LOG_DEBUG("Merged identical command");
-            return operation;
-        }
-        
         m_queue.push(operation);
         m_activeOperations[operation->getId()] = operation;
+        
+        // Log the enqueued operation for debugging
+        LOG_DEBUG("Enqueued operation: ", operation->getDescription(), 
+                  " (queue size: ", m_queue.size(), ")");
     }
     
+    // Notify worker thread of new operation
     m_queueCondition.notify_one();
     
     return operation;
-}
-
-bool CommandQueue::tryMergeOperation(const std::shared_ptr<CECOperation>& newOperation) {
-    // Don't merge high priority operations
-    if (newOperation->getPriority() == CECOperation::Priority::HIGH) {
-        return false;
-    }
-    
-    const Message& newCmd = newOperation->getCommand();
-    
-    // Find identical commands in the queue
-    std::vector<std::shared_ptr<CECOperation>> identicalOps;
-    
-    // Create a temporary copy of the queue to search it
-    auto queueCopy = m_queue;
-    while (!queueCopy.empty()) {
-        auto op = queueCopy.top();
-        queueCopy.pop();
-        
-        // Check if it's the same type of command to the same device
-        const Message& existingCmd = op->getCommand();
-        if (existingCmd.type == newCmd.type && 
-            existingCmd.deviceId == newCmd.deviceId) {
-            
-            // For all commands, consider them identical if type and device match
-            identicalOps.push_back(op);
-        }
-    }
-    
-    // If there are too many identical operations, mark this one as complete
-    // and share the future of an existing operation
-    if (identicalOps.size() >= MAX_MERGED_COMMANDS) {
-        // Use the result from the latest operation
-        auto latestOp = identicalOps.back();
-        
-        // Register a callback to complete this operation when the target operation completes
-        std::thread([newOp = newOperation, targetOp = latestOp]() {
-            if (targetOp->wait()) {
-                newOp->complete(targetOp->getResponse());
-            } else {
-                newOp->complete(Message(MessageType::RESP_ERROR));
-            }
-        }).detach();
-        
-        return true;
-    }
-    
-    return false;
 }
 
 Message CommandQueue::executeSync(const Message& command, uint32_t timeoutMs) {
@@ -245,8 +196,11 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
             return;
         }
         
-        // Process the operation
-        LOG_DEBUG("Processing operation: ", operation->getDescription());
+        // Log the operation being processed
+        const Message& cmd = operation->getCommand();
+        LOG_DEBUG("Processing operation: type=", static_cast<int>(cmd.type), 
+                  ", device=", static_cast<int>(cmd.deviceId), 
+                  ", priority=", static_cast<int>(operation->getPriority()));
         
         // Process with reliable completion tracking
         Message result;
@@ -263,10 +217,14 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
             
             // Otherwise, pause briefly and try again
             if (attempt < maxAttempts - 1) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 LOG_INFO("Retrying operation due to indeterminate result");
             }
         }
+        
+        // Log the result
+        LOG_DEBUG("Operation completed: ", operation->getDescription(), 
+                  " result=", static_cast<int>(result.type));
         
         // Update the operation with the result
         operation->complete(result);

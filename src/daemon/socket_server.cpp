@@ -327,13 +327,6 @@ void SocketServer::handleClient(int clientFd) {
             LOG_WARNING("Failed to set SO_KEEPALIVE: ", strerror(errno));
         }
         
-        // Set TCP no delay to ensure commands are sent immediately
-        int tcpNoDelay = 1;
-        if (setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &tcpNoDelay, sizeof(tcpNoDelay)) < 0) {
-            // Unix socket may not support TCP_NODELAY, so just log as debug
-            LOG_DEBUG("Failed to set TCP_NODELAY: ", strerror(errno));
-        }
-        
         // Set receive timeout to ensure we don't block indefinitely
         struct timeval tv;
         tv.tv_sec = 2;  // 2 second timeout
@@ -411,7 +404,11 @@ void SocketServer::handleClient(int clientFd) {
                                 // Process command if handler is set
                                 Message response;
                                 if (m_cmdHandler) {
-                                    response = m_cmdHandler(cmd);
+                                    // Simple synchronization for all commands to ensure ordered processing
+                                    {
+                                        std::lock_guard<std::mutex> lock(m_commandMutex);
+                                        response = m_cmdHandler(cmd);
+                                    }
                                 } else {
                                     response = Message(MessageType::RESP_ERROR);
                                 }
