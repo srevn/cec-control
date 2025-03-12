@@ -183,6 +183,8 @@ void CECDaemon::run() {
         // Only check connection if not suspended
         if (!m_suspended && m_cecManager && !m_cecManager->isAdapterValid()) {
             LOG_WARNING("CEC connection lost, attempting to reconnect");
+            
+            // The reconnect method now handles proper synchronization
             bool reconnected = m_cecManager->reconnect();
             
             if (!reconnected) {
@@ -256,58 +258,73 @@ void CECDaemon::onResume() {
     if (!m_suspended) return;
     
     LOG_INFO("System resuming, reinitializing CEC adapter");
-    bool reconnectSuccessful = false;
     
     try {
-        // Reinitialize CEC adapter if needed
-        if (m_cecManager) {
-            reconnectSuccessful = m_cecManager->reconnect();
-            if (!reconnectSuccessful) {
-                LOG_WARNING("Failed to reconnect CEC adapter on resume, will retry later");
-            } else {
-                LOG_INFO("CEC adapter resumed");
+        // When resuming, simply request the CEC manager to reconnect
+        // This will properly synchronize with any other reconnect attempts
+        bool reconnectSuccessful = m_cecManager && m_cecManager->reconnect();
+        
+        if (reconnectSuccessful) {
+            LOG_INFO("CEC adapter reconnected successfully on resume");
+        } else {
+            LOG_ERROR("Failed to reconnect CEC adapter on resume");
+            
+            // Schedule a background reconnection attempt after a delay
+            std::thread([this]() {
+                LOG_INFO("Scheduling delayed reconnection attempt");
+                // Wait 10 seconds before attempting again
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+                
+                // Only try if we're not suspended and adapter is still invalid
+                if (m_cecManager && !m_suspended && !m_cecManager->isAdapterValid()) {
+                    LOG_INFO("Performing delayed reconnection attempt");
+                    m_cecManager->reconnect();
+                }
+            }).detach();
+        }
+        
+        // Mark as not suspended regardless of reconnection result
+        m_suspended = false;
+        
+        // Process queued commands if reconnection was successful
+        if (m_queueCommandsDuringSuspend && reconnectSuccessful) {
+            std::vector<Message> queuedCommands;
+            
+            // Get queued commands and clear the queue atomically
+            {
+                std::lock_guard<std::mutex> lock(m_queuedCommandsMutex);
+                if (m_queuedCommands.empty()) {
+                    return;
+                }
+                
+                queuedCommands = std::move(m_queuedCommands);
+                m_queuedCommands.clear();
+            }
+            
+            // Process each queued command
+            LOG_INFO("Processing ", queuedCommands.size(), " queued commands");
+            for (const auto& cmd : queuedCommands) {
+                try {
+                    if (m_cecManager) {
+                        m_cecManager->processCommand(cmd);
+                    }
+                }
+                catch (const std::exception& e) {
+                    LOG_ERROR("Exception processing queued command: ", e.what());
+                }
+                catch (...) {
+                    LOG_ERROR("Unknown exception processing queued command");
+                }
             }
         }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during resume: ", e.what());
+        m_suspended = false;  // Ensure we exit suspended state even on error
     }
     catch (...) {
         LOG_ERROR("Unknown exception during resume");
-    }
-    
-    m_suspended = false;
-    
-    // Process any queued commands if reconnection was successful
-    if (m_queueCommandsDuringSuspend && reconnectSuccessful) {
-        std::vector<Message> queuedCommands;
-        
-        // Get queued commands and clear the queue atomically
-        {
-            std::lock_guard<std::mutex> lock(m_queuedCommandsMutex);
-            if (m_queuedCommands.empty()) {
-                return;
-            }
-            
-            queuedCommands = std::move(m_queuedCommands);
-            m_queuedCommands.clear();
-        }
-        
-        // Process each queued command
-        LOG_INFO("Processing ", queuedCommands.size(), " queued commands");
-        for (const auto& cmd : queuedCommands) {
-            try {
-                if (m_cecManager) {
-                    m_cecManager->processCommand(cmd);
-                }
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("Exception processing queued command: ", e.what());
-            }
-            catch (...) {
-                LOG_ERROR("Unknown exception processing queued command");
-            }
-        }
+        m_suspended = false;  // Ensure we exit suspended state even on error
     }
 }
 

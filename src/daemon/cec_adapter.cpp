@@ -115,6 +115,7 @@ bool CECAdapter::initialize() {
         }
         
         m_connected = true;
+        LOG_INFO("CEC adapter initialized successfully");
         return true;
     }
     catch (const std::exception& e) {

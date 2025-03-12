@@ -3,8 +3,12 @@
 
 #include <csignal>
 #include <thread>
+#include <mutex>
 
 namespace cec_control {
+
+// Mutex for synchronizing adapter operations across all instances
+static std::mutex g_adapterMutex;
 
 CECManager::CECManager(Options options) 
     : m_options(options) {
@@ -38,6 +42,7 @@ CECManager::~CECManager() {
 }
 
 bool CECManager::initialize() {
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
     LOG_INFO("Initializing CEC manager");
     
     // Initialize the adapter
@@ -66,6 +71,7 @@ bool CECManager::initialize() {
 }
 
 void CECManager::shutdown() {
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
     LOG_INFO("Shutting down CEC manager");
     
     // Stop the command queue to prevent new operations
@@ -80,51 +86,81 @@ void CECManager::shutdown() {
 }
 
 bool CECManager::reconnect() {
+    // Take the global adapter mutex to ensure only one thread
+    // manipulates the adapter at a time
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    
     LOG_INFO("Attempting to reconnect to CEC adapter");
     
-    // Make sure we're disconnected first but don't log extra messages
-    if (m_commandQueue) {
-        m_commandQueue->stop();
-    }
-    
-    if (m_adapter) {
-        m_adapter->shutdown();
-    }
-    
-    // Wait a moment before reconnecting
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    
-    // Try to reconnect, tracking failures
+    // Track reconnect failures with a static counter
     static int reconnectFailures = 0;
-    bool result = initialize();
     
-    if (!result) {
-        reconnectFailures++;
-        LOG_ERROR("Reconnect attempt failed (", reconnectFailures, " consecutive failures)");
-        
-        // After multiple consecutive failures, trigger shutdown
-        if (reconnectFailures >= 3) {
-            LOG_ERROR("Multiple reconnect failures - daemon will exit");
-            
-            // If running as a systemd service, we want to exit with an error
-            if (getenv("NOTIFY_SOCKET") != nullptr) {
-                LOG_INFO("Notifying systemd of persistent adapter failure");
-                exit(EXIT_FAILURE);
-            } else {
-                // Schedule shutdown signal in a separate thread to avoid deadlocks
-                std::thread([]() {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                    LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                    exit(EXIT_FAILURE);
-                }).detach();
-            }
-        }
-    } else {
-        // Reset failure counter on successful reconnect
+    // Check if adapter is already connected - quick exit
+    if (isAdapterValid()) {
+        LOG_INFO("Adapter already connected, no need to reconnect");
         reconnectFailures = 0;
+        return true;
     }
     
-    return result;
+    try {
+        // Ensure adapter is properly shut down first
+        if (m_adapter) {
+            LOG_DEBUG("Shutting down adapter before reconnection attempt");
+            m_adapter->shutdown();
+        }
+        
+        // Wait before reconnecting 
+        LOG_DEBUG("Brief pause before reinitializing CEC adapter");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        // Try to initialize the adapter
+        if (!m_adapter->initialize()) {
+            LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
+            reconnectFailures++;
+            
+            if (reconnectFailures >= 3) {
+                LOG_ERROR("Multiple reconnect failures (", reconnectFailures, ") - daemon will exit");
+                
+                // If running as a systemd service, exit with error
+                if (getenv("NOTIFY_SOCKET") != nullptr) {
+                    LOG_INFO("Notifying systemd of persistent adapter failure");
+                    std::thread([]() {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                        LOG_FATAL("Exiting due to persistent CEC adapter failure");
+                        exit(EXIT_FAILURE);
+                    }).detach();
+                }
+            }
+            
+            return false;
+        }
+        
+        // Reset failure counter on successful adapter initialization
+        reconnectFailures = 0;
+        
+        // Start the command queue if needed
+        if (!m_commandQueue->isRunning()) {
+            LOG_INFO("Starting command queue");
+            if (!m_commandQueue->start()) {
+                LOG_ERROR("Failed to start command queue during reconnect");
+                m_adapter->shutdown();
+                return false;
+            }
+        } else {
+            LOG_DEBUG("Command queue is already running");
+        }
+        
+        LOG_INFO("CEC adapter reconnected successfully");
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception during reconnect: ", e.what());
+        return false;
+    }
+    catch (...) {
+        LOG_ERROR("Unknown exception during reconnect");
+        return false;
+    }
 }
 
 bool CECManager::isAdapterValid() const {
@@ -182,21 +218,41 @@ Message CECManager::handleCommand(const Message& command) {
             break;
             
         case MessageType::CMD_RESTART_ADAPTER:
-            // Handle restart command asynchronously to avoid deadlock
-            std::thread([this]() {
-                LOG_INFO("Performing asynchronous adapter restart");
-                this->shutdown();
+            // Create a shared future for the restart operation
+            {
+                LOG_INFO("Processing restart adapter command");
                 
-                // Wait a moment before reconnecting
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+                // Run this in a new thread but use the reconnect method which has proper synchronization
+                std::thread([this]() {
+                    LOG_INFO("Performing asynchronous adapter restart");
+                    
+                    // Acquire the adapter mutex so no other operations can interfere
+                    std::lock_guard<std::mutex> lock(g_adapterMutex);
+                    
+                    // First shut down the adapter
+                    this->m_adapter->shutdown();
+                    
+                    // A brief pause to let everything settle
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    
+                    // Now reinitialize - don't use reconnect() here to avoid deadlock
+                    // with the g_adapterMutex we're already holding
+                    bool success = this->m_adapter->initialize();
+                    
+                    if (success) {
+                        // Start command queue if needed
+                        if (!this->m_commandQueue->isRunning()) {
+                            this->m_commandQueue->start();
+                        }
+                        LOG_INFO("Adapter restart completed successfully");
+                    } else {
+                        LOG_ERROR("Failed to restart adapter");
+                    }
+                }).detach();
                 
-                // Try to reconnect
-                this->initialize();
-                LOG_INFO("Asynchronous adapter restart completed");
-            }).detach();
-            
-            // Return success immediately, actual restart happens in background
-            success = true;
+                // Return success immediately, actual restart happens in background
+                success = true;
+            }
             break;
             
         default:
