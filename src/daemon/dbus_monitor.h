@@ -7,11 +7,7 @@
 #include <unordered_map>
 #include <mutex>
 
-// Forward declarations for D-Bus types
-struct DBusConnection;
-struct DBusMessage;
-struct DBusWatch;
-struct DBusTimeout;
+#include <dbus/dbus.h>
 
 namespace cec_control {
 

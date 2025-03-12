@@ -6,6 +6,7 @@
 #include <thread>
 #include <chrono>
 #include <stdexcept>
+#include <algorithm>
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
