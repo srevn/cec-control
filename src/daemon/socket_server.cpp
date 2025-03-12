@@ -36,6 +36,15 @@ bool SocketServer::start() {
         return false;
     }
     
+    // Create thread pool - use a reasonable number of threads based on CPU cores
+    // but limit to a maximum of 8 threads to avoid resource exhaustion
+    unsigned int threadCount = std::min(std::thread::hardware_concurrency(), 8U);
+    if (threadCount == 0) threadCount = 4; // Default if hardware_concurrency is not available
+    
+    m_threadPool = std::make_unique<ThreadPool>(threadCount);
+    m_threadPool->start();
+    LOG_INFO("Created thread pool with ", threadCount, " worker threads for client connections");
+    
     m_running = true;
     m_serverThread = std::thread(&SocketServer::serverLoop, this);
     
@@ -95,56 +104,21 @@ void SocketServer::stop() {
     {
         LOG_INFO("Closing all client connections");
         std::lock_guard<std::mutex> lock(m_clientsMutex);
-        for (auto& pair : m_clientThreads) {
+        for (int clientFd : m_activeClients) {
             // Close client socket
-            if (pair.first >= 0) {
-                close(pair.first);
-            }
-            
-            // Detach threads that can't be joined safely
-            if (pair.second.joinable() && 
-                std::this_thread::get_id() == pair.second.get_id()) {
-                pair.second.detach();
+            if (clientFd >= 0) {
+                shutdown(clientFd, SHUT_RDWR);
+                close(clientFd);
             }
         }
+        m_activeClients.clear();
     }
     
-    // Clean up client threads with timeout
-    try {
-        LOG_INFO("Cleaning up client threads");
-        std::lock_guard<std::mutex> lock(m_clientsMutex);
-        for (auto it = m_clientThreads.begin(); it != m_clientThreads.end(); ) {
-            if (it->second.joinable()) {
-                auto joinFuture = std::async(std::launch::async, [&thread = it->second]() {
-                    if (thread.joinable()) {
-                        thread.join();
-                        return true;
-                    }
-                    return false;
-                });
-                
-                // Wait for thread to join with 2 second timeout
-                if (joinFuture.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
-                    LOG_WARNING("Client thread did not exit cleanly within timeout, detaching");
-                    if (it->second.joinable()) {
-                        it->second.detach();
-                    }
-                }
-            }
-            it = m_clientThreads.erase(it);
-        }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception cleaning up client threads: ", e.what());
-        
-        // Last resort: detach any remaining threads
-        std::lock_guard<std::mutex> lock(m_clientsMutex);
-        for (auto& pair : m_clientThreads) {
-            if (pair.second.joinable()) {
-                pair.second.detach();
-            }
-        }
-        m_clientThreads.clear();
+    // Shut down the thread pool
+    if (m_threadPool) {
+        LOG_INFO("Shutting down thread pool");
+        m_threadPool->shutdown();
+        m_threadPool.reset();
     }
     
     // Remove socket file
@@ -210,33 +184,6 @@ void SocketServer::cleanupSocket() {
     // Remove the socket file if it exists
     if (access(m_socketPath.c_str(), F_OK) != -1) {
         unlink(m_socketPath.c_str());
-    }
-}
-
-void SocketServer::cleanupClientThreads() {
-    std::lock_guard<std::mutex> lock(m_clientsMutex);
-    for (auto it = m_clientThreads.begin(); it != m_clientThreads.end(); ) {
-        if (it->second.joinable()) {
-            it->second.join();
-        }
-        it = m_clientThreads.erase(it);
-    }
-}
-
-void SocketServer::cleanupCompletedClientThreads() {
-    // Caller must hold m_clientsMutex lock
-    // Note: In this implementation we're only cleaning up detached threads since
-    // we can't check if a thread is completed without blocking.
-    // Completed threads will be cleaned up during server shutdown.
-    
-    // We can remove thread entries that have been detached
-    for (auto it = m_clientThreads.begin(); it != m_clientThreads.end(); ) {
-        if (!it->second.joinable()) {
-            // Thread is already detached or not valid
-            it = m_clientThreads.erase(it);
-        } else {
-            ++it;
-        }
     }
 }
 
@@ -328,24 +275,25 @@ void SocketServer::serverLoop() {
                 // Limit the number of concurrent client connections
                 {
                     std::lock_guard<std::mutex> lock(m_clientsMutex);
-                    if (m_clientThreads.size() >= 10) {  // Arbitrary limit to prevent resource exhaustion
+                    if (m_activeClients.size() >= 20) {  // Increased limit since we're using a thread pool
                         LOG_WARNING("Too many client connections, rejecting new client");
                         close(clientFd);
                         continue;
                     }
+                    
+                    // Add to active clients
+                    m_activeClients.insert(clientFd);
                 }
                 
                 try {
-                    // Start client handler thread with appropriate priority
-                    std::lock_guard<std::mutex> lock(m_clientsMutex);
-                    m_clientThreads[clientFd] = std::thread(&SocketServer::handleClient, this, clientFd);
-                    
-                    // Clean up any completed client threads
-                    cleanupCompletedClientThreads();
+                    // Submit client handling task to thread pool
+                    m_threadPool->submit([this, clientFd]() {
+                        this->handleClient(clientFd);
+                    });
                 }
                 catch (const std::exception& e) {
-                    LOG_ERROR("Failed to create client thread: ", e.what());
-                    close(clientFd);
+                    LOG_ERROR("Failed to submit client task to thread pool: ", e.what());
+                    closeClient(clientFd);
                 }
             }
         }
@@ -358,6 +306,17 @@ void SocketServer::serverLoop() {
     }
     
     LOG_INFO("Server loop exiting");
+}
+
+void SocketServer::closeClient(int clientFd) {
+    // Close the client socket and remove from active clients
+    if (clientFd >= 0) {
+        shutdown(clientFd, SHUT_RDWR);
+        close(clientFd);
+        
+        std::lock_guard<std::mutex> lock(m_clientsMutex);
+        m_activeClients.erase(clientFd);
+    }
 }
 
 void SocketServer::handleClient(int clientFd) {
@@ -555,32 +514,8 @@ void SocketServer::handleClient(int clientFd) {
     
     LOG_INFO("Client disconnected");
     
-    // Ensure socket has been properly shutdown before closing
-    shutdown(clientFd, SHUT_RDWR);
-    
-    // Close client socket if still open
-    if (clientFd >= 0) {
-        close(clientFd);
-    }
-    
-    // Mark this thread for cleanup but do not join itself
-    try {
-        std::lock_guard<std::mutex> lock(m_clientsMutex);
-        // We can't join our own thread, just remove it from the map
-        // The thread object will be cleaned up when the SocketServer is destroyed
-        auto it = m_clientThreads.find(clientFd);
-        if (it != m_clientThreads.end()) {
-            // Make it safe to detach if thread's ID is the current thread ID
-            if (std::this_thread::get_id() == it->second.get_id()) {
-                it->second.detach();
-            }
-            // Otherwise let the other thread finish and join properly
-            m_clientThreads.erase(it);
-        }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception during client thread cleanup: ", e.what());
-    }
+    // Close client connection and clean up
+    closeClient(clientFd);
 }
 
 } // namespace cec_control

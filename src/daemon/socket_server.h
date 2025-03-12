@@ -4,10 +4,12 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <functional>
 
 #include "../common/protocol.h"
+#include "thread_pool.h"
 
 namespace cec_control {
 
@@ -36,8 +38,13 @@ private:
     std::atomic<bool> m_running;
     std::thread m_serverThread;
     ClientHandler m_cmdHandler;
+    
+    // Thread pool for client connections
+    std::unique_ptr<ThreadPool> m_threadPool;
+    
+    // Active client connections
     std::mutex m_clientsMutex;
-    std::unordered_map<int, std::thread> m_clientThreads;
+    std::unordered_set<int> m_activeClients;
     
     // Main server loop
     void serverLoop();
@@ -51,11 +58,8 @@ private:
     // Clean up socket resources
     void cleanupSocket();
     
-    // Clean up all client threads
-    void cleanupClientThreads();
-    
-    // Clean up only completed client threads
-    void cleanupCompletedClientThreads();
+    // Close a client connection
+    void closeClient(int clientFd);
 };
 
 } // namespace cec_control
