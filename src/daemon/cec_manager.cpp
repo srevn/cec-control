@@ -103,17 +103,22 @@ bool CECManager::reconnect() {
     }
     
     try {
-        // Ensure adapter is properly shut down first
-        if (m_adapter) {
+        // Check if we need to shut down first - only if adapter is initialized but not connected
+        bool needsShutdown = m_adapter && m_adapter->hasAdapter() && !m_adapter->isConnected();
+        
+        if (needsShutdown) {
             LOG_DEBUG("Shutting down adapter before reconnection attempt");
             m_adapter->shutdown();
+            
+            // Wait before reconnecting when we had to shut down first
+            LOG_DEBUG("Brief pause before reinitializing CEC adapter");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        } else {
+            LOG_DEBUG("Adapter already shut down, proceeding to initialization");
         }
         
-        // Wait before reconnecting 
-        LOG_DEBUG("Brief pause before reinitializing CEC adapter");
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
         // Try to initialize the adapter
+        LOG_INFO("Initializing CEC adapter");
         if (!m_adapter->initialize()) {
             LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
             reconnectFailures++;

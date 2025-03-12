@@ -53,6 +53,12 @@ public:
     bool isConnected() const;
     
     /**
+     * Check if we have an adapter object (even if not connected)
+     * @return true if adapter object exists, false otherwise
+     */
+    bool hasAdapter() const;
+    
+    /**
      * Get a reference to the raw libCEC adapter
      * @return pointer to the libCEC adapter, or nullptr if not initialized
      */

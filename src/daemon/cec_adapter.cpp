@@ -272,6 +272,11 @@ CEC::cec_logical_address CECAdapter::getActiveSource() const {
     return m_adapter->GetActiveSource();
 }
 
+bool CECAdapter::hasAdapter() const {
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
+    return m_adapter != nullptr;
+}
+
 // Callback implementations
 void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* message) {
     CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
