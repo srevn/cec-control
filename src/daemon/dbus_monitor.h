@@ -57,10 +57,16 @@ public:
     void stop();
     
     /**
-     * Send a signal that we're ready for sleep
-     * @return true if signal was sent successfully
+     * Take an inhibitor lock to delay system sleep
+     * @return true if the lock was successfully taken
      */
-    bool sendReadyForSleep();
+    bool takeInhibitLock();
+    
+    /**
+     * Release the inhibitor lock to allow system sleep
+     * @return true if successful
+     */
+    bool releaseInhibitLock();
 
 private:
     DBusConnection* m_connection;  // D-Bus connection
@@ -68,6 +74,7 @@ private:
     std::thread m_thread;         // Monitoring thread
     std::atomic<bool> m_running;  // Thread running flag
     PowerStateCallback m_callback; // Power state callback
+    int m_inhibitFd;              // File descriptor for inhibit lock
     
     // Main monitoring loop
     void monitorLoop();

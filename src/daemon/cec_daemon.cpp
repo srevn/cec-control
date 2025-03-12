@@ -216,17 +216,29 @@ void CECDaemon::onSuspend() {
                 std::chrono::steady_clock::now() - startTime).count();
             LOG_INFO("CEC shutdown took ", shutdownDuration, "ms");
             
-            // Notify system that we're ready for sleep
+            // Now that preparation is complete, release the inhibitor lock
+            // to allow the system to proceed with sleep
             if (m_dbusMonitor) {
-                m_dbusMonitor->sendReadyForSleep();
+                LOG_INFO("CEC sleep preparation complete, allowing system to sleep");
+                m_dbusMonitor->releaseInhibitLock();
             }
         }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during suspend: ", e.what());
+        
+        // Make sure we release the lock even in case of error
+        if (m_dbusMonitor) {
+            m_dbusMonitor->releaseInhibitLock();
+        }
     }
     catch (...) {
         LOG_ERROR("Unknown exception during suspend");
+        
+        // Make sure we release the lock even in case of error
+        if (m_dbusMonitor) {
+            m_dbusMonitor->releaseInhibitLock();
+        }
     }
 }
 
