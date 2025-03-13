@@ -20,17 +20,17 @@ public:
      */
     struct Options {
         std::string deviceName;
-        bool activateSource;
-        bool powerOffOnStandby;
         bool autoPowerOn;
         bool autoWakeAVR;
+        bool activateSource;
+        bool powerOffOnStandby;
 
         Options() : 
-            deviceName("CEC Controller"), 
-            activateSource(false),
-            powerOffOnStandby(false),
+            deviceName("CEC Controller"),
             autoPowerOn(true),
-            autoWakeAVR(true) {}
+            autoWakeAVR(true),
+            activateSource(true),
+            powerOffOnStandby(false) {}
     };
 
     /**
