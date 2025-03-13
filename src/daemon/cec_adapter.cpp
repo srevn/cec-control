@@ -12,7 +12,9 @@ CECAdapter::CECAdapter(Options options)
     m_config.Clear();
     snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
     m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
-    m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_RECORDING_DEVICE);
+    m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
+    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
+    m_config.powerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
     
     // Ensure callbacks structure is allocated properly
     if (!m_config.callbacks) {

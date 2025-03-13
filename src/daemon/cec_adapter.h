@@ -21,8 +21,12 @@ public:
     struct Options {
         std::string deviceName;
         bool activateSource;
-        
-        Options() : deviceName("CEC Controller"), activateSource(false) {}
+        bool powerOffOnStandby;
+
+        Options() 
+            : deviceName("CEC Controller"), 
+              activateSource(true), 
+              powerOffOnStandby(false)
     };
 
     /**
