@@ -46,9 +46,6 @@ private:
     std::mutex m_clientsMutex;
     std::unordered_set<int> m_activeClients;
     
-    // Command coordination
-    std::mutex m_commandMutex;
-    
     // Main server loop
     void serverLoop();
     

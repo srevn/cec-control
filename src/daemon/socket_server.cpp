@@ -415,11 +415,7 @@ void SocketServer::handleClient(int clientFd) {
                                 // Process command if handler is set
                                 Message response;
                                 if (m_cmdHandler) {
-                                    // Simple synchronization for all commands to ensure ordered processing
-                                    {
-                                        std::lock_guard<std::mutex> lock(m_commandMutex);
-                                        response = m_cmdHandler(cmd);
-                                    }
+                                    response = m_cmdHandler(cmd);
                                 } else {
                                     response = Message(MessageType::RESP_ERROR);
                                 }
