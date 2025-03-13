@@ -13,8 +13,14 @@ CECAdapter::CECAdapter(Options options)
     snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
     m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
     m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
+    
+    // Set up auto power on and wake AVR
+    m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
+    m_config.bAutoPowerOn = m_options.autoPowerOn ? 1 : 0;
+    
+    // Set up source activation and power off on standby
     m_config.bActivateSource = m_options.activateSource ? 1 : 0;
-    m_config.powerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
+    m_config.bPowerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
     
     // Ensure callbacks structure is allocated properly
     if (!m_config.callbacks) {

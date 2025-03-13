@@ -22,11 +22,15 @@ public:
         std::string deviceName;
         bool activateSource;
         bool powerOffOnStandby;
+        bool autoPowerOn;
+        bool autoWakeAVR;
 
-        Options() 
-            : deviceName("CEC Controller"), 
-              activateSource(true), 
-              powerOffOnStandby(false)
+        Options() : 
+            deviceName("CEC Controller"), 
+            activateSource(false),
+            powerOffOnStandby(false),
+            autoPowerOn(true),
+            autoWakeAVR(true) {}
     };
 
     /**
