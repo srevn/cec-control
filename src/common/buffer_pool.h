@@ -41,6 +41,21 @@ public:
      */
     size_t bufferSize() const { return m_bufferSize; }
 
+    /**
+     * Get the total number of buffer acquisitions
+     */
+    size_t totalAcquired() const;
+    
+    /**
+     * Get the total number of buffer releases
+     */
+    size_t totalReleased() const;
+    
+    /**
+     * Get the peak usage (max buffers in use simultaneously)
+     */
+    size_t peakUsage() const;
+
 private:
     size_t m_bufferSize;
     std::queue<std::shared_ptr<std::vector<uint8_t>>> m_availableBuffers;

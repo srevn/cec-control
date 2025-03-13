@@ -1,8 +1,9 @@
 #pragma once
 
-#include "buffer_pool.h"
 #include <memory>
 #include <unordered_map>
+
+#include "buffer_pool.h"
 
 namespace cec_control {
 

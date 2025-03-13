@@ -12,6 +12,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "../common/buffer_pool.h"
+
 namespace cec_control {
 
 /**
@@ -78,6 +80,22 @@ private:
     
     // Worker thread function
     void workerThread();
+    
+    // Add task wrapper pool to reduce allocation overhead
+    struct TaskWrapper {
+        std::function<void()> task;
+        void reset() { task = nullptr; }
+    };
+    
+    // Pool of task wrapper objects to reduce allocations
+    std::queue<std::shared_ptr<TaskWrapper>> m_taskWrapperPool;
+    size_t m_maxPooledTaskWrappers = 100; // Limit pool size
+    
+    // Get a task wrapper from the pool or create a new one
+    std::shared_ptr<TaskWrapper> getTaskWrapper();
+    
+    // Return a task wrapper to the pool
+    void recycleTaskWrapper(std::shared_ptr<TaskWrapper> wrapper);
 };
 
 // Template method implementation
@@ -101,11 +119,17 @@ auto ThreadPool::submit(F&& f, Args&&... args) -> std::future<typename std::invo
             throw std::runtime_error("Cannot enqueue task on stopped ThreadPool");
         }
         
+        // Get a task wrapper from pool
+        auto wrapper = getTaskWrapper();
+        wrapper->task = [task](){ (*task)(); };
+        
         // Add task to queue
-        m_tasks.emplace([task](){ (*task)(); });
+        m_tasks.emplace([wrapper, this](){
+            wrapper->task();
+            recycleTaskWrapper(wrapper); // Return to pool after execution
+        });
     }
     
-    // Notify a waiting thread
     m_condition.notify_one();
     
     return result;

@@ -114,4 +114,27 @@ void ThreadPool::workerThread() {
     LOG_DEBUG("Worker thread exiting");
 }
 
+std::shared_ptr<ThreadPool::TaskWrapper> ThreadPool::getTaskWrapper() {
+    // Must be called with m_queueMutex locked
+    if (!m_taskWrapperPool.empty()) {
+        auto wrapper = m_taskWrapperPool.front();
+        m_taskWrapperPool.pop();
+        return wrapper;
+    }
+    
+    return std::make_shared<TaskWrapper>();
+}
+
+void ThreadPool::recycleTaskWrapper(std::shared_ptr<TaskWrapper> wrapper) {
+    if (!wrapper) return;
+    
+    wrapper->reset();
+    
+    std::unique_lock<std::mutex> lock(m_queueMutex);
+    if (m_taskWrapperPool.size() < m_maxPooledTaskWrappers) {
+        m_taskWrapperPool.push(std::move(wrapper));
+    }
+    // If pool is full, let the wrapper be destroyed
+}
+
 } // namespace cec_control
