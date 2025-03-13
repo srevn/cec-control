@@ -51,6 +51,14 @@ public:
     bool setMute(uint8_t logicalAddress, bool mute);
     
     /**
+     * Switch to a source
+     * @param logicalAddress The logical address of the device
+     * @param source The source to switch to
+     * @return true if successful, false otherwise
+     */
+    bool setSource(uint8_t logicalAddress, uint8_t source);
+    
+    /**
      * Scan for active devices
      * @return true if successful, false otherwise
      */
@@ -63,6 +71,7 @@ private:
     // Mutexes for different operations
     mutable std::mutex m_powerMutex;
     mutable std::mutex m_volumeMutex;
+    mutable std::mutex m_sourceMutex;
     mutable std::mutex m_deviceScanMutex;
 };
 

@@ -72,6 +72,23 @@ bool DeviceOperations::setMute(uint8_t logicalAddress, bool mute) {
     });
 }
 
+bool DeviceOperations::setSource(uint8_t logicalAddress, uint8_t source) {
+    if (!m_adapter->isConnected()) return false;
+    
+    LOG_INFO("Changing source to ", static_cast<int>(source), " on device ", static_cast<int>(logicalAddress));
+    
+    std::lock_guard<std::mutex> lock(m_sourceMutex);
+    
+    return m_throttler->executeWithThrottle([this, source]() {
+        if (source < 16) {
+            CEC::cec_logical_address sourceAddr = static_cast<CEC::cec_logical_address>(source);
+            uint16_t phyAddr = m_adapter->getDevicePhysicalAddress(sourceAddr);
+            return m_adapter->setStreamPath(phyAddr);
+        }
+        return false;
+    });
+}
+
 bool DeviceOperations::scanDevices() {
     if (!m_adapter->isConnected()) return false;
     

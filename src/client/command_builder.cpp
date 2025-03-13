@@ -49,6 +49,33 @@ std::optional<Message> CommandBuilder::buildPowerCommand(const std::string& acti
     return cmd;
 }
 
+std::optional<Message> CommandBuilder::buildSourceCommand(const std::string& deviceId, const std::string& source) {
+    uint8_t id = 0;
+    if (!parseDeviceId(deviceId, id)) {
+        return std::nullopt;
+    }
+    
+    uint8_t sourceId = 0;
+    try {
+        int val = std::stoi(source);
+        if (val < 0 || val > 255) {
+            std::cerr << "Error: Source ID must be between 0 and 255" << std::endl;
+            return std::nullopt;
+        }
+        sourceId = static_cast<uint8_t>(val);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: Invalid source ID: " << source << std::endl;
+        return std::nullopt;
+    }
+    
+    Message cmd;
+    cmd.type = MessageType::CMD_CHANGE_SOURCE;
+    cmd.deviceId = id;
+    cmd.data.push_back(sourceId);
+    
+    return cmd;
+}
+
 Message CommandBuilder::buildRestartCommand() {
     Message cmd;
     cmd.type = MessageType::CMD_RESTART_ADAPTER;

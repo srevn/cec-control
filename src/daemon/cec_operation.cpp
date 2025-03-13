@@ -79,6 +79,7 @@ std::string CECOperation::getDescription() const {
         case MessageType::CMD_VOLUME_MUTE: ss << "Volume Mute"; break;
         case MessageType::CMD_POWER_ON: ss << "Power On"; break;
         case MessageType::CMD_POWER_OFF: ss << "Power Off"; break;
+        case MessageType::CMD_CHANGE_SOURCE: ss << "Change Source"; break;
         case MessageType::CMD_RESTART_ADAPTER: ss << "Restart Adapter"; break;
         default: ss << "Unknown (" << static_cast<int>(m_command.type) << ")";
     }

@@ -13,6 +13,7 @@ enum class MessageType : uint8_t {
     CMD_VOLUME_MUTE,
     CMD_POWER_ON,
     CMD_POWER_OFF,
+    CMD_CHANGE_SOURCE,
     CMD_RESTART_ADAPTER,
     CMD_SUSPEND,           // Suspend CEC operations (system sleep)
     CMD_RESUME,            // Resume CEC operations (system wake)

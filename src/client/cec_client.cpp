@@ -60,6 +60,13 @@ bool CECClient::parseArgs(int argc, char* argv[]) {
         }
         m_command = CommandBuilder::buildPowerCommand(argv[2], argv[3]);
     }
+    else if (command == "source") {
+        if (argc < 4) {
+            std::cerr << "Error: source command requires device ID and source" << std::endl;
+            return false;
+        }
+        m_command = CommandBuilder::buildSourceCommand(argv[2], argv[3]);
+    }
     else if (command == "restart") {
         m_command = CommandBuilder::buildRestartCommand();
     }
@@ -138,6 +145,7 @@ void CECClient::printUsage() {
               << "Commands:\n"
               << "  volume (up|down|mute) DEVICE_ID   Control volume\n"
               << "  power (on|off) DEVICE_ID          Power device on or off\n"
+              << "  source DEVICE_ID SOURCE_ID        Change input source\n"
               << "  restart                           Restart CEC adapter\n"
               << "  suspend                           Suspend CEC operations (system sleep)\n"
               << "  resume                            Resume CEC operations (system wake)\n"
@@ -149,6 +157,7 @@ void CECClient::printUsage() {
               << "Examples:\n"
               << "  cec-client volume up 5            Increase volume on device 5\n"
               << "  cec-client power on 0             Turn on device 0\n"
+              << "  cec-client source 0 4             Switch device 0 to source 4\n"
               << "  cec-client suspend                Prepare system for sleep\n"
               << std::endl;
 }

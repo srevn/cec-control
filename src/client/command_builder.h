@@ -29,6 +29,14 @@ public:
     static std::optional<Message> buildPowerCommand(const std::string& action, const std::string& deviceId);
     
     /**
+     * Build a source change command
+     * @param deviceId The target device ID (as string, will be parsed)
+     * @param source The source to switch to (as string, will be parsed)
+     * @return The command message, or empty optional on error
+     */
+    static std::optional<Message> buildSourceCommand(const std::string& deviceId, const std::string& source);
+    
+    /**
      * Build a restart adapter command
      * @return The command message
      */
