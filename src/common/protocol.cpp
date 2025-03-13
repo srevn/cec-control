@@ -31,8 +31,9 @@ std::vector<uint8_t> Protocol::packMessage(const Message& msg) {
     (*buffer)[3] = dataSize & 0xff;
     (*buffer)[4] = (dataSize >> 8) & 0xff;
     
-    // Calculate checksum
-    uint16_t checksum = calculateChecksum(buffer->data() + 3, buffer->size() - 3);
+    // Create a vector from the payload only for the checksum calculation
+    std::vector<uint8_t> payloadForChecksum(buffer->data() + 5, buffer->data() + buffer->size());
+    uint16_t checksum = calculateChecksum(payloadForChecksum);
     buffer->push_back(checksum & 0xff);
     buffer->push_back((checksum >> 8) & 0xff);
     
