@@ -1,5 +1,6 @@
 #include "socket_server.h"
 #include "../common/logger.h"
+#include "../common/buffer_manager.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -340,11 +341,16 @@ void SocketServer::handleClient(int clientFd) {
         pfd.fd = clientFd;
         pfd.events = POLLIN;
         
-        std::vector<uint8_t> buffer(4096);  // Larger buffer for efficiency
-        std::vector<uint8_t> receivedData;
-        receivedData.reserve(8192);  // Reserve space to reduce reallocations
-        bool connectionActive = true;
+        // Use buffer pool for improved memory management
+        auto& bufferPool = BufferPoolManager::getInstance().getPool(4096);
+        auto recvBuffer = bufferPool.acquireBuffer();
         
+        // Use a managed buffer for received data too
+        auto& dataBufferPool = BufferPoolManager::getInstance().getPool(8192);
+        auto receivedData = dataBufferPool.acquireBuffer();
+        receivedData->reserve(8192);  // Reserve space to reduce reallocations
+        
+        bool connectionActive = true;
         int consecutiveErrors = 0;
         const int MAX_CONSECUTIVE_ERRORS = 3;
         
@@ -389,17 +395,22 @@ void SocketServer::handleClient(int clientFd) {
                 
                 // Data is available to read
                 if (pfd.revents & POLLIN) {
-                    ssize_t bytesRead = recv(clientFd, buffer.data(), buffer.size(), 0);
+                    // Make sure the buffer is of appropriate size
+                    if (recvBuffer->size() < 4096) {
+                        recvBuffer->resize(4096);
+                    }
+                    
+                    ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
                     
                     if (bytesRead > 0) {
                         // Append data to received buffer
-                        receivedData.insert(receivedData.end(), buffer.begin(), buffer.begin() + bytesRead);
+                        receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
                         
                         // Process complete messages
-                        while (!receivedData.empty() && Protocol::validateMessage(receivedData)) {
+                        while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
                             try {
                                 // Extract and process message
-                                Message cmd = Protocol::unpackMessage(receivedData);
+                                Message cmd = Protocol::unpackMessage(*receivedData);
                                 
                                 // Process command if handler is set
                                 Message response;
@@ -452,17 +463,18 @@ void SocketServer::handleClient(int clientFd) {
                                 }
                                 
                                 // Remove processed message from buffer
-                                if (receivedData.size() >= 5) { // Ensure we have enough bytes for the header
-                                    uint16_t size = static_cast<uint16_t>(receivedData[3]) | (static_cast<uint16_t>(receivedData[4]) << 8);
+                                if (receivedData->size() >= 5) { // Ensure we have enough bytes for the header
+                                    uint16_t size = static_cast<uint16_t>((*receivedData)[3]) | 
+                                                   (static_cast<uint16_t>((*receivedData)[4]) << 8);
                                     size_t msgSize = size + 7;  // 3 magic bytes + 2 size bytes + 2 checksum bytes
                                     
-                                    if (receivedData.size() < msgSize) {
+                                    if (receivedData->size() < msgSize) {
                                         // Something went wrong, clear buffer
-                                        receivedData.clear();
+                                        receivedData->clear();
                                         break;
                                     }
                                     
-                                    receivedData.erase(receivedData.begin(), receivedData.begin() + msgSize);
+                                    receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
                                 } else {
                                     // Not enough data for a complete header
                                     break;
@@ -470,7 +482,7 @@ void SocketServer::handleClient(int clientFd) {
                             }
                             catch (const std::exception& e) {
                                 LOG_ERROR("Exception processing message: ", e.what());
-                                receivedData.clear();
+                                receivedData->clear();
                                 break;
                             }
                         }
@@ -501,6 +513,10 @@ void SocketServer::handleClient(int clientFd) {
                 }
             }
         }
+        
+        // Return buffers to pools
+        bufferPool.releaseBuffer(std::move(recvBuffer));
+        dataBufferPool.releaseBuffer(std::move(receivedData));
     }
     catch (const std::exception& e) {
         LOG_ERROR("Unhandled exception in client handler: ", e.what());

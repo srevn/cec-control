@@ -32,6 +32,8 @@ include_directories(${DBUS_INCLUDE_DIRS})
 set(COMMON_SOURCES
     src/common/protocol.cpp
     src/common/logger.cpp
+    src/common/buffer_pool.cpp
+    src/common/buffer_manager.cpp
 )
 
 set(DAEMON_SOURCES

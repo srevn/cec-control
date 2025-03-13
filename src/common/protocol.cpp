@@ -1,4 +1,6 @@
 #include "protocol.h"
+#include "logger.h"
+#include "buffer_manager.h"
 
 #include <cstring>
 #include <algorithm>
@@ -6,34 +8,41 @@
 namespace cec_control {
 
 std::vector<uint8_t> Protocol::packMessage(const Message& msg) {
-    // Serialize the message
-    std::vector<uint8_t> serialized = msg.serialize();
+    // Use a buffer from the pool for improved efficiency
+    auto& pool = BufferPoolManager::getInstance().getPool(256);  // Typical message size
+    auto buffer = pool.acquireBuffer();
+    buffer->clear();
     
-    // Create the packet with header and checksum
-    std::vector<uint8_t> packet;
+    // Add magic bytes
+    buffer->push_back('C');
+    buffer->push_back('E');
+    buffer->push_back('C');
     
-    // Reserve space to avoid reallocations
-    packet.reserve(serialized.size() + 6);
-    
-    // Add magic bytes for protocol identification
-    packet.push_back('C');
-    packet.push_back('E');
-    packet.push_back('C');
-    
-    // Add payload size (2 bytes, little endian)
-    uint16_t size = static_cast<uint16_t>(serialized.size());
-    packet.push_back(size & 0xFF);
-    packet.push_back((size >> 8) & 0xFF);
+    // Placeholder for size (will be filled in later)
+    buffer->push_back(0);
+    buffer->push_back(0);
     
     // Add the serialized message
-    packet.insert(packet.end(), serialized.begin(), serialized.end());
+    std::vector<uint8_t> serialized = msg.serialize();
+    buffer->insert(buffer->end(), serialized.begin(), serialized.end());
     
-    // Calculate and add checksum
-    uint16_t checksum = calculateChecksum(serialized);
-    packet.push_back(checksum & 0xFF);
-    packet.push_back((checksum >> 8) & 0xFF);
+    // Calculate size and update size field
+    uint16_t dataSize = buffer->size() - 5;  // Exclude magic bytes and size field
+    (*buffer)[3] = dataSize & 0xff;
+    (*buffer)[4] = (dataSize >> 8) & 0xff;
     
-    return packet;
+    // Calculate checksum
+    uint16_t checksum = calculateChecksum(buffer->data() + 3, buffer->size() - 3);
+    buffer->push_back(checksum & 0xff);
+    buffer->push_back((checksum >> 8) & 0xff);
+    
+    // Create a return buffer with just the right size
+    std::vector<uint8_t> result(*buffer);
+    
+    // Return the buffer to the pool
+    pool.releaseBuffer(std::move(buffer));
+    
+    return result;
 }
 
 Message Protocol::unpackMessage(const std::vector<uint8_t>& data) {
@@ -91,15 +100,22 @@ bool Protocol::validateMessage(const std::vector<uint8_t>& data) {
         return false;
     }
     
-    // Extract the payload
-    std::vector<uint8_t> payload(data.begin() + 5, data.begin() + 5 + size);
+    // Extract the payload - use buffer pool for the temporary payload
+    auto& pool = BufferPoolManager::getInstance().getPool(size);
+    auto payload = pool.acquireBuffer();
+    payload->assign(data.begin() + 5, data.begin() + 5 + size);
     
     // Verify checksum
-    uint16_t expected_checksum = calculateChecksum(payload);
+    uint16_t expected_checksum = calculateChecksum(*payload);
     uint16_t received_checksum = static_cast<uint16_t>(data[5 + size]) | 
                                 (static_cast<uint16_t>(data[6 + size]) << 8);
     
-    return expected_checksum == received_checksum;
+    bool result = expected_checksum == received_checksum;
+    
+    // Return buffer to pool
+    pool.releaseBuffer(std::move(payload));
+    
+    return result;
 }
 
 // Implementation of Message serialization/deserialization
