@@ -23,6 +23,8 @@ CECAdapter::CECAdapter(Options options)
     
     // Initialize libcec configuration
     m_config.Clear();
+    
+    // Set up device name
     snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
     m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
     m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
@@ -34,6 +36,10 @@ CECAdapter::CECAdapter(Options options)
     // Set up source activation and power off on standby
     m_config.bActivateSource = m_options.activateSource ? 1 : 0;
     m_config.bPowerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
+    
+    // Set up wake devices and power off devices
+    m_config.wakeDevices = m_options.wakeDevices;
+    m_config.powerOffDevices = m_options.powerOffDevices;
     
     // Ensure callbacks structure is allocated properly
     if (!m_config.callbacks) {

@@ -44,20 +44,26 @@ Controls how the CEC adapter behaves when interacting with devices:
 # Name displayed by the CEC device on the network
 DeviceName = CEC Control
 
-# Whether to automatically power on devices
+# Whether to automatically wake the TV when usb is powered
 AutoPowerOn = false
 
-# Whether to automatically wake the AVR
+# Whether to wake the AVR automatically when the source is activated
 AutoWakeAVR = false
 
-# Whether to activate as a source
+# Whether to activate as source on the bus when starting the application
 ActivateSource = false
 
-# Whether to use system audio mode
+# Whether to use audiosystem mode
 SystemAudioMode = false
 
-# Whether to power off connected devices on system standby
+# Whether to put this PC in standby mode when the TV is switched off
 PowerOffOnStandby = false
+
+# Specific device addresses to wake up (comma-separated list of addresses, 0-15)
+WakeDevices = 
+
+# Specific device addresses to power off (comma-separated list of addresses, 0-15)
+PowerOffDevices = 
 ```
 
 ### Daemon Section
@@ -121,6 +127,8 @@ AutoWakeAVR = true
 ActivateSource = true
 SystemAudioMode = true
 PowerOffOnStandby = false
+WakeDevices = 1,5
+PowerOffDevices = 1,5,3
 
 [Daemon]
 ScanDevicesAtStartup = true

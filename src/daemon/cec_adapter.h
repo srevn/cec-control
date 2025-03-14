@@ -25,14 +25,20 @@ public:
         bool activateSource;
         bool powerOffOnStandby;
         bool systemAudioMode;
+        CEC::cec_logical_addresses wakeDevices;
+        CEC::cec_logical_addresses powerOffDevices;
 
         Options() : 
-            deviceName("CEC Controller"),
-            autoPowerOn(true),
-            autoWakeAVR(true),
+            deviceName("CEC Control"),
+            autoPowerOn(false),
+            autoWakeAVR(false),
             activateSource(false),
             powerOffOnStandby(false),
-            systemAudioMode(true) {}
+            systemAudioMode(false) {
+            // Initialize logical addresses to empty
+            wakeDevices.Clear();
+            powerOffDevices.Clear();
+        }
     };
 
     /**
