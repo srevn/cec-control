@@ -107,6 +107,15 @@ public:
     bool toggleMute();
     
     /**
+     * Send a keypress to a device
+     * @param address logical address of the device
+     * @param key the key code to send
+     * @param release whether this is a key release (true) or press (false)
+     * @return true if successful, false otherwise
+     */
+    bool sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release);
+    
+    /**
      * Get the physical address of a logical device
      * @param address logical address of the device
      * @return physical address of the device
