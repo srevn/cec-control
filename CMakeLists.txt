@@ -34,6 +34,7 @@ set(COMMON_SOURCES
     src/common/logger.cpp
     src/common/buffer_pool.cpp
     src/common/buffer_manager.cpp
+    src/common/config_manager.cpp
 )
 
 set(DAEMON_SOURCES
@@ -83,6 +84,22 @@ install(
     DESTINATION /lib/systemd/system/
     PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
     OPTIONAL
+)
+
+# Install configuration file
+install(
+    CODE "
+    if(EXISTS \"$ENV{DESTDIR}/etc/cec-control.conf\")
+        message(STATUS \"Config file already exists, installing as .sample\")
+        file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\" 
+             DESTINATION \"/etc\" 
+             RENAME \"cec-control.conf.sample\")
+    else()
+        message(STATUS \"Installing new config file\")
+        file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\" 
+             DESTINATION \"/etc\")
+    endif()
+    "
 )
 
 # Create uninstall target

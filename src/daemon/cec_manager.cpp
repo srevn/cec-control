@@ -1,5 +1,6 @@
 #include "cec_manager.h"
 #include "../common/logger.h"
+#include "../common/config_manager.h"
 
 #include <csignal>
 #include <thread>
@@ -14,12 +15,21 @@ CECManager::CECManager(Options options)
     : m_options(options) {
     // Create the components
     CECAdapter::Options adapterOptions;
-    adapterOptions.deviceName = "CEC Controller";
     
+    // Load adapter options from configuration
+    auto& config = ConfigManager::getInstance();
+    adapterOptions.deviceName = config.getString("Adapter", "DeviceName", "CEC Controller");
+    adapterOptions.autoPowerOn = config.getBool("Adapter", "AutoPowerOn", false);
+    adapterOptions.autoWakeAVR = config.getBool("Adapter", "AutoWakeAVR", false);
+    adapterOptions.activateSource = config.getBool("Adapter", "ActivateSource", false);
+    adapterOptions.systemAudioMode = config.getBool("Adapter", "SystemAudioMode", false);
+    adapterOptions.powerOffOnStandby = config.getBool("Adapter", "PowerOffOnStandby", false);
+    
+    // Create command throttler with proper options
     CommandThrottler::Options throttlerOptions;
-    throttlerOptions.baseIntervalMs = 200;
-    throttlerOptions.maxIntervalMs = 1000;
-    throttlerOptions.maxRetryAttempts = 3;
+    throttlerOptions.baseIntervalMs = config.getInt("Throttler", "BaseIntervalMs", 200);
+    throttlerOptions.maxIntervalMs = config.getInt("Throttler", "MaxIntervalMs", 1000);
+    throttlerOptions.maxRetryAttempts = config.getInt("Throttler", "MaxRetryAttempts", 3);
     
     m_adapter = std::make_shared<CECAdapter>(adapterOptions);
     m_throttler = std::make_shared<CommandThrottler>(throttlerOptions);

@@ -1,5 +1,6 @@
 #include "cec_daemon.h"
 #include "../common/logger.h"
+#include "../common/config_manager.h"
 
 #include <iostream>
 #include <cstdlib>
@@ -61,6 +62,7 @@ int main(int argc, char* argv[]) {
     bool runAsDaemon = true;
     bool scanDevicesAtStartup = false;
     std::string logFile = "/var/log/cec-daemon.log";
+    std::string configFile = "/etc/cec-control.conf";
     
     // Process command line options
     for (int i = 1; i < argc; ++i) {
@@ -68,22 +70,30 @@ int main(int argc, char* argv[]) {
         if (arg == "--verbose" || arg == "-v") {
             runAsDaemon = false;
         }
-        else if (arg == "--scan-devices" || arg == "-s") {  // Renamed flag
-            scanDevicesAtStartup = true;  // Now this enables scanning
+        else if (arg == "--scan-devices" || arg == "-s") {
+            scanDevicesAtStartup = true;
         }
         else if ((arg == "--log" || arg == "-l") && i + 1 < argc) {
             logFile = argv[++i];
         }
+        else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
+            configFile = argv[++i];
+        }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [OPTIONS]\n"
                       << "Options:\n"
-                      << "  -v, --verbose      Run in foreground (don't daemonize)\n"
-                      << "  -l, --log FILE     Log to FILE (default: /var/log/cec-daemon.log)\n"
-                      << "  -s, --scan-devices Scan for CEC devices at startup\n"
-                      << "  -h, --help         Show this help message\n";
+                      << "  -v, --verbose           Run in foreground (don't daemonize)\n"
+                      << "  -l, --log FILE          Log to FILE (default: /var/log/cec-daemon.log)\n"
+                      << "  -s, --scan-devices      Scan for CEC devices at startup\n"
+                      << "  -c, --config FILE       Set configuration file path\n"
+                      << "  -h, --help              Show this help message\n";
             return EXIT_SUCCESS;
         }
     }
+    
+    // Initialize the configuration manager
+    cec_control::ConfigManager configManager(configFile);
+    configManager.load();
     
     // Configure logging
     cec_control::Logger::getInstance().setLogFile(logFile);

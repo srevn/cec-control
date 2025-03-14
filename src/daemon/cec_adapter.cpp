@@ -1,4 +1,6 @@
 #include "cec_adapter.h"
+#include "../common/logger.h"
+#include "../common/config_manager.h"
 
 #include <thread>
 #include <future>
@@ -7,6 +9,17 @@ namespace cec_control {
 
 CECAdapter::CECAdapter(Options options) 
     : m_options(options), m_connected(false) {
+    
+    // Load configuration values
+    auto& config = ConfigManager::getInstance();
+    
+    // Update options based on configuration
+    m_options.deviceName = config.getString("Adapter", "DeviceName", m_options.deviceName);
+    m_options.autoPowerOn = config.getBool("Adapter", "AutoPowerOn", m_options.autoPowerOn);
+    m_options.autoWakeAVR = config.getBool("Adapter", "AutoWakeAVR", m_options.autoWakeAVR);
+    m_options.activateSource = config.getBool("Adapter", "ActivateSource", m_options.activateSource);
+    m_options.systemAudioMode = config.getBool("Adapter", "SystemAudioMode", m_options.systemAudioMode);
+    m_options.powerOffOnStandby = config.getBool("Adapter", "PowerOffOnStandby", m_options.powerOffOnStandby);
     
     // Initialize libcec configuration
     m_config.Clear();
