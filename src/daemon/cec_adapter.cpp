@@ -123,6 +123,15 @@ bool CECAdapter::initialize() {
         }
         
         m_connected = true;
+        
+        // Configure system audio mode
+        if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
+            LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", 
+                        " system audio mode");
+        } else {
+            LOG_INFO("System audio mode ", m_options.systemAudioMode ? "enabled" : "disabled");
+        }
+        
         LOG_INFO("CEC adapter initialized successfully");
         return true;
     }

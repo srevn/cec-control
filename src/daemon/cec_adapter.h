@@ -24,13 +24,15 @@ public:
         bool autoWakeAVR;
         bool activateSource;
         bool powerOffOnStandby;
+        bool systemAudioMode;
 
         Options() : 
             deviceName("CEC Controller"),
             autoPowerOn(true),
             autoWakeAVR(true),
             activateSource(false),
-            powerOffOnStandby(false) {}
+            powerOffOnStandby(false),
+            systemAudioMode(true) {}
     };
 
     /**
