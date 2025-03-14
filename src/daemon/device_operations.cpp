@@ -75,17 +75,47 @@ bool DeviceOperations::setMute(uint8_t logicalAddress, bool mute) {
 bool DeviceOperations::setSource(uint8_t logicalAddress, uint8_t source) {
     if (!m_adapter->isConnected()) return false;
     
-    LOG_INFO("Changing source to ", static_cast<int>(source), " on device ", static_cast<int>(logicalAddress));
+    LOG_INFO("Selecting input source ", static_cast<int>(source), " on device ", static_cast<int>(logicalAddress));
     
     std::lock_guard<std::mutex> lock(m_sourceMutex);
     
-    return m_throttler->executeWithThrottle([this, source]() {
-        if (source < 16) {
-            CEC::cec_logical_address sourceAddr = static_cast<CEC::cec_logical_address>(source);
-            uint16_t phyAddr = m_adapter->getDevicePhysicalAddress(sourceAddr);
-            return m_adapter->setStreamPath(phyAddr);
+    return m_throttler->executeWithThrottle([this, logicalAddress, source]() {
+        // Convert to CEC types
+        CEC::cec_logical_address cecAddress = static_cast<CEC::cec_logical_address>(logicalAddress);
+        
+        // Select the appropriate input based on source value
+        // Source values map to CEC user control codes for input selection
+        CEC::cec_user_control_code inputCode;
+        
+        // Map source to appropriate CEC input selection code
+        switch (source) {
+            case 0: inputCode = CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION; break;
+            case 1: inputCode = CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION; break;
+            case 2: inputCode = CEC::CEC_USER_CONTROL_CODE_F1_BLUE; break; // Can be mapped to HDMI 1
+            case 3: inputCode = CEC::CEC_USER_CONTROL_CODE_F2_RED; break;  // Can be mapped to HDMI 2
+            case 4: inputCode = CEC::CEC_USER_CONTROL_CODE_F3_GREEN; break; // Can be mapped to HDMI 3
+            case 5: inputCode = CEC::CEC_USER_CONTROL_CODE_F4_YELLOW; break; // Can be mapped to HDMI 4
+            default: 
+                LOG_WARNING("Invalid source value: ", source);
+                return false;
         }
-        return false;
+        
+        // Send the user control code (press)
+        if (!m_adapter->sendKeypress(cecAddress, inputCode, false)) {
+            LOG_ERROR("Failed to send input selection keypress");
+            return false;
+        }
+        
+        // Small delay between press and release
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        // Send the release command
+        if (!m_adapter->sendKeypress(cecAddress, inputCode, true)) {
+            LOG_ERROR("Failed to send input selection key release");
+            return false;
+        }
+        
+        return true;
     });
 }
 
