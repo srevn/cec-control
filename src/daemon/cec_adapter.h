@@ -29,7 +29,7 @@ public:
             deviceName("CEC Controller"),
             autoPowerOn(true),
             autoWakeAVR(true),
-            activateSource(true),
+            activateSource(false),
             powerOffOnStandby(false) {}
     };
 
