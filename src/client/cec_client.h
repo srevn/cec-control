@@ -40,9 +40,10 @@ public:
     int execute();
     
     /**
-     * Print usage information
+     * Check if help was requested
+     * @return true if help was requested
      */
-    static void printUsage();
+    bool isHelpRequested() const { return m_printHelp; }
 
 private:
     std::unique_ptr<SocketClient> m_socketClient;

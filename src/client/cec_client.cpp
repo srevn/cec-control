@@ -102,9 +102,8 @@ bool CECClient::connect() {
 }
 
 int CECClient::execute() {
-    // Check if we should print help
+    // Check if help was requested
     if (m_printHelp) {
-        printUsage();
         return EXIT_SUCCESS;
     }
     
@@ -135,31 +134,6 @@ void CECClient::printResult(const Message& response) {
     } else {
         std::cerr << "Command failed" << std::endl;
     }
-}
-
-void CECClient::printUsage() {
-    std::cout << "CEC Client - Control CEC devices\n"
-              << "\n"
-              << "Usage: cec-client COMMAND [ARGS...] [OPTIONS]\n"
-              << "\n"
-              << "Commands:\n"
-              << "  volume (up|down|mute) DEVICE_ID   Control volume\n"
-              << "  power (on|off) DEVICE_ID          Power device on or off\n"
-              << "  source DEVICE_ID SOURCE_ID        Change input source\n"
-              << "  restart                           Restart CEC adapter\n"
-              << "  suspend                           Suspend CEC operations (system sleep)\n"
-              << "  resume                            Resume CEC operations (system wake)\n"
-              << "  help                              Show this help\n"
-              << "\n"
-              << "Options:\n"
-              << "  --socket-path=PATH                Set path to daemon socket\n"
-              << "\n"
-              << "Examples:\n"
-              << "  cec-client volume up 5            Increase volume on device 5\n"
-              << "  cec-client power on 0             Turn on device 0\n"
-              << "  cec-client source 0 4             Switch device 0 to source 4\n"
-              << "  cec-client suspend                Prepare system for sleep\n"
-              << std::endl;
 }
 
 } // namespace cec_control
