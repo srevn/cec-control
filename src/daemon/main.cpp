@@ -9,7 +9,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-void daemonize() {
+/**
+ * Daemonize the process.
+ * @param verboseMode If true, keep stdout/stderr open for logging
+ */
+void daemonize(bool verboseMode) {
     // Fork and let parent exit
     pid_t pid = fork();
     if (pid < 0) {
@@ -44,31 +48,46 @@ void daemonize() {
     // Change working directory
     chdir("/");
     
-    // Close standard file descriptors
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-    
-    // Redirect standard file descriptors to /dev/null
-    int null = open("/dev/null", O_RDWR);
-    dup2(null, STDIN_FILENO);
-    dup2(null, STDOUT_FILENO);
-    dup2(null, STDERR_FILENO);
-    if (null > 2) {
-        close(null);
+    // In verbose mode, keep stdout/stderr open
+    if (!verboseMode) {
+        // Close standard file descriptors
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        
+        // Redirect standard file descriptors to /dev/null
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        if (null > 2) {
+            close(null);
+        }
+    } else {
+        // Only close stdin in verbose mode
+        close(STDIN_FILENO);
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        if (null > 0) {
+            close(null);
+        }
     }
 }
 
 int main(int argc, char* argv[]) {
+    bool verboseMode = false;
     bool runAsDaemon = true;
     bool scanDevicesAtStartup = false;
     std::string logFile = cec_control::XDGPaths::getDefaultLogPath();
-    std::string configFile;  // Empty means use default
+    std::string configFile;
     
     // Process command line options
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--verbose" || arg == "-v") {
+            verboseMode = true;
+        }
+        else if (arg == "--foreground" || arg == "-f") {
             runAsDaemon = false;
         }
         else if (arg == "--scan-devices" || arg == "-s") {
@@ -83,7 +102,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [OPTIONS]\n"
                       << "Options:\n"
-                      << "  -v, --verbose           Run in foreground (don't daemonize)\n"
+                      << "  -v, --verbose           Enable verbose logging (to console and log file)\n"
+                      << "  -f, --foreground        Run in foreground (don't daemonize)\n"
                       << "  -l, --log FILE          Log to FILE (default: " << cec_control::XDGPaths::getDefaultLogPath() << ")\n"
                       << "  -s, --scan-devices      Scan for CEC devices at startup\n"
                       << "  -c, --config FILE       Set configuration file path\n"
@@ -106,11 +126,26 @@ int main(int argc, char* argv[]) {
     
     // Configure logging
     cec_control::Logger::getInstance().setLogFile(logFile);
-    cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::INFO);
     
-    // Daemonize if requested
+    // Set log level based on verbose mode
+    if (verboseMode) {
+        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::DEBUG);
+    } else {
+        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::INFO);
+    }
+    
+    // Only daemonize if runAsDaemon is true
     if (runAsDaemon) {
-        daemonize();
+        daemonize(verboseMode);
+    } else {
+        // When not running as daemon, ensure stdin is still redirected
+        // to avoid terminal input issues
+        close(STDIN_FILENO);
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        if (null > 0) {
+            close(null);
+        }
     }
     
     // Create daemon with options
