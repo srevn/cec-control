@@ -2,7 +2,7 @@
 
 ## System Service (when installed via systemd)
 
-  - Config File: /etc/cec-control/config.conf
+  - Config File: /usr/local/etc/cec-control/config.conf
   - Log File: /var/log/cec-control/daemon.log
   - Socket Path: /run/cec-control/socket
   - Runtime Dir: /run/cec-control
@@ -19,7 +19,7 @@
   When you install using CMake, the installation process follows these rules:
 
   1. Binary files: Installed to ${CMAKE_INSTALL_PREFIX}/bin/ (default prefix is /usr/local unless changed)
-  2. System config file: Installed to /etc/cec-control/config.conf as a template
+  2. System config file: Installed to /usr/local/etc/cec-control/config.conf as a template
   3. User config file: Created in ~/.config/cec-control/config.conf if the user installing isn't root
   4. Systemd service file: Installed to the systemd unit directory (usually /lib/systemd/system/)
 
