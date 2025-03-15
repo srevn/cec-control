@@ -80,7 +80,7 @@ install(TARGETS cec-client DESTINATION ${CMAKE_INSTALL_BINDIR})
 option(SYSTEM_WIDE_INSTALL "Install for all users (requires root privileges)" OFF)
 
 # Define system-wide and user-specific paths
-set(SYSTEM_CONFIG_DIR "/etc/cec-control")
+set(SYSTEM_CONFIG_DIR "/usr/local/etc/cec-control")
 set(SYSTEM_LOG_DIR "/var/log/cec-control")
 set(SYSTEM_RUNTIME_DIR "/run/cec-control")
 

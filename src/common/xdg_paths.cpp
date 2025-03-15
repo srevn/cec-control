@@ -151,7 +151,7 @@ std::string XDGPaths::getUserRuntimeDir() {
 }
 
 std::string XDGPaths::getSystemConfigDir() {
-    return std::string("/etc/") + APP_NAME;
+    return std::string("/usr/local/etc/") + APP_NAME;
 }
 
 std::string XDGPaths::getUserConfigDir(bool createIfMissing) {
