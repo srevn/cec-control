@@ -4,10 +4,13 @@
 #include "../common/xdg_paths.h"
 
 #include <iostream>
+#include <fstream>
 #include <cstdlib>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <cerrno>
+#include <cstring>
 
 /**
  * Daemonize the process.
@@ -18,27 +21,9 @@ bool daemonize(bool verboseMode) {
     // Check if we're running under systemd
     bool underSystemd = (getenv("NOTIFY_SOCKET") != nullptr);
     
-    // If running under systemd, don't do the traditional double-fork
-    if (underSystemd) {
-        LOG_INFO("Running under systemd, skipping traditional daemon fork");
-        
-        // Set new file permissions
-        umask(0);
-        
-        // Redirect stdin to /dev/null (we don't need it)
-        close(STDIN_FILENO);
-        int null = open("/dev/null", O_RDWR);
-        dup2(null, STDIN_FILENO);
-        if (null > 0) {
-            close(null);
-        }
-        
-        // When under systemd, keep stdout/stderr open regardless of verbose mode
-        // as systemd will capture them as journal logs
-        return true;
-    }
+    // Set new file permissions
+    umask(0);
     
-    // Traditional daemonization method
     // Fork and let parent exit
     pid_t pid = fork();
     if (pid < 0) {
@@ -48,7 +33,8 @@ bool daemonize(bool verboseMode) {
     
     // Parent exits
     if (pid > 0) {
-        // We're the parent process - exit
+        // We're the parent process - exit with successful status
+        // This is needed for both standalone daemon and systemd Type=forking
         return false;
     }
     
@@ -58,17 +44,23 @@ bool daemonize(bool verboseMode) {
         exit(EXIT_FAILURE);
     }
     
-    // With systemd Type=simple, we avoid the second fork
-    // because systemd expects the initial process to remain in the foreground
-    
-    // Set new file permissions
-    umask(0);
+    // With systemd Type=forking, we also need to fork a second time
+    // to fully detach from the controlling terminal
+    pid = fork();
+    if (pid < 0) {
+        std::cerr << "Failed to fork daemon process (2nd fork)" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        // This is needed for proper systemd Type=forking behavior
+        exit(EXIT_SUCCESS);
+    }
     
     // Change working directory
     chdir("/");
     
     // In verbose mode, keep stdout/stderr open
-    if (!verboseMode) {
+    if (!verboseMode && !underSystemd) {
         // Close standard file descriptors
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
@@ -90,6 +82,9 @@ bool daemonize(bool verboseMode) {
         if (null > 0) {
             close(null);
         }
+        
+        // When under systemd, keep stdout/stderr open
+        // as systemd will capture them as journal logs
     }
     
     return true; // We're the daemon process
@@ -175,11 +170,26 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // If running under systemd, we could send a notification that we're ready
-    // This would be used with Type=notify in the service file
+    // If running under systemd, write a PID file
     const char* notifySocket = getenv("NOTIFY_SOCKET");
     if (notifySocket && *notifySocket) {
         LOG_INFO("Running under systemd control");
+        
+        // Create PID file
+        std::string pidFilePath = "/run/cec-control/cec-daemon.pid";
+        std::ofstream pidFile(pidFilePath);
+        if (pidFile.is_open()) {
+            pidFile << getpid();
+            pidFile.close();
+            LOG_INFO("Created PID file at ", pidFilePath);
+            
+            // Set appropriate permissions for the PID file
+            if (chmod(pidFilePath.c_str(), 0644) != 0) {
+                LOG_WARNING("Failed to set PID file permissions: ", strerror(errno));
+            }
+        } else {
+            LOG_ERROR("Failed to create PID file at ", pidFilePath);
+        }
     }
     
     // Create daemon with options

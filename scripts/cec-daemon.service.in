@@ -4,9 +4,10 @@ After=multi-user.target
 Wants=dbus.service
 
 [Service]
-Type=simple
+Type=forking
 User=@INSTALL_USER@
 ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
+PIDFile=/run/cec-control/cec-daemon.pid
 Restart=on-failure
 RestartSec=5
 

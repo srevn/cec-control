@@ -34,6 +34,7 @@ private:
      */
     static std::string getRuntimeDir(bool createIfMissing = true);
     
+public:
     /**
      * Create directories recursively
      * @param path The path to create
@@ -62,7 +63,6 @@ private:
      */
     static std::string getAppRuntimeDir(bool createIfMissing = true);
     
-public:
     /**
      * Get default config file path
      * @return Full path to the default config file

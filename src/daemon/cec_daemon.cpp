@@ -150,6 +150,16 @@ void CECDaemon::stop() {
         }
     }
     
+    // Remove PID file if under systemd
+    if (getenv("NOTIFY_SOCKET") != nullptr) {
+        std::string pidFilePath = "/run/cec-control/cec-daemon.pid";
+        if (unlink(pidFilePath.c_str()) == 0) {
+            LOG_INFO("Removed PID file: ", pidFilePath);
+        } else {
+            LOG_WARNING("Failed to remove PID file: ", strerror(errno));
+        }
+    }
+    
     // Stop D-Bus monitor
     LOG_INFO("Stopping D-Bus monitor");
     if (m_dbusMonitor) {

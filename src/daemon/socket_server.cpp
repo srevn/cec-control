@@ -190,7 +190,6 @@ bool SocketServer::setupSocket() {
     }
     
     // Ensure directory permissions are also set correctly
-    std::string parentDir = m_socketPath.substr(0, m_socketPath.find_last_of('/'));
     if (chmod(parentDir.c_str(), 0755) != 0) {
         LOG_WARNING("Failed to set socket directory permissions: ", strerror(errno));
     }
