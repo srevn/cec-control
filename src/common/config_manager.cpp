@@ -13,12 +13,12 @@ namespace cec_control {
 std::unique_ptr<ConfigManager> ConfigManager::s_instance;
 
 ConfigManager::ConfigManager() 
-    : m_configPath(XDGPaths::getDefaultConfigPath()) {
+    : m_configPath(XDGPaths::getConfigPath()) {
     LOG_INFO("Using default configuration path: ", m_configPath);
 }
 
 ConfigManager::ConfigManager(const std::string& configPath)
-    : m_configPath(configPath.empty() ? XDGPaths::getDefaultConfigPath() : configPath) {
+    : m_configPath(configPath.empty() ? XDGPaths::getConfigPath() : configPath) {
     if (configPath.empty()) {
         LOG_INFO("No configuration path specified, using default: ", m_configPath);
     } else {

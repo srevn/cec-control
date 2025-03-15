@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
     bool verboseMode = false;
     bool runAsDaemon = true;
     bool scanDevicesAtStartup = false;
-    std::string logFile = cec_control::XDGPaths::getDefaultLogPath();
+    std::string logFile = cec_control::XDGPaths::getLogPath();
     std::string configFile;
     
     // Process command line options
@@ -150,10 +150,10 @@ int main(int argc, char* argv[]) {
                       << "Options:\n"
                       << "  -v, --verbose           Enable verbose logging (to console and log file)\n"
                       << "  -f, --foreground        Run in foreground (don't daemonize)\n"
-                      << "  -l, --log FILE          Log to FILE (default: " << cec_control::XDGPaths::getDefaultLogPath() << ")\n"
+                      << "  -l, --log FILE          Log to FILE (default: " << cec_control::XDGPaths::getLogPath() << ")\n"
                       << "  -s, --scan-devices      Scan for CEC devices at startup\n"
                       << "  -c, --config FILE       Set configuration file path\n"
-                      << "                          (default: " << cec_control::XDGPaths::getDefaultConfigPath() << ")\n"
+                      << "                          (default: " << cec_control::XDGPaths::getConfigPath() << ")\n"
                       << "  -h, --help              Show this help message\n";
             return EXIT_SUCCESS;
         }

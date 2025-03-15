@@ -21,7 +21,7 @@ public:
     /**
      * Create socket server with default XDG socket path
      */
-    SocketServer() : SocketServer(XDGPaths::getDefaultSocketPath()) {}
+    SocketServer() : SocketServer(XDGPaths::getSocketPath()) {}
     
     /**
      * Create socket server with specified socket path

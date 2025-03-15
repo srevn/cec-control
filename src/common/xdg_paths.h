@@ -83,13 +83,6 @@ public:
      * @return Fully qualified runtime directory path
      */
     static std::string getRuntimeDir(bool createIfMissing = true);
-    
-    /**
-     * Legacy methods for backward compatibility
-     */
-    static std::string getDefaultConfigPath() { return getConfigPath(); }
-    static std::string getDefaultLogPath() { return getLogPath(); }
-    static std::string getDefaultSocketPath() { return getSocketPath(); }
 };
 
 } // namespace cec_control

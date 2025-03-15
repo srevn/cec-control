@@ -18,7 +18,7 @@ SocketClient::SocketClient(const std::string& socketPath)
       m_connected(false) {
     
     if (socketPath.empty()) {
-        m_socketPath = XDGPaths::getDefaultSocketPath();
+        m_socketPath = XDGPaths::getSocketPath();
     } else {
         m_socketPath = socketPath;
     }

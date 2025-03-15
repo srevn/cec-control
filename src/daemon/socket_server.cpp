@@ -26,7 +26,7 @@ SocketServer::SocketServer(const std::string& socketPath)
       m_cmdHandler(nullptr) {
     
     if (socketPath.empty()) {
-        m_socketPath = XDGPaths::getDefaultSocketPath();
+        m_socketPath = XDGPaths::getSocketPath();
     } else {
         m_socketPath = socketPath;
     }

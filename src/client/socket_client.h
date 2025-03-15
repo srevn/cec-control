@@ -14,7 +14,7 @@ public:
     /**
      * Create socket client with default socket path from XDG paths
      */
-    SocketClient() : SocketClient(XDGPaths::getDefaultSocketPath()) {}
+    SocketClient() : SocketClient(XDGPaths::getSocketPath()) {}
     
     /**
      * Create socket client with specified socket path

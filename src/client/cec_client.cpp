@@ -11,7 +11,7 @@ namespace cec_control {
 
 CECClient::CECClient()
     : m_printHelp(false),
-      m_socketPath(XDGPaths::getDefaultSocketPath()) {
+      m_socketPath(XDGPaths::getSocketPath()) {
 }
 
 CECClient::~CECClient() {
