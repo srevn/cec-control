@@ -77,7 +77,6 @@ std::string XDGPaths::getRuntimeDir(bool createIfMissing) {
     if (xdgRuntimeDir && *xdgRuntimeDir) {
         runtimeDir = xdgRuntimeDir;
     } else {
-        // Fallback to /tmp with a user-specific subdirectory
         runtimeDir = "/tmp/" + std::to_string(getuid());
     }
     
