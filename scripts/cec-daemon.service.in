@@ -10,5 +10,10 @@ ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
 RemainAfterExit=true
 Restart=on-failure
 
+# Set up runtime directory
+Environment=XDG_RUNTIME_DIR=/run
+RuntimeDirectory=cec-control
+RuntimeDirectoryMode=0755
+
 [Install]
 WantedBy=multi-user.target
