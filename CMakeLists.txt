@@ -111,29 +111,27 @@ if(PKG_CONFIG_FOUND)
   endif()
 endif()
 
-# Install configuration files - simplified approach
-install(
-  FILES ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf
-  DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/cec-control
-  RENAME config.conf
-  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-)
-
-# Create user config if needed
+# Install configuration file to user's home directory
 install(
   CODE "
-  # Create user config only if not running as root
-  if(NOT \"\$ENV{USER}\" STREQUAL \"root\")
-    # Create user config directory
-    file(MAKE_DIRECTORY \"$ENV{HOME}/.config/cec-control\")
-    
-    # Copy default config to user location only if it doesn't exist
-    if(NOT EXISTS \"$ENV{HOME}/.config/cec-control/config.conf\")
-      file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
-           DESTINATION \"$ENV{HOME}/.config/cec-control\"
-           RENAME \"config.conf\"
-           FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-    endif()
+  # Create user config directory
+  file(MAKE_DIRECTORY \"$ENV{HOME}/.config/cec-control\")
+  
+  # Check if config file already exists
+  if(EXISTS \"$ENV{HOME}/.config/cec-control/config.conf\")
+    # Install as .sample file since the real config exists
+    file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
+         DESTINATION \"$ENV{HOME}/.config/cec-control\"
+         RENAME \"config.conf.sample\"
+         FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+    message(STATUS \"Existing configuration found. Sample configuration installed at $ENV{HOME}/.config/cec-control/config.conf.sample\")
+  else()
+    # Install as the main config file
+    file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
+         DESTINATION \"$ENV{HOME}/.config/cec-control\"
+         RENAME \"config.conf\"
+         FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+    message(STATUS \"Configuration installed at $ENV{HOME}/.config/cec-control/config.conf\")
   endif()
   "
 )
