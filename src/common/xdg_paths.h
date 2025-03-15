@@ -9,77 +9,87 @@
 namespace cec_control {
 
 /**
- * Utility class for handling XDG Base Directory paths
+ * Runtime environment detection for proper path handling
+ */
+enum class RuntimeEnvironment {
+    NORMAL_USER,           // Running as normal user
+    SYSTEM_SERVICE,        // Running as system service (systemd, etc.)
+    USER_SERVICE           // Running as user service (systemd user unit)
+};
+
+/**
+ * Comprehensive utility class for handling file paths across different runtime environments
  */
 class XDGPaths {
+public:
+    // Application constants - public for consistent use externally
+    static const std::string APP_NAME;
+    static const std::string CONFIG_FILENAME;
+    static const std::string LOG_FILENAME;
+    static const std::string SOCKET_FILENAME;
+    
 private:
-    /**
-     * Get the configuration directory according to XDG spec
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to the XDG config directory
-     */
-    static std::string getConfigHome(bool createIfMissing = true);
     
-    /**
-     * Get the cache directory according to XDG spec
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to the XDG cache directory
-     */
-    static std::string getCacheHome(bool createIfMissing = true);
+    // Runtime environment detection
+    static RuntimeEnvironment detectEnvironment();
     
-    /**
-     * Get the runtime directory according to XDG spec
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to the XDG runtime directory
-     */
-    static std::string getRuntimeDir(bool createIfMissing = true);
+    // Private path helpers
+    static std::string getHomeDir();
+    static std::string getSystemRuntimeDir();
+    static std::string getUserRuntimeDir();
+    static std::string getSystemConfigDir();
+    static std::string getUserConfigDir(bool createIfMissing = true);
+    static std::string getUserCacheDir(bool createIfMissing = true);
     
 public:
     /**
-     * Create directories recursively
+     * Create directories recursively with appropriate permissions
      * @param path The path to create
+     * @param mode The permissions to set (default: 0755)
      * @return True if successful or directory already exists
      */
-    static bool createDirectories(const std::string& path);
+    static bool createDirectories(const std::string& path, mode_t mode = 0755);
     
     /**
-     * Get application-specific config directory
+     * Get the current runtime environment
+     * @return Detected runtime environment (NORMAL_USER, SYSTEM_SERVICE, USER_SERVICE)
+     */
+    static RuntimeEnvironment getEnvironment();
+    
+    /**
+     * Get a consistent socket path that works across all environments
      * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to app config directory
+     * @return Fully qualified socket path
      */
-    static std::string getAppConfigDir(bool createIfMissing = true);
+    static std::string getSocketPath(bool createIfMissing = true);
     
     /**
-     * Get application-specific cache directory
+     * Get appropriate config file path for current environment
      * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to app cache directory
+     * @return Fully qualified config file path
      */
-    static std::string getAppCacheDir(bool createIfMissing = true);
+    static std::string getConfigPath(bool createIfMissing = true);
     
     /**
-     * Get application-specific runtime directory
+     * Get appropriate log file path for current environment
      * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to app runtime directory
+     * @return Fully qualified log file path
      */
-    static std::string getAppRuntimeDir(bool createIfMissing = true);
+    static std::string getLogPath(bool createIfMissing = true);
     
     /**
-     * Get default config file path
-     * @return Full path to the default config file
+     * Get temporary runtime directory appropriate for current environment
+     * @param createIfMissing Create the directory if it doesn't exist
+     * @return Fully qualified runtime directory path
      */
-    static std::string getDefaultConfigPath();
+    static std::string getRuntimeDir(bool createIfMissing = true);
     
     /**
-     * Get default log file path
-     * @return Full path to the default log file
+     * Legacy methods for backward compatibility
      */
-    static std::string getDefaultLogPath();
-    
-    /**
-     * Get default socket file path
-     * @return Full path to the default socket file
-     */
-    static std::string getDefaultSocketPath();
+    static std::string getDefaultConfigPath() { return getConfigPath(); }
+    static std::string getDefaultLogPath() { return getLogPath(); }
+    static std::string getDefaultSocketPath() { return getSocketPath(); }
 };
 
 } // namespace cec_control

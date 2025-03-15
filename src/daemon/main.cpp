@@ -8,60 +8,90 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <fcntl.h>
 #include <cerrno>
 #include <cstring>
 
+// Use the cec_control namespace for convenience with XDGPaths
+using cec_control::RuntimeEnvironment;
+
 /**
- * Daemonize the process.
+ * Daemonize the process based on runtime environment.
+ * 
  * @param verboseMode If true, keep stdout/stderr open for logging
- * @return True if we're running as a daemon, false if we're the parent that should exit
+ * @return True if we're running in the daemon context, false if we should exit (parent)
  */
 bool daemonize(bool verboseMode) {
-    // Check if we're running under systemd
-    bool underSystemd = (getenv("NOTIFY_SOCKET") != nullptr);
+    // Detect the runtime environment
+    RuntimeEnvironment env = cec_control::XDGPaths::getEnvironment();
     
-    // Set new file permissions
-    umask(0);
-    
-    // Fork and let parent exit
-    pid_t pid = fork();
-    if (pid < 0) {
-        std::cerr << "Failed to fork daemon process" << std::endl;
-        exit(EXIT_FAILURE);
+    // Log based on where we're running
+    switch (env) {
+        case RuntimeEnvironment::SYSTEM_SERVICE:
+            LOG_INFO("Running as system service, not daemonizing");
+            break;
+        case RuntimeEnvironment::USER_SERVICE:
+            LOG_INFO("Running as user service, not daemonizing");
+            break;
+        case RuntimeEnvironment::NORMAL_USER:
+            LOG_INFO("Running as normal user application, will daemonize if requested");
+            break;
     }
     
-    // Parent exits
-    if (pid > 0) {
-        // We're the parent process - exit with successful status
-        // This is needed for both standalone daemon and systemd Type=forking
-        return false;
+    // Under systemd or other service managers, do not fork
+    if (env != RuntimeEnvironment::NORMAL_USER) {
+        // Redirect stdin to /dev/null (we don't need it)
+        close(STDIN_FILENO);
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        if (null > 0) {
+            close(null);
+        }
+        
+        // Keep stdout/stderr open for service manager journal
+        return true;
     }
     
-    // Create new session
-    if (setsid() < 0) {
-        std::cerr << "Failed to create new session" << std::endl;
-        exit(EXIT_FAILURE);
-    }
-    
-    // With systemd Type=forking, we also need to fork a second time
-    // to fully detach from the controlling terminal
-    pid = fork();
-    if (pid < 0) {
-        std::cerr << "Failed to fork daemon process (2nd fork)" << std::endl;
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0) {
-        // This is needed for proper systemd Type=forking behavior
-        exit(EXIT_SUCCESS);
-    }
-    
-    // Change working directory
-    chdir("/");
-    
-    // In verbose mode, keep stdout/stderr open
-    if (!verboseMode && !underSystemd) {
-        // Close standard file descriptors
+    // Only daemonize in normal user mode when requested
+    if (!verboseMode) {
+        // Set reasonable file permissions
+        umask(022);
+        
+        // Fork and let parent exit
+        pid_t pid = fork();
+        if (pid < 0) {
+            std::cerr << "Failed to fork daemon process" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        
+        // Parent exits
+        if (pid > 0) {
+            // We're the parent process - exit with successful status
+            return false;
+        }
+        
+        // Create new session
+        if (setsid() < 0) {
+            std::cerr << "Failed to create new session" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        
+        // Second fork to detach from terminal
+        pid = fork();
+        if (pid < 0) {
+            std::cerr << "Failed to fork daemon process (2nd fork)" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        if (pid > 0) {
+            // Parent exits
+            exit(EXIT_SUCCESS);
+        }
+        
+        // Change working directory
+        chdir("/");
+        
+        // Normal daemon mode - close all descriptors
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
@@ -75,7 +105,7 @@ bool daemonize(bool verboseMode) {
             close(null);
         }
     } else {
-        // Only close stdin in verbose mode
+        // In foreground mode, just close stdin
         close(STDIN_FILENO);
         int null = open("/dev/null", O_RDWR);
         dup2(null, STDIN_FILENO);
@@ -83,8 +113,8 @@ bool daemonize(bool verboseMode) {
             close(null);
         }
         
-        // When under systemd, keep stdout/stderr open
-        // as systemd will capture them as journal logs
+        // Keep stdout/stderr open for terminal output
+        LOG_INFO("Running in foreground mode");
     }
     
     return true; // We're the daemon process
@@ -170,27 +200,11 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // If running under systemd, write a PID file
-    const char* notifySocket = getenv("NOTIFY_SOCKET");
-    if (notifySocket && *notifySocket) {
-        LOG_INFO("Running under systemd control");
-        
-        // Create PID file
-        std::string pidFilePath = "/run/cec-control/cec-daemon.pid";
-        std::ofstream pidFile(pidFilePath);
-        if (pidFile.is_open()) {
-            pidFile << getpid();
-            pidFile.close();
-            LOG_INFO("Created PID file at ", pidFilePath);
-            
-            // Set appropriate permissions for the PID file
-            if (chmod(pidFilePath.c_str(), 0644) != 0) {
-                LOG_WARNING("Failed to set PID file permissions: ", strerror(errno));
-            }
-        } else {
-            LOG_ERROR("Failed to create PID file at ", pidFilePath);
-        }
-    }
+    // Log runtime environment and PID
+    LOG_INFO("Running with PID: ", getpid(), " in ", 
+             cec_control::XDGPaths::getEnvironment() == RuntimeEnvironment::SYSTEM_SERVICE ? "system service" : 
+             cec_control::XDGPaths::getEnvironment() == RuntimeEnvironment::USER_SERVICE ? "user service" : 
+             "normal user mode");
     
     // Create daemon with options
     cec_control::CECDaemon::Options options;

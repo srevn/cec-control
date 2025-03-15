@@ -150,14 +150,9 @@ void CECDaemon::stop() {
         }
     }
     
-    // Remove PID file if under systemd
+    // If running under systemd, log shutdown
     if (getenv("NOTIFY_SOCKET") != nullptr) {
-        std::string pidFilePath = "/run/cec-control/cec-daemon.pid";
-        if (unlink(pidFilePath.c_str()) == 0) {
-            LOG_INFO("Removed PID file: ", pidFilePath);
-        } else {
-            LOG_WARNING("Failed to remove PID file: ", strerror(errno));
-        }
+        LOG_INFO("Stopping daemon under systemd control");
     }
     
     // Stop D-Bus monitor

@@ -36,41 +36,76 @@ bool SocketClient::connect() {
         return false;
     }
     
-    // Connect to server
+    // First try the provided socket path
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, m_socketPath.c_str(), sizeof(addr.sun_path) - 1);
     
-    if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        if (errno == EACCES || errno == EPERM) {
-            LOG_ERROR("Permission denied connecting to socket: ", m_socketPath);
-            LOG_ERROR("The daemon may be running as a different user/systemd service");
+    LOG_DEBUG("Attempting to connect to socket at: ", m_socketPath);
+    
+    // Try primary socket path
+    bool connected = false;
+    if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+        connected = true;
+        LOG_DEBUG("Connected to socket successfully at: ", m_socketPath);
+    } else {
+        // First connection attempt failed
+        int originalErrno = errno;
+        LOG_DEBUG("Failed to connect to primary socket: ", strerror(originalErrno));
+        
+        // If socket doesn't exist, try system location as fallback
+        if (errno == ENOENT && 
+            m_socketPath != "/run/cec-control/socket" && 
+            !getenv("CEC_CONTROL_SOCKET")) {
             
-            // Check if the CEC_CONTROL_SOCKET environment variable is set
-            if (!getenv("CEC_CONTROL_SOCKET")) {
-                LOG_INFO("Try setting CEC_CONTROL_SOCKET=/run/cec-control/socket if running as system service");
+            // Close original socket
+            close(m_socketFd);
+            
+            // Try again with system socket
+            std::string systemSocket = "/run/cec-control/socket";
+            LOG_INFO("Trying system socket at ", systemSocket);
+            
+            // Create new socket
+            m_socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (m_socketFd < 0) {
+                LOG_ERROR("Failed to create socket for fallback: ", strerror(errno));
+                return false;
             }
-        } else {
-            LOG_ERROR("Failed to connect to server: ", strerror(errno));
-            LOG_INFO("Socket path: ", m_socketPath);
             
-            // Check if socket file exists
-            if (access(m_socketPath.c_str(), F_OK) != 0) {
-                LOG_ERROR("Socket file does not exist. Is the daemon running?");
-                
-                // Try to check the systemd socket as well
-                std::string systemdSocket = "/run/cec-control/socket";
-                if (access(systemdSocket.c_str(), F_OK) == 0) {
-                    LOG_INFO("Found systemd socket at ", systemdSocket);
-                    LOG_INFO("Try setting CEC_CONTROL_SOCKET=/run/cec-control/socket");
-                }
+            // Connect to system socket
+            memset(&addr, 0, sizeof(addr));
+            addr.sun_family = AF_UNIX;
+            strncpy(addr.sun_path, systemSocket.c_str(), sizeof(addr.sun_path) - 1);
+            
+            if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+                // Update the socket path we're using
+                m_socketPath = systemSocket;
+                connected = true;
+                LOG_INFO("Connected to system socket successfully");
             }
         }
         
-        close(m_socketFd);
-        m_socketFd = -1;
-        return false;
+        // Handle connection failure with good error messages
+        if (!connected) {
+            if (errno == EACCES || errno == EPERM || originalErrno == EACCES || originalErrno == EPERM) {
+                LOG_ERROR("Permission denied connecting to socket: ", m_socketPath);
+                LOG_ERROR("The daemon may be running as a different user/systemd service");
+                
+                // Suggest using environment variable
+                LOG_INFO("Try setting CEC_CONTROL_SOCKET=/run/cec-control/socket if running as system service");
+            } else {
+                LOG_ERROR("Failed to connect to server: ", strerror(errno));
+                LOG_INFO("Socket path: ", m_socketPath);
+                
+                // Check if daemon is running
+                LOG_ERROR("Socket file does not exist or daemon is not running");
+            }
+            
+            close(m_socketFd);
+            m_socketFd = -1;
+            return false;
+        }
     }
     
     m_connected = true;

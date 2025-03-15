@@ -15,6 +15,9 @@
 #include <cerrno>
 #include <future>
 
+// Use the RuntimeEnvironment enum
+using cec_control::RuntimeEnvironment;
+
 namespace cec_control {
 
 SocketServer::SocketServer(const std::string& socketPath)
@@ -183,15 +186,26 @@ bool SocketServer::setupSocket() {
         return false;
     }
     
-    // Set permissions for socket file - ensure it's accessible by all users
-    // This is important for communication between system daemons and user clients
-    if (chmod(m_socketPath.c_str(), 0666) != 0) {
-        LOG_WARNING("Failed to set socket permissions: ", strerror(errno));
+    // Set appropriate socket file permissions based on our runtime environment
+    RuntimeEnvironment env = cec_control::XDGPaths::getEnvironment();
+    mode_t socketMode = 0;
+    
+    switch (env) {
+        case RuntimeEnvironment::SYSTEM_SERVICE:
+            // System socket should be accessible by all users
+            socketMode = 0666;
+            break;
+            
+        case RuntimeEnvironment::USER_SERVICE:
+        case RuntimeEnvironment::NORMAL_USER:
+            // User socket should be accessible only by the user 
+            // (though we make it group readable for multi-user systems)
+            socketMode = 0660;
+            break;
     }
     
-    // Ensure directory permissions are also set correctly
-    if (chmod(parentDir.c_str(), 0755) != 0) {
-        LOG_WARNING("Failed to set socket directory permissions: ", strerror(errno));
+    if (chmod(m_socketPath.c_str(), socketMode) != 0) {
+        LOG_WARNING("Failed to set socket permissions: ", strerror(errno));
     }
     
     // Listen for connections
