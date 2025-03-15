@@ -43,7 +43,31 @@ bool SocketClient::connect() {
     strncpy(addr.sun_path, m_socketPath.c_str(), sizeof(addr.sun_path) - 1);
     
     if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("Failed to connect to server: ", strerror(errno));
+        if (errno == EACCES || errno == EPERM) {
+            LOG_ERROR("Permission denied connecting to socket: ", m_socketPath);
+            LOG_ERROR("The daemon may be running as a different user/systemd service");
+            
+            // Check if the CEC_CONTROL_SOCKET environment variable is set
+            if (!getenv("CEC_CONTROL_SOCKET")) {
+                LOG_INFO("Try setting CEC_CONTROL_SOCKET=/run/cec-control/socket if running as system service");
+            }
+        } else {
+            LOG_ERROR("Failed to connect to server: ", strerror(errno));
+            LOG_INFO("Socket path: ", m_socketPath);
+            
+            // Check if socket file exists
+            if (access(m_socketPath.c_str(), F_OK) != 0) {
+                LOG_ERROR("Socket file does not exist. Is the daemon running?");
+                
+                // Try to check the systemd socket as well
+                std::string systemdSocket = "/run/cec-control/socket";
+                if (access(systemdSocket.c_str(), F_OK) == 0) {
+                    LOG_INFO("Found systemd socket at ", systemdSocket);
+                    LOG_INFO("Try setting CEC_CONTROL_SOCKET=/run/cec-control/socket");
+                }
+            }
+        }
+        
         close(m_socketFd);
         m_socketFd = -1;
         return false;

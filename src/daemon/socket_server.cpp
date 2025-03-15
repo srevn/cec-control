@@ -183,8 +183,17 @@ bool SocketServer::setupSocket() {
         return false;
     }
     
-    // Set permissions for socket file
-    chmod(m_socketPath.c_str(), 0666);
+    // Set permissions for socket file - ensure it's accessible by all users
+    // This is important for communication between system daemons and user clients
+    if (chmod(m_socketPath.c_str(), 0666) != 0) {
+        LOG_WARNING("Failed to set socket permissions: ", strerror(errno));
+    }
+    
+    // Ensure directory permissions are also set correctly
+    std::string parentDir = m_socketPath.substr(0, m_socketPath.find_last_of('/'));
+    if (chmod(parentDir.c_str(), 0755) != 0) {
+        LOG_WARNING("Failed to set socket directory permissions: ", strerror(errno));
+    }
     
     // Listen for connections
     if (listen(m_socketFd, 5) < 0) {

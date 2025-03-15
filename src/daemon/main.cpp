@@ -12,8 +12,33 @@
 /**
  * Daemonize the process.
  * @param verboseMode If true, keep stdout/stderr open for logging
+ * @return True if we're running as a daemon, false if we're the parent that should exit
  */
-void daemonize(bool verboseMode) {
+bool daemonize(bool verboseMode) {
+    // Check if we're running under systemd
+    bool underSystemd = (getenv("NOTIFY_SOCKET") != nullptr);
+    
+    // If running under systemd, don't do the traditional double-fork
+    if (underSystemd) {
+        LOG_INFO("Running under systemd, skipping traditional daemon fork");
+        
+        // Set new file permissions
+        umask(0);
+        
+        // Redirect stdin to /dev/null (we don't need it)
+        close(STDIN_FILENO);
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        if (null > 0) {
+            close(null);
+        }
+        
+        // When under systemd, keep stdout/stderr open regardless of verbose mode
+        // as systemd will capture them as journal logs
+        return true;
+    }
+    
+    // Traditional daemonization method
     // Fork and let parent exit
     pid_t pid = fork();
     if (pid < 0) {
@@ -23,7 +48,8 @@ void daemonize(bool verboseMode) {
     
     // Parent exits
     if (pid > 0) {
-        exit(EXIT_SUCCESS);
+        // We're the parent process - exit
+        return false;
     }
     
     // Create new session
@@ -32,15 +58,8 @@ void daemonize(bool verboseMode) {
         exit(EXIT_FAILURE);
     }
     
-    // Fork again to prevent reacquiring terminal
-    pid = fork();
-    if (pid < 0) {
-        std::cerr << "Failed to fork daemon process (2nd fork)" << std::endl;
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0) {
-        exit(EXIT_SUCCESS);
-    }
+    // With systemd Type=simple, we avoid the second fork
+    // because systemd expects the initial process to remain in the foreground
     
     // Set new file permissions
     umask(0);
@@ -72,6 +91,8 @@ void daemonize(bool verboseMode) {
             close(null);
         }
     }
+    
+    return true; // We're the daemon process
 }
 
 int main(int argc, char* argv[]) {
@@ -136,8 +157,14 @@ int main(int argc, char* argv[]) {
     
     // Only daemonize if runAsDaemon is true
     if (runAsDaemon) {
-        daemonize(verboseMode);
+        // daemonize returns false for the parent process that should exit
+        if (!daemonize(verboseMode)) {
+            LOG_INFO("Parent process exiting, daemon started");
+            return EXIT_SUCCESS;
+        }
+        LOG_INFO("Daemon process started");
     } else {
+        LOG_INFO("Running in foreground mode");
         // When not running as daemon, ensure stdin is still redirected
         // to avoid terminal input issues
         close(STDIN_FILENO);
@@ -146,6 +173,13 @@ int main(int argc, char* argv[]) {
         if (null > 0) {
             close(null);
         }
+    }
+    
+    // If running under systemd, we could send a notification that we're ready
+    // This would be used with Type=notify in the service file
+    const char* notifySocket = getenv("NOTIFY_SOCKET");
+    if (notifySocket && *notifySocket) {
+        LOG_INFO("Running under systemd control");
     }
     
     // Create daemon with options

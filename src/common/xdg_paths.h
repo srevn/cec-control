@@ -12,7 +12,7 @@ namespace cec_control {
  * Utility class for handling XDG Base Directory paths
  */
 class XDGPaths {
-public:
+private:
     /**
      * Get the configuration directory according to XDG spec
      * @param createIfMissing Create the directory if it doesn't exist
@@ -33,13 +33,6 @@ public:
      * @return Path to the XDG runtime directory
      */
     static std::string getRuntimeDir(bool createIfMissing = true);
-    
-    /**
-     * Get the data directory according to XDG spec
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to the XDG data directory
-     */
-    static std::string getDataHome(bool createIfMissing = true);
     
     /**
      * Create directories recursively
@@ -69,13 +62,7 @@ public:
      */
     static std::string getAppRuntimeDir(bool createIfMissing = true);
     
-    /**
-     * Get application-specific data directory
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Path to app data directory
-     */
-    static std::string getAppDataDir(bool createIfMissing = true);
-    
+public:
     /**
      * Get default config file path
      * @return Full path to the default config file

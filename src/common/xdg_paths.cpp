@@ -77,7 +77,21 @@ std::string XDGPaths::getRuntimeDir(bool createIfMissing) {
     if (xdgRuntimeDir && *xdgRuntimeDir) {
         runtimeDir = xdgRuntimeDir;
     } else {
-        runtimeDir = "/tmp/" + std::to_string(getuid());
+        // Check if we're running under systemd
+        const char* notifySocket = getenv("NOTIFY_SOCKET");
+        if (notifySocket && *notifySocket) {
+            // We're running under systemd, use /run/cec-control as runtime dir
+            runtimeDir = "/run";
+            
+            // Check if we have write permissions to /run
+            if (access("/run", W_OK) != 0) {
+                LOG_WARNING("No write permissions to /run, falling back to /tmp");
+                runtimeDir = "/tmp/" + std::to_string(getuid());
+            }
+        } else {
+            // Not under systemd, use default fallback
+            runtimeDir = "/tmp/" + std::to_string(getuid());
+        }
     }
     
     if (createIfMissing && !runtimeDir.empty()) {
@@ -85,26 +99,6 @@ std::string XDGPaths::getRuntimeDir(bool createIfMissing) {
     }
     
     return runtimeDir;
-}
-
-std::string XDGPaths::getDataHome(bool createIfMissing) {
-    std::string dataDir;
-    const char* xdgDataHome = getenv("XDG_DATA_HOME");
-    
-    if (xdgDataHome && *xdgDataHome) {
-        dataDir = xdgDataHome;
-    } else {
-        std::string home = getHomeDir();
-        if (!home.empty()) {
-            dataDir = home + "/.local/share";
-        }
-    }
-    
-    if (createIfMissing && !dataDir.empty()) {
-        createDirectories(dataDir);
-    }
-    
-    return dataDir;
 }
 
 bool XDGPaths::createDirectories(const std::string& path) {
@@ -155,18 +149,6 @@ std::string XDGPaths::getAppRuntimeDir(bool createIfMissing) {
     return appRuntimeDir;
 }
 
-std::string XDGPaths::getAppDataDir(bool createIfMissing) {
-    std::string dataDir = getDataHome(false);
-    if (dataDir.empty()) return "";
-    
-    std::string appDataDir = dataDir + "/" + APP_NAME;
-    if (createIfMissing) {
-        createDirectories(appDataDir);
-    }
-    
-    return appDataDir;
-}
-
 std::string XDGPaths::getDefaultConfigPath() {
     // Use only XDG path
     std::string appConfigDir = getAppConfigDir(true);
@@ -179,6 +161,33 @@ std::string XDGPaths::getDefaultLogPath() {
 }
 
 std::string XDGPaths::getDefaultSocketPath() {
+    // First check for a specific override in environment
+    const char* socketPathEnv = getenv("CEC_CONTROL_SOCKET");
+    if (socketPathEnv && *socketPathEnv) {
+        return socketPathEnv;
+    }
+    
+    // Check if we're running as a systemd service
+    const char* notifySocket = getenv("NOTIFY_SOCKET");
+    if (notifySocket && *notifySocket) {
+        // Check if the runtime directory was set by systemd
+        const char* runtimeDir = getenv("RUNTIME_DIRECTORY");
+        if (runtimeDir && *runtimeDir) {
+            std::string systemdPath = std::string("/run/") + runtimeDir + "/socket";
+            // Test if this path exists - client might need to use it
+            if (access(systemdPath.c_str(), F_OK) == 0) {
+                return systemdPath;
+            }
+        }
+        
+        // If systemd runtime directory is specified but socket doesn't exist yet,
+        // or if runtime directory isn't specified, use the standard runtime dir
+        std::string systemdPath = "/run/cec-control/socket";
+        createDirectories("/run/cec-control");
+        return systemdPath;
+    }
+    
+    // Normal user mode - use XDG runtime dir
     std::string appRuntimeDir = getAppRuntimeDir(true);
     return appRuntimeDir + "/socket";
 }

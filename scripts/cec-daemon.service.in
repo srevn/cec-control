@@ -4,16 +4,17 @@ After=multi-user.target
 Wants=dbus.service
 
 [Service]
-Type=forking
+Type=simple
 User=@INSTALL_USER@
 ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
-RemainAfterExit=true
 Restart=on-failure
+RestartSec=5
 
 # Set up runtime directory
 Environment=XDG_RUNTIME_DIR=/run
 RuntimeDirectory=cec-control
 RuntimeDirectoryMode=0755
+Environment=CEC_CONTROL_SOCKET=/run/cec-control/socket
 
 [Install]
 WantedBy=multi-user.target
