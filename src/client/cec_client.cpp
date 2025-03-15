@@ -1,6 +1,7 @@
 #include "cec_client.h"
 #include "command_builder.h"
 #include "../common/logger.h"
+#include "../common/xdg_paths.h"
 
 #include <iostream>
 #include <cstdlib>
@@ -10,7 +11,7 @@ namespace cec_control {
 
 CECClient::CECClient()
     : m_printHelp(false),
-      m_socketPath("/tmp/cec_control.sock") {
+      m_socketPath(XDGPaths::getDefaultSocketPath()) {
 }
 
 CECClient::~CECClient() {

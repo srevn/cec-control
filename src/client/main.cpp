@@ -1,5 +1,6 @@
 #include "cec_client.h"
 #include "../common/logger.h"
+#include "../common/xdg_paths.h"
 
 #include <iostream>
 #include <cstdlib>
@@ -23,6 +24,9 @@ void printUsage() {
               << "\n"
               << "Options:\n"
               << "  --socket-path=PATH                Set path to daemon socket\n"
+              << "                                    (default: " << cec_control::XDGPaths::getDefaultSocketPath() << ")\n"
+              << "  --config=/path/to/config.conf     Set path to config file\n"
+              << "                                    (default: " << cec_control::XDGPaths::getDefaultConfigPath() << ")\n"
               << "\n"
               << "Examples:\n"
               << "  cec-client volume up 5            Increase volume on device 5\n"

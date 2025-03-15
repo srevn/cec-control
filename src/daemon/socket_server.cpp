@@ -1,6 +1,7 @@
 #include "socket_server.h"
 #include "../common/logger.h"
 #include "../common/buffer_manager.h"
+#include "../common/xdg_paths.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -17,10 +18,17 @@
 namespace cec_control {
 
 SocketServer::SocketServer(const std::string& socketPath)
-    : m_socketPath(socketPath),
-      m_socketFd(-1),
+    : m_socketFd(-1),
       m_running(false),
       m_cmdHandler(nullptr) {
+    
+    if (socketPath.empty()) {
+        m_socketPath = XDGPaths::getDefaultSocketPath();
+    } else {
+        m_socketPath = socketPath;
+    }
+    
+    LOG_INFO("Using socket path: ", m_socketPath);
 }
 
 SocketServer::~SocketServer() {
@@ -152,6 +160,15 @@ bool SocketServer::setupSocket() {
     
     // Remove existing socket file if it exists
     cleanupSocket();
+    
+    // Ensure parent directory exists
+    std::string parentDir = m_socketPath.substr(0, m_socketPath.find_last_of('/'));
+    if (!XDGPaths::createDirectories(parentDir)) {
+        LOG_ERROR("Failed to create parent directory for socket: ", parentDir);
+        close(m_socketFd);
+        m_socketFd = -1;
+        return false;
+    }
     
     // Bind socket
     struct sockaddr_un addr;

@@ -4,12 +4,11 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <cstdint>
 
 #include "messages.h"
 
 namespace cec_control {
-
-const std::string SOCKET_PATH = "/tmp/cec_control.sock";
 
 class Protocol {
 public:

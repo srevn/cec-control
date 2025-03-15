@@ -1,5 +1,6 @@
 #include "socket_client.h"
 #include "../common/logger.h"
+#include "../common/xdg_paths.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -8,13 +9,19 @@
 #include <cstring>
 #include <cerrno>
 #include <poll.h>
+#include <filesystem>
 
 namespace cec_control {
 
 SocketClient::SocketClient(const std::string& socketPath)
-    : m_socketPath(socketPath),
-      m_socketFd(-1),
+    : m_socketFd(-1),
       m_connected(false) {
+    
+    if (socketPath.empty()) {
+        m_socketPath = XDGPaths::getDefaultSocketPath();
+    } else {
+        m_socketPath = socketPath;
+    }
 }
 
 SocketClient::~SocketClient() {

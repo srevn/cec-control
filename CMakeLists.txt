@@ -28,6 +28,9 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${LIBCEC_INCLUDE_DIR})
 include_directories(${DBUS_INCLUDE_DIRS})
 
+# Define XDG installation paths based on GNU standards
+include(GNUInstallDirs)
+
 # Define source files
 set(COMMON_SOURCES
     src/common/protocol.cpp
@@ -35,6 +38,7 @@ set(COMMON_SOURCES
     src/common/buffer_pool.cpp
     src/common/buffer_manager.cpp
     src/common/config_manager.cpp
+    src/common/xdg_paths.cpp
 )
 
 set(DAEMON_SOURCES
@@ -65,48 +69,80 @@ add_executable(cec-daemon ${DAEMON_SOURCES})
 add_executable(cec-client ${CLIENT_SOURCES})
 
 # Link libraries
-target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} ${DBUS_LIBRARIES} pthread)
-target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread)
+target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} ${DBUS_LIBRARIES} pthread stdc++fs)
+target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread stdc++fs)
 
 # Install targets
-install(TARGETS cec-daemon DESTINATION bin)
-install(TARGETS cec-client DESTINATION bin)
+install(TARGETS cec-daemon DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS cec-client DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# Install systemd service file
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/cec-daemon.service.in
-    ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
-    @ONLY
+# Install systemd service file if systemd is available
+if(DEFINED ENV{USER})
+    set(INSTALL_USER $ENV{USER})
+else(DEFINED ENV{LOGNAME})
+    set(INSTALL_USER $ENV{LOGNAME})
+endif()
+
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(SYSTEMD systemd)
+  if(SYSTEMD_FOUND)
+    # Get systemd unit dir
+    execute_process(
+      COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=systemdsystemunitdir systemd
+      OUTPUT_VARIABLE SYSTEMD_UNIT_DIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    configure_file(
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/cec-daemon.service.in
+      ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
+      @ONLY
+    )
+
+    install(
+      FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
+      DESTINATION ${SYSTEMD_UNIT_DIR}
+      PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+      OPTIONAL
+    )
+  else()
+    message(STATUS "systemd not found, skipping service installation")
+  endif()
+endif()
+
+# Install configuration files - simplified approach
+install(
+  FILES ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf
+  DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/cec-control
+  RENAME config.conf
+  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 
+# Create user config if needed
 install(
-    FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
-    DESTINATION /lib/systemd/system/
-    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-    OPTIONAL
-)
-
-# Install configuration file
-install(
-    CODE "
-    if(EXISTS \"$ENV{DESTDIR}/etc/cec-control.conf\")
-        message(STATUS \"Config file already exists, installing as .sample\")
-        file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\" 
-             DESTINATION \"/etc\" 
-             RENAME \"cec-control.conf.sample\")
-    else()
-        message(STATUS \"Installing new config file\")
-        file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\" 
-             DESTINATION \"/etc\")
+  CODE "
+  # Create user config only if not running as root
+  if(NOT \"\$ENV{USER}\" STREQUAL \"root\")
+    # Create user config directory
+    file(MAKE_DIRECTORY \"$ENV{HOME}/.config/cec-control\")
+    
+    # Copy default config to user location only if it doesn't exist
+    if(NOT EXISTS \"$ENV{HOME}/.config/cec-control/config.conf\")
+      file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
+           DESTINATION \"$ENV{HOME}/.config/cec-control\"
+           RENAME \"config.conf\"
+           FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
     endif()
-    "
+  endif()
+  "
 )
 
 # Create uninstall target
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-    IMMEDIATE @ONLY)
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+  IMMEDIATE @ONLY)
 
 add_custom_target(uninstall
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
@@ -115,3 +151,5 @@ add_custom_target(uninstall
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "libcec version: ${LIBCEC_VERSION}")
 message(STATUS "dbus version: ${DBUS_VERSION}")
+message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "Binary install location: ${CMAKE_INSTALL_FULL_BINDIR}")

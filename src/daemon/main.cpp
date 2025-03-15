@@ -1,6 +1,7 @@
 #include "cec_daemon.h"
 #include "../common/logger.h"
 #include "../common/config_manager.h"
+#include "../common/xdg_paths.h"
 
 #include <iostream>
 #include <cstdlib>
@@ -61,8 +62,8 @@ void daemonize() {
 int main(int argc, char* argv[]) {
     bool runAsDaemon = true;
     bool scanDevicesAtStartup = false;
-    std::string logFile = "/var/log/cec-daemon.log";
-    std::string configFile = "/etc/cec-control.conf";
+    std::string logFile = cec_control::XDGPaths::getDefaultLogPath();
+    std::string configFile;  // Empty means use default
     
     // Process command line options
     for (int i = 1; i < argc; ++i) {
@@ -83,17 +84,25 @@ int main(int argc, char* argv[]) {
             std::cout << "Usage: " << argv[0] << " [OPTIONS]\n"
                       << "Options:\n"
                       << "  -v, --verbose           Run in foreground (don't daemonize)\n"
-                      << "  -l, --log FILE          Log to FILE (default: /var/log/cec-daemon.log)\n"
+                      << "  -l, --log FILE          Log to FILE (default: " << cec_control::XDGPaths::getDefaultLogPath() << ")\n"
                       << "  -s, --scan-devices      Scan for CEC devices at startup\n"
                       << "  -c, --config FILE       Set configuration file path\n"
+                      << "                          (default: " << cec_control::XDGPaths::getDefaultConfigPath() << ")\n"
                       << "  -h, --help              Show this help message\n";
             return EXIT_SUCCESS;
         }
     }
     
     // Initialize the configuration manager
-    cec_control::ConfigManager configManager(configFile);
-    configManager.load();
+    cec_control::ConfigManager* configManager;
+    
+    if (configFile.empty()) {
+        configManager = new cec_control::ConfigManager();
+    } else {
+        configManager = new cec_control::ConfigManager(configFile);
+    }
+    
+    configManager->load();
     
     // Configure logging
     cec_control::Logger::getInstance().setLogFile(logFile);
@@ -116,6 +125,8 @@ int main(int argc, char* argv[]) {
     
     // Run the main loop
     daemon.run();
+    
+    delete configManager;
     
     return EXIT_SUCCESS;
 }

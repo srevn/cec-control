@@ -12,10 +12,15 @@ namespace cec_control {
 class ConfigManager {
 public:
     /**
-     * Create a new config manager
+     * Create a new config manager using default XDG path
+     */
+    ConfigManager();
+    
+    /**
+     * Create a new config manager with specified config file path
      * @param configPath Path to the configuration file
      */
-    ConfigManager(const std::string& configPath = "/etc/cec-control.conf");
+    explicit ConfigManager(const std::string& configPath);
     
     /**
      * Load configuration from file
@@ -61,6 +66,12 @@ public:
      * @return The singleton instance
      */
     static ConfigManager& getInstance();
+    
+    /**
+     * Get the path to the configuration file being used
+     * @return Path to the configuration file
+     */
+    std::string getConfigPath() const { return m_configPath; }
     
 private:
     std::string m_configPath;

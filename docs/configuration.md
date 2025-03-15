@@ -1,7 +1,19 @@
 # CEC Control Configuration
 
-CEC Control uses an INI-style configuration file for customizing its behavior. By default, 
-the configuration file is located at `/etc/cec-control.conf`.
+CEC Control uses an INI-style configuration file for customizing its behavior. The program follows the XDG Base Directory Specification for finding configuration, cache, and runtime files.
+
+## File Locations
+
+CEC Control follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) exclusively. Locations are:
+
+- **Configuration file**: 
+  - `$XDG_CONFIG_HOME/cec-control/config.conf` (typically `~/.config/cec-control/config.conf`)
+
+- **Log file**: 
+  - `$XDG_CACHE_HOME/cec-control/daemon.log` (typically `~/.cache/cec-control/daemon.log`)
+
+- **Socket file**: 
+  - `$XDG_RUNTIME_DIR/cec-control/socket` (typically `/run/user/[UID]/cec-control/socket`)
 
 ## Specifying an Alternative Configuration File
 
@@ -37,33 +49,33 @@ Key2 = Value2
 
 ### Adapter Section
 
-Controls how the CEC adapter behaves when interacting with devices:
+Controls CEC adapter behavior:
 
 ```ini
 [Adapter]
-# Name displayed by the CEC device on the network
-DeviceName = CEC Control
+# Name that appears on CEC bus
+DeviceName = CEC Controller
 
-# Whether to automatically wake the TV when usb is powered
+# Enable auto power on behavior 
 AutoPowerOn = false
 
-# Whether to wake the AVR automatically when the source is activated
-AutoWakeAVR = false
+# Auto wake for audio receiver
+AutoWakeAVR = true
 
-# Whether to activate as source on the bus when starting the application
+# The device should be activated as source when powering on
 ActivateSource = false
 
-# Whether to use audiosystem mode
-SystemAudioMode = false
+# Use system audio mode
+SystemAudioMode = true
 
-# Whether to put this PC in standby mode when the TV is switched off
-PowerOffOnStandby = false
+# Power off devices when going to standby
+PowerOffOnStandby = true
 
-# Specific device addresses to wake up (comma-separated list of addresses, 0-15)
-WakeDevices = 
+# Comma-separated list of logical addresses (0-15) to wake on resume
+WakeDevices = 0,5
 
-# Specific device addresses to power off (comma-separated list of addresses, 0-15)
-PowerOffDevices = 
+# Comma-separated list of logical addresses (0-15) to power off on suspend
+PowerOffDevices = 0,5
 ```
 
 ### Daemon Section
@@ -97,12 +109,10 @@ MaxRetryAttempts = 3
 
 ## Boolean Values
 
-Boolean options can be specified using any of these values:
+The following string values are recognized as Boolean true:
+- `true`, `yes`, `1`, `on` (case insensitive)
 
-* `true`, `yes`, `on`, `1` for TRUE
-* `false`, `no`, `off`, `0` for FALSE
-
-Boolean values are case-insensitive.
+Any other value is considered false.
 
 ## Examples
 
@@ -110,32 +120,10 @@ Boolean values are case-insensitive.
 
 ```ini
 [Adapter]
-DeviceName = Media Center
-SystemAudioMode = true
-
-[Daemon]
-ScanDevicesAtStartup = true
-```
-
-### Full Configuration
-
-```ini
-[Adapter]
-DeviceName = Home Theater PC
+DeviceName = CEC Controller
 AutoPowerOn = true
-AutoWakeAVR = true
 ActivateSource = true
-SystemAudioMode = true
-PowerOffOnStandby = false
-WakeDevices = 1,5
-PowerOffDevices = 1,5,3
-
-[Daemon]
-ScanDevicesAtStartup = true
-QueueCommandsDuringSuspend = true
 
 [Throttler]
 BaseIntervalMs = 150
-MaxIntervalMs = 800
-MaxRetryAttempts = 4
 ```

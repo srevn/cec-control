@@ -9,6 +9,7 @@
 #include <functional>
 
 #include "../common/protocol.h"
+#include "../common/xdg_paths.h"
 #include "thread_pool.h"
 
 namespace cec_control {
@@ -17,7 +18,17 @@ class SocketServer {
 public:
     using ClientHandler = std::function<Message(const Message&)>;
     
-    explicit SocketServer(const std::string& socketPath = SOCKET_PATH);
+    /**
+     * Create socket server with default XDG socket path
+     */
+    SocketServer() : SocketServer(XDGPaths::getDefaultSocketPath()) {}
+    
+    /**
+     * Create socket server with specified socket path
+     * @param socketPath Path to the socket file
+     */
+    explicit SocketServer(const std::string& socketPath);
+    
     ~SocketServer();
     
     // Start server in a separate thread

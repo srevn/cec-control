@@ -5,6 +5,7 @@ Wants=dbus.service
 
 [Service]
 Type=forking
+User=@INSTALL_USER@
 ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
 RemainAfterExit=true
 Restart=on-failure

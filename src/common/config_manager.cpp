@@ -1,17 +1,23 @@
-#include "config_manager.h"
 #include "logger.h"
+#include "xdg_paths.h"
+#include "config_manager.h"
 
 #include <fstream>
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <filesystem>
 
 namespace cec_control {
 
 std::unique_ptr<ConfigManager> ConfigManager::s_instance;
 
+ConfigManager::ConfigManager() 
+    : m_configPath(XDGPaths::getDefaultConfigPath()) {
+}
+
 ConfigManager::ConfigManager(const std::string& configPath)
-    : m_configPath(configPath) {
+    : m_configPath(configPath.empty() ? XDGPaths::getDefaultConfigPath() : configPath) {
 }
 
 bool ConfigManager::load() {
@@ -114,8 +120,7 @@ int ConfigManager::getInt(const std::string& section,
 
 ConfigManager& ConfigManager::getInstance() {
     if (!s_instance) {
-        s_instance = std::make_unique<ConfigManager>();
-        s_instance->load();
+        s_instance = std::unique_ptr<ConfigManager>(new ConfigManager());
     }
     return *s_instance;
 }

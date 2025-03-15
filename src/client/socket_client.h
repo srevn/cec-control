@@ -5,12 +5,23 @@
 #include <functional>
 
 #include "../common/protocol.h"
+#include "../common/xdg_paths.h"
 
 namespace cec_control {
 
 class SocketClient {
 public:
-    explicit SocketClient(const std::string& socketPath = SOCKET_PATH);
+    /**
+     * Create socket client with default socket path from XDG paths
+     */
+    SocketClient() : SocketClient(XDGPaths::getDefaultSocketPath()) {}
+    
+    /**
+     * Create socket client with specified socket path
+     * @param socketPath Path to the socket file
+     */
+    explicit SocketClient(const std::string& socketPath);
+    
     ~SocketClient();
     
     // Connect to daemon
