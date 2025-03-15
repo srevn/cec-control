@@ -53,29 +53,29 @@ Controls CEC adapter behavior:
 
 ```ini
 [Adapter]
-# Name that appears on CEC bus
-DeviceName = CEC Controller
+# Name displayed by the CEC device on the network
+DeviceName = CEC Control
 
-# Enable auto power on behavior 
+# Whether to automatically wake the TV when usb is powered
 AutoPowerOn = false
 
-# Auto wake for audio receiver
-AutoWakeAVR = true
+# Whether to wake the AVR automatically when the source is activated
+AutoWakeAVR = false
 
-# The device should be activated as source when powering on
+# Whether to activate as source on the bus when starting the application
 ActivateSource = false
 
-# Use system audio mode
-SystemAudioMode = true
+# Whether to use audiosystem mode
+SystemAudioMode = false
 
-# Power off devices when going to standby
-PowerOffOnStandby = true
+# Whether to put this PC in standby mode when the TV is switched off
+PowerOffOnStandby = false
 
 # Comma-separated list of logical addresses (0-15) to wake on resume
-WakeDevices = 0,5
+WakeDevices = 
 
 # Comma-separated list of logical addresses (0-15) to power off on suspend
-PowerOffDevices = 0,5
+PowerOffDevices = 
 ```
 
 ### Daemon Section

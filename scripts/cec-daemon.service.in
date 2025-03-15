@@ -1,6 +1,5 @@
 [Unit]
 Description=CEC Control Daemon
-Documentation=file:///usr/share/doc/cec-control/README.md
 After=network.target
 Wants=dbus.service
 
@@ -13,7 +12,6 @@ Restart=on-failure
 RestartSec=5
 
 # Runtime directories and permissions
-# Only specify directory name, not full path (systemd adds /run/ prefix)
 RuntimeDirectory=cec-control
 RuntimeDirectoryMode=0755
 StateDirectory=cec-control
@@ -23,15 +21,8 @@ CacheDirectoryMode=0750
 LogsDirectory=cec-control
 LogsDirectoryMode=0750
 
-# Set explicit environment variable to indicate we're running as a system service
-# This makes detection much more reliable
+# Environment variable to indicate we're running as a system service
 Environment=CEC_CONTROL_ENVIRONMENT=system_service
-
-# Security hardening
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=true
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
