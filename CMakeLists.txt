@@ -106,7 +106,7 @@ if(PKG_CONFIG_FOUND)
     )
 
     configure_file(
-      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/cec-daemon.service.in
+      ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-daemon.service
       ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
       @ONLY
     )
