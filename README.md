@@ -1,6 +1,6 @@
 # CEC Control
 
-A comprehensive application for controlling HDMI devices over the CEC (Consumer Electronics Control) protocol. CEC Control provides both a daemon service for continuous HDMI device management and a command-line client for sending commands to your devices.
+An application for controlling HDMI devices over the CEC (Consumer Electronics Control) protocol. CEC Control provides both a daemon service for continuous HDMI device management and a command-line client for sending commands to your devices.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/version-1.0.0-green.svg)
@@ -140,7 +140,7 @@ DEVICE_ID typically ranges from 0-15 and maps to CEC logical addresses:
 ## Configuration
 
 CEC Control uses an INI-style configuration file. The default location is:
-- System-wide: `/etc/cec-control/config.conf`
+- System-wide: `/usr/local/etc/cec-control/config.conf`
 - User-specific: `~/.config/cec-control/config.conf`
 
 ### Configuration Examples
@@ -174,7 +174,7 @@ MaxRetryAttempts = 3
 CEC Control follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/):
 
 ### System Service Mode
-- Config File: `/etc/cec-control/config.conf`
+- Config File: `/usr/local/etc/cec-control/config.conf`
 - Log File: `/var/log/cec-control/daemon.log`
 - Socket Path: `/run/cec-control/socket`
 
@@ -294,17 +294,6 @@ make
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## Acknowledgements
 
 - [libCEC](https://github.com/Pulse-Eight/libcec) for providing the CEC communication library
-- All contributors who have helped with code, bug reports, and suggestions
