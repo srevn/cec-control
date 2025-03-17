@@ -27,16 +27,6 @@ CECDaemon::CECDaemon(Options options)
       m_options(options),
       m_queueCommandsDuringSuspend(options.queueCommandsDuringSuspend) {
     
-    // Load configuration values
-    auto& config = ConfigManager::getInstance();
-    
-    // Update options based on configuration
-    m_options.scanDevicesAtStartup = config.getBool("Daemon", "ScanDevicesAtStartup", 
-                                                  m_options.scanDevicesAtStartup);
-    m_options.queueCommandsDuringSuspend = config.getBool("Daemon", "QueueCommandsDuringSuspend", 
-                                                        m_options.queueCommandsDuringSuspend);
-    m_queueCommandsDuringSuspend = m_options.queueCommandsDuringSuspend;
-    
     // Set static instance
     s_instance = this;
 }

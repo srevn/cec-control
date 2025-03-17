@@ -123,10 +123,9 @@ bool daemonize(bool verboseMode) {
 int main(int argc, char* argv[]) {
     bool verboseMode = false;
     bool runAsDaemon = true;
-    bool scanDevicesAtStartup = false;
     std::string logFile = cec_control::XDGPaths::getLogPath();
     std::string configFile;
-    
+
     // Process command line options
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -135,9 +134,6 @@ int main(int argc, char* argv[]) {
         }
         else if (arg == "--foreground" || arg == "-f") {
             runAsDaemon = false;
-        }
-        else if (arg == "--scan-devices" || arg == "-s") {
-            scanDevicesAtStartup = true;
         }
         else if ((arg == "--log" || arg == "-l") && i + 1 < argc) {
             logFile = argv[++i];
@@ -151,12 +147,20 @@ int main(int argc, char* argv[]) {
                       << "  -v, --verbose           Enable verbose logging (to console and log file)\n"
                       << "  -f, --foreground        Run in foreground (don't daemonize)\n"
                       << "  -l, --log FILE          Log to FILE (default: " << cec_control::XDGPaths::getLogPath() << ")\n"
-                      << "  -s, --scan-devices      Scan for CEC devices at startup\n"
                       << "  -c, --config FILE       Set configuration file path\n"
                       << "                          (default: " << cec_control::XDGPaths::getConfigPath() << ")\n"
                       << "  -h, --help              Show this help message\n";
             return EXIT_SUCCESS;
         }
+    }
+    // Configure logging
+    cec_control::Logger::getInstance().setLogFile(logFile);
+    
+    // Set log level based on verbose mode
+    if (verboseMode) {
+        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::DEBUG);
+    } else {
+        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::INFO);
     }
     
     // Initialize the configuration manager
@@ -170,16 +174,6 @@ int main(int argc, char* argv[]) {
     
     configManager->load();
     
-    // Configure logging
-    cec_control::Logger::getInstance().setLogFile(logFile);
-    
-    // Set log level based on verbose mode
-    if (verboseMode) {
-        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::DEBUG);
-    } else {
-        cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::INFO);
-    }
-    
     // Only daemonize if runAsDaemon is true
     if (runAsDaemon) {
         // daemonize returns false for the parent process that should exit
@@ -191,7 +185,6 @@ int main(int argc, char* argv[]) {
     } else {
         LOG_INFO("Running in foreground mode");
         // When not running as daemon, ensure stdin is still redirected
-        // to avoid terminal input issues
         close(STDIN_FILENO);
         int null = open("/dev/null", O_RDWR);
         dup2(null, STDIN_FILENO);
@@ -208,7 +201,8 @@ int main(int argc, char* argv[]) {
     
     // Create daemon with options
     cec_control::CECDaemon::Options options;
-    options.scanDevicesAtStartup = scanDevicesAtStartup;
+    options.scanDevicesAtStartup = configManager->getBool("Daemon", "ScanDevicesAtStartup", false);
+    options.queueCommandsDuringSuspend = configManager->getBool("Daemon", "QueueCommandsDuringSuspend", true);
     
     cec_control::CECDaemon daemon(options);
     if (!daemon.start()) {
