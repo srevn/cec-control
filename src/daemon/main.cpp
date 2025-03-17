@@ -164,15 +164,17 @@ int main(int argc, char* argv[]) {
     }
     
     // Initialize the configuration manager
-    cec_control::ConfigManager* configManager;
-    
-    if (configFile.empty()) {
-        configManager = new cec_control::ConfigManager();
-    } else {
-        configManager = new cec_control::ConfigManager(configFile);
+    cec_control::ConfigManager& configManager = cec_control::ConfigManager::getInstance();
+
+    // Set custom config path if provided
+    if (!configFile.empty()) {
+        configManager = cec_control::ConfigManager(configFile);
     }
-    
-    configManager->load();
+
+    // Load the configuration
+    if (!configManager.load()) {
+        LOG_WARNING("Failed to load configuration file, using defaults");
+    }
     
     // Only daemonize if runAsDaemon is true
     if (runAsDaemon) {
@@ -201,8 +203,8 @@ int main(int argc, char* argv[]) {
     
     // Create daemon with options
     cec_control::CECDaemon::Options options;
-    options.scanDevicesAtStartup = configManager->getBool("Daemon", "ScanDevicesAtStartup", false);
-    options.queueCommandsDuringSuspend = configManager->getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    options.scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
+    options.queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
     
     cec_control::CECDaemon daemon(options);
     if (!daemon.start()) {
@@ -212,8 +214,6 @@ int main(int argc, char* argv[]) {
     
     // Run the main loop
     daemon.run();
-    
-    delete configManager;
     
     return EXIT_SUCCESS;
 }
