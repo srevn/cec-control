@@ -253,12 +253,19 @@ void DBusMonitor::monitorLoop() {
     
     LOG_INFO("D-Bus monitor thread started with event-driven approach");
     
+    // Pre-allocate poll file descriptors vector
+    std::vector<struct pollfd> pollfds;
+    pollfds.reserve(10);
+    
     while (m_running) {
+        // Clear vector but maintain capacity
+        pollfds.clear();
+        
         std::vector<struct pollfd> pollfds;
         int maxTimeout = -1;
         int64_t now = 0;
         bool hasTimeouts = false;
-
+        
         // Add all watched file descriptors to the poll set
         {
             std::lock_guard<std::mutex> lock(m_watchMutex);
