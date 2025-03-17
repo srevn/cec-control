@@ -105,6 +105,13 @@ if(PKG_CONFIG_FOUND)
       OUTPUT_STRIP_TRAILING_WHITESPACE
     )
 
+    # Set the user for the service file
+    if(DEFINED ENV{USER})
+      set(INSTALL_USER $ENV{USER})
+    else()
+      set(INSTALL_USER $ENV{LOGNAME})
+    endif()
+
     configure_file(
       ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-daemon.service
       ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
@@ -123,12 +130,6 @@ if(PKG_CONFIG_FOUND)
       install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
     else()
       # For user installation, install to user systemd directory
-      if(DEFINED ENV{USER})
-        set(INSTALL_USER $ENV{USER})
-      else()
-        set(INSTALL_USER $ENV{LOGNAME})
-      endif()
-      
       execute_process(
         COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=systemduserunitdir systemd
         OUTPUT_VARIABLE SYSTEMD_USER_UNIT_DIR
