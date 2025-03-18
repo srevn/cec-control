@@ -378,4 +378,18 @@ void CECAdapter::cecMenuCallback(void *cbParam, const CEC::cec_menu_state state)
     LOG_DEBUG("CEC menu state changed: ", static_cast<int>(state));
 }
 
+bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
+    if (!m_adapter || !m_connected) return false;
+
+    return m_adapter->StandbyDevices(address);
+}
+
+bool CECAdapter::powerOnDevices(CEC::cec_logical_address address) {
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
+    if (!m_adapter || !m_connected) return false;
+
+    return m_adapter->PowerOnDevices(address);
+}
+
 } // namespace cec_control
