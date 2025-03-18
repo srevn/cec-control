@@ -160,6 +160,12 @@ public:
      * @return logical address of the active source, or CECDEVICE_UNKNOWN if none
      */
     CEC::cec_logical_address getActiveSource() const;
+    
+    /**
+     * Set whether the system should auto-suspend when the TV powers off
+     * @param enabled Whether to enable or disable the feature
+     */
+    void setAutoStandby(bool enabled);
 
     /**
      * Send standby commands to configured devices
@@ -203,6 +209,11 @@ private:
         // where the command was sent but no acknowledgment is expected
         return result != -1;  // Only treat -1 as absolute failure
     }
+    
+    // Callback handler for power status changes
+    static void cecPowerStatusCallback(void *cbParam, const CEC::cec_logical_address address, 
+                                      const CEC::cec_power_status newStatus,
+                                      const CEC::cec_power_status prevStatus);
 };
 
 } // namespace cec_control

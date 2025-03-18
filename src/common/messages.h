@@ -17,6 +17,7 @@ enum class MessageType : uint8_t {
     CMD_RESTART_ADAPTER,
     CMD_SUSPEND,           // Suspend CEC operations (system sleep)
     CMD_RESUME,            // Resume CEC operations (system wake)
+    CMD_AUTO_STANDBY,
     
     // Response messages (daemon to client)
     RESP_SUCCESS = 100,

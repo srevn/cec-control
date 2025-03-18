@@ -68,6 +68,13 @@ bool CECClient::parseArgs(int argc, char* argv[]) {
         }
         m_command = CommandBuilder::buildSourceCommand(argv[2], argv[3]);
     }
+    else if (command == "auto-standby") {
+        if (argc < 3) {
+            std::cerr << "Error: auto-standby command requires 'on' or 'off'" << std::endl;
+            return false;
+        }
+        m_command = CommandBuilder::buildAutoStandbyCommand(argv[2]);
+    }
     else if (command == "restart") {
         m_command = CommandBuilder::buildRestartCommand();
     }

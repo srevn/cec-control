@@ -17,6 +17,7 @@ void printUsage() {
               << "  volume (up|down|mute) DEVICE_ID   Control volume\n"
               << "  power (on|off) DEVICE_ID          Power device on or off\n"
               << "  source DEVICE_ID SOURCE_ID        Change input source (see SOURCE_ID details below)\n"
+              << "  auto-standby (on|off)             Auto-suspend PC when TV powers off\n"
               << "  restart                           Restart CEC adapter\n"
               << "  suspend                           Suspend CEC operations (system sleep)\n"
               << "  resume                            Resume CEC operations (system wake)\n"

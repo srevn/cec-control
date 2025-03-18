@@ -72,6 +72,7 @@ void CECAdapter::setupCallbacks() {
         m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
         m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
         m_config.callbacks->alert = CECAdapter::cecAlertCallback;
+        m_config.callbacks->powerStatusChanged = CECAdapter::cecPowerStatusCallback;
         
         // Use a lambda that returns int for menuStateChanged
         m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
@@ -371,11 +372,51 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
     }
 }
 
+void CECAdapter::cecPowerStatusCallback(void *cbParam, const CEC::cec_logical_address address, 
+                                       const CEC::cec_power_status newStatus,
+                                       const CEC::cec_power_status prevStatus) {
+    CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
+    if (!adapter) return;
+    
+    // We're only interested in TV (address 0) power changes
+    if (address == CEC::CECDEVICE_TV) {
+        LOG_INFO("TV power status changed from ", 
+                static_cast<int>(prevStatus), " to ", 
+                static_cast<int>(newStatus));
+        
+        // Check if TV changed from ON to STANDBY
+        if (prevStatus == CEC::CEC_POWER_STATUS_ON && 
+            newStatus == CEC::CEC_POWER_STATUS_STANDBY) {
+            
+            // Check if auto-standby is enabled in config
+            if (adapter->m_config.bPowerOffOnStandby) {
+                LOG_INFO("TV powered off and auto-standby is enabled. Initiating system suspend...");
+                
+                // Use D-Bus to initiate system suspend
+                std::thread([]{
+                    LOG_INFO("Executing suspend command via D-Bus");
+                    // Delay suspend to give user a chance to cancel if needed
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    
+                    // Execute the D-Bus command to suspend the system
+                    system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
+                           "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+                }).detach();
+            }
+        }
+    }
+}
+
 void CECAdapter::cecMenuCallback(void *cbParam, const CEC::cec_menu_state state) {
     CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
     if (!adapter) return;
     
     LOG_DEBUG("CEC menu state changed: ", static_cast<int>(state));
+}
+
+void CECAdapter::setAutoStandby(bool enabled) {
+    m_config.bPowerOffOnStandby = enabled ? 1 : 0;
+    LOG_INFO("Auto-standby feature ", enabled ? "enabled" : "disabled");
 }
 
 bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {

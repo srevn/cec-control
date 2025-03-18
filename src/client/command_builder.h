@@ -37,6 +37,14 @@ public:
     static std::optional<Message> buildSourceCommand(const std::string& deviceId, const std::string& source);
     
     /**
+     * Build a command to control TV auto-standby feature 
+     * (suspend PC when TV powers off)
+     * @param enabled "on" or "off"
+     * @return The command message, or empty optional on error
+     */
+    static std::optional<Message> buildAutoStandbyCommand(const std::string& enabled);
+    
+    /**
      * Build a restart adapter command
      * @return The command message
      */

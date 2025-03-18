@@ -76,6 +76,23 @@ std::optional<Message> CommandBuilder::buildSourceCommand(const std::string& dev
     return cmd;
 }
 
+std::optional<Message> CommandBuilder::buildAutoStandbyCommand(const std::string& enabled) {
+    Message cmd;
+    cmd.type = MessageType::CMD_AUTO_STANDBY;
+    cmd.deviceId = 0;
+    
+    if (enabled == "on") {
+        cmd.data.push_back(1);  // Enabled
+    } else if (enabled == "off") {
+        cmd.data.push_back(0);  // Disabled
+    } else {
+        std::cerr << "Error: Auto-standby must be 'on' or 'off'" << std::endl;
+        return std::nullopt;
+    }
+    
+    return cmd;
+}
+
 Message CommandBuilder::buildRestartCommand() {
     Message cmd;
     cmd.type = MessageType::CMD_RESTART_ADAPTER;

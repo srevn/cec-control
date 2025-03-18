@@ -275,7 +275,17 @@ Message CECManager::handleCommand(const Message& command) {
                 success = m_deviceOps->setSource(command.deviceId, command.data[0]);
             }
             break;    
-            
+        
+        case MessageType::CMD_AUTO_STANDBY:
+            if (!command.data.empty()) {
+                bool enabled = command.data[0] > 0;
+                if (m_adapter) {
+                    m_adapter->setAutoStandby(enabled);
+                    success = true;
+                }
+            }
+            break;
+        
         case MessageType::CMD_RESTART_ADAPTER:
             // Create a shared future for the restart operation
             {
