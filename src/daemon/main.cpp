@@ -205,6 +205,7 @@ int main(int argc, char* argv[]) {
     cec_control::CECDaemon::Options options;
     options.scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
     options.queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    options.enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
     
     cec_control::CECDaemon daemon(options);
     if (!daemon.start()) {

@@ -98,10 +98,14 @@ bool CECDaemon::start() {
         LOG_INFO("Setting up signal handlers...");
         setupSignalHandlers();
         
-        // Set up power monitoring
-        LOG_INFO("Setting up power monitor...");
-        if (!setupPowerMonitor()) {
-            LOG_WARNING("Failed to set up power monitoring. Sleep/wake events will not be handled automatically.");
+        // Set up power monitoring if enabled
+        if (m_options.enablePowerMonitor) {
+            LOG_INFO("Setting up power monitor...");
+            if (!setupPowerMonitor()) {
+                LOG_WARNING("Failed to set up power monitoring. Sleep/wake events will not be handled automatically.");
+            }
+        } else {
+            LOG_INFO("D-Bus power monitoring disabled via configuration. Suspend/resume operations will require manual commands.");
         }
         
         m_running = true;

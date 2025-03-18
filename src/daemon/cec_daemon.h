@@ -20,10 +20,12 @@ public:
     struct Options {
         bool scanDevicesAtStartup;       // Whether to scan for devices at startup
         bool queueCommandsDuringSuspend; // Whether to queue commands during suspend
+        bool enablePowerMonitor;         // Whether to enable D-Bus power state monitoring
         
         Options() 
             : scanDevicesAtStartup(false),
-              queueCommandsDuringSuspend(true) {}  // Queue commands by default
+              queueCommandsDuringSuspend(true),
+              enablePowerMonitor(true) {}
     };
     
     CECDaemon(Options options = Options());
