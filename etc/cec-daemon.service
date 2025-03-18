@@ -21,8 +21,5 @@ CacheDirectoryMode=0750
 LogsDirectory=cec-control
 LogsDirectoryMode=0750
 
-# Environment variable to indicate we're running as a system service
-Environment=CEC_CONTROL_ENVIRONMENT=system_service
-
 [Install]
 WantedBy=multi-user.target

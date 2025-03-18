@@ -73,20 +73,23 @@ target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} ${DBUS_LIBRARIES} pthread s
 target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread stdc++fs)
 
 # Install targets
-install(TARGETS cec-daemon DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(TARGETS cec-client DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS cec-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS cec-daemon RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Add installation option for system-wide installation
 option(SYSTEM_WIDE_INSTALL "Install for all users (requires root privileges)" OFF)
+
+if(NOT SYSTEM_WIDE_INSTALL)
+  # For user installation, set the install prefix to ~/.local by default
+  if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/.local" CACHE PATH "User installation prefix" FORCE)
+  endif()
+endif()
 
 # Define system-wide and user-specific paths
 set(SYSTEM_CONFIG_DIR "/usr/local/etc/cec-control")
 set(SYSTEM_LOG_DIR "/var/log/cec-control")
 set(SYSTEM_RUNTIME_DIR "/run/cec-control")
-
-# Install targets
-install(TARGETS cec-daemon cec-client 
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Install documentation
 install(FILES 
@@ -129,24 +132,26 @@ if(PKG_CONFIG_FOUND)
       # Create message about enabling the service
       install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
     else()
-      # For user installation, install to user systemd directory
-      execute_process(
-        COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=systemduserunitdir systemd
-        OUTPUT_VARIABLE SYSTEMD_USER_UNIT_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
-      
-      if(SYSTEMD_USER_UNIT_DIR)
-        install(
-          FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
-          DESTINATION ${SYSTEMD_USER_UNIT_DIR}
-          PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-          OPTIONAL
-        )
+      # For user installation, install to XDG user's systemd directory
+      install(CODE "
+        # Determine XDG_CONFIG_HOME
+        set(XDG_CONFIG_HOME \"$ENV{XDG_CONFIG_HOME}\")
+        if(NOT XDG_CONFIG_HOME)
+          set(XDG_CONFIG_HOME \"$ENV{HOME}/.config\")
+        endif()
         
-        # Create message about enabling the user service
-        install(CODE "message(STATUS \"To enable the user service, run: systemctl --user enable --now cec-daemon.service\")")
-      endif()
+        # Create user systemd directory
+        set(USER_SYSTEMD_DIR \"\${XDG_CONFIG_HOME}/systemd/user\")
+        file(MAKE_DIRECTORY \"\${USER_SYSTEMD_DIR}\")
+        
+        # Install service file
+        file(INSTALL \"${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service\"
+             DESTINATION \"\${USER_SYSTEMD_DIR}\"
+             FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+        
+        message(STATUS \"User service installed to \${USER_SYSTEMD_DIR}/cec-daemon.service\")
+        message(STATUS \"To enable the user service, run: systemctl --user enable --now cec-daemon.service\")
+      ")
     endif()
   else()
     message(STATUS "systemd not found, skipping service installation")
@@ -254,5 +259,5 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "libcec version: ${LIBCEC_VERSION}")
 message(STATUS "dbus version: ${DBUS_VERSION}")
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
-message(STATUS "Binary install location: ${CMAKE_INSTALL_FULL_BINDIR}")
+message(STATUS "Binary install location: ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}")
 message(STATUS "System-wide installation: ${SYSTEM_WIDE_INSTALL}")
