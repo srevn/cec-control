@@ -326,6 +326,47 @@ Message CECManager::handleCommand(const Message& command) {
     }
 }
 
+bool CECManager::standbyDevices() {
+    // Take the global adapter mutex to ensure thread safety
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    
+    if (!m_adapter || !isAdapterValid()) {
+        LOG_ERROR("Cannot standby devices - CEC adapter not initialized or not connected");
+        return false;
+    }
+    
+    try {
+        LOG_INFO("Sending standby commands to configured devices");
+        // Use CECDEVICE_BROADCAST to use the powerOffDevices bitmask from configuration
+        return m_adapter->standbyDevices(CEC::CECDEVICE_BROADCAST);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception sending standby commands: ", e.what());
+        return false;
+    }
+}
+
+bool CECManager::powerOnDevices() {
+    // Take the global adapter mutex to ensure thread safety
+    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    
+    if (!m_adapter || !isAdapterValid()) {
+        LOG_ERROR("Cannot power on devices - CEC adapter not initialized or not connected");
+        return false;
+    }
+    
+    try {
+        LOG_INFO("Sending power on commands to configured devices");
+        // According to the API, this will use the wakeDevices bitmask from configuration
+        // when using CECDEVICE_TV (which is the default)
+        return m_adapter->powerOnDevices(CEC::CECDEVICE_TV);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception sending power on commands: ", e.what());
+        return false;
+    }
+}
+
 void CECManager::scanDevices() {
     if (!isAdapterValid()) return;
     

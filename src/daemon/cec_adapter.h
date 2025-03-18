@@ -161,6 +161,20 @@ public:
      */
     CEC::cec_logical_address getActiveSource() const;
 
+    /**
+     * Send standby commands to configured devices
+     * @param address The logical address to put in standby (CECDEVICE_BROADCAST uses powerOffDevices list)
+     * @return True on success, false otherwise
+     */
+    bool standbyDevices(CEC::cec_logical_address address = CEC::CECDEVICE_BROADCAST);
+    
+    /**
+     * Power on configured devices
+     * @param address The logical address to power on (CECDEVICE_TV uses wakeDevices list)
+     * @return True on success, false otherwise
+     */
+    bool powerOnDevices(CEC::cec_logical_address address = CEC::CECDEVICE_TV);
+
 private:
     // Configuration
     Options m_options;

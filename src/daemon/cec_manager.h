@@ -55,6 +55,16 @@ public:
     // Scan for connected CEC devices
     void scanDevices();
 
+    /**
+     * Send standby commands to devices specified in the powerOffDevices mask
+     */
+    bool standbyDevices();
+    
+    /**
+     * Power on devices specified in the wakeDevices mask
+     */
+    bool powerOnDevices();
+
 private:
     // Components
     std::unique_ptr<CommandQueue> m_commandQueue;

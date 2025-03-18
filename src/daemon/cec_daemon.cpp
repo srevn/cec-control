@@ -255,6 +255,10 @@ void CECDaemon::onSuspend() {
         if (m_cecManager) {
             auto startTime = std::chrono::steady_clock::now();
             
+            // Send standby command to connected devices before shutting down
+            LOG_INFO("Sending standby commands to connected CEC devices");
+            m_cecManager->standbyDevices();
+            
             m_cecManager->shutdown();
             LOG_INFO("CEC adapter suspended");
             
@@ -304,6 +308,10 @@ void CECDaemon::onResume() {
         
         if (reconnectSuccessful) {
             LOG_INFO("CEC adapter reconnected successfully on resume");
+            
+            // Power on connected CEC devices
+            LOG_INFO("Powering on connected CEC devices");
+            m_cecManager->powerOnDevices();
         } else {
             LOG_ERROR("Failed to reconnect CEC adapter on resume");
             
