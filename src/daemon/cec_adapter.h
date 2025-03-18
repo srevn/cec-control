@@ -209,11 +209,6 @@ private:
         // where the command was sent but no acknowledgment is expected
         return result != -1;  // Only treat -1 as absolute failure
     }
-    
-    // Callback handler for power status changes
-    static void cecPowerStatusCallback(void *cbParam, const CEC::cec_logical_address address, 
-                                      const CEC::cec_power_status newStatus,
-                                      const CEC::cec_power_status prevStatus);
 };
 
 } // namespace cec_control
