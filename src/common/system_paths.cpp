@@ -23,7 +23,7 @@ const std::string SystemPaths::LOG_FILENAME = "daemon.log";
 const std::string SystemPaths::SOCKET_FILENAME = "socket";
 
 // Standard system paths
-const std::string SystemPaths::SYSTEM_CONFIG_BASE = "/usr/local/etc";
+const std::string SystemPaths::SYSTEM_CONFIG_BASE = "/etc";
 const std::string SystemPaths::SYSTEM_LOG_BASE = "/var/log";
 const std::string SystemPaths::SYSTEM_RUN_BASE = "/run";
 

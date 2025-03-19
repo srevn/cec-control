@@ -23,8 +23,13 @@ pkg_check_modules(LIBCEC REQUIRED libcec>=4.0.0)
 # Find D-Bus
 pkg_check_modules(DBUS REQUIRED dbus-1>=1.6)
 
-# Define XDG installation paths based on GNU standards
+# Define installation paths
 include(GNUInstallDirs)
+
+# Define application paths
+set(CONFIG_DIR "/etc/cec-control")
+set(LOG_DIR "/var/log/cec-control")
+set(RUNTIME_DIR "/run/cec-control")
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -76,19 +81,51 @@ target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread stdc++fs)
 install(TARGETS cec-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS cec-daemon RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# Always do system-wide installation
-set(SYSTEM_WIDE_INSTALL ON CACHE BOOL "Install for all users (requires root privileges)" FORCE)
-
-# Define system-wide and user-specific paths
-set(SYSTEM_CONFIG_DIR "/usr/local/etc/cec-control")
-set(SYSTEM_LOG_DIR "/var/log/cec-control")
-set(SYSTEM_RUNTIME_DIR "/run/cec-control")
-
 # Install documentation
 install(FILES 
         ${CMAKE_CURRENT_SOURCE_DIR}/docs/configuration.md
         ${CMAKE_CURRENT_SOURCE_DIR}/docs/default-paths.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+# Install configuration sample (don't overwrite existing)
+install(
+  FILES ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf
+  DESTINATION ${CONFIG_DIR}
+  RENAME "config.conf.sample"
+  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+)
+
+# Create necessary directories
+install(CODE "
+  # Create config directory
+  if(NOT EXISTS \"${CONFIG_DIR}\")
+    file(MAKE_DIRECTORY \"${CONFIG_DIR}\")
+    execute_process(COMMAND chmod 755 \"${CONFIG_DIR}\")
+    execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}\")
+  endif()
+  
+  # Create log directory
+  if(NOT EXISTS \"${LOG_DIR}\")
+    file(MAKE_DIRECTORY \"${LOG_DIR}\")
+    execute_process(COMMAND chmod 755 \"${LOG_DIR}\")
+    execute_process(COMMAND chown root:wheel \"${LOG_DIR}\")
+  endif()
+  
+  # Copy sample config to real config only if it doesn't exist
+  if(NOT EXISTS \"${CONFIG_DIR}/config.conf\")
+    file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
+         DESTINATION \"${CONFIG_DIR}\"
+         RENAME \"config.conf\"
+         FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+    execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}/config.conf\")
+    message(STATUS \"Configuration installed at ${CONFIG_DIR}/config.conf\")
+  else()
+    message(STATUS \"Existing configuration found at ${CONFIG_DIR}/config.conf - not overwriting\")
+  endif()
+  
+  # Make sure the sample config is owned by root too
+  execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}/config.conf.sample\")
+")
 
 # Install systemd service file if systemd is available
 if(PKG_CONFIG_FOUND)
@@ -101,12 +138,9 @@ if(PKG_CONFIG_FOUND)
       OUTPUT_STRIP_TRAILING_WHITESPACE
     )
 
-    # Set the user for the service file
-    if(DEFINED ENV{USER})
-      set(INSTALL_USER $ENV{USER})
-    else()
-      set(INSTALL_USER $ENV{LOGNAME})
-    endif()
+    # Set the user and group for the service file to root
+    set(INSTALL_USER "root")
+    set(INSTALL_GROUP "wheel")
 
     configure_file(
       ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-daemon.service
@@ -123,55 +157,10 @@ if(PKG_CONFIG_FOUND)
     
     # Create message about enabling the service
     install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
+    install(CODE "message(STATUS \"Note: The service is configured to run as root for hardware access\")")
   else()
     message(STATUS "systemd not found, skipping service installation")
   endif()
-endif()
-
-# System-wide installation
-if(SYSTEM_WIDE_INSTALL)
-  # Install system-wide configuration
-  install(
-    FILES ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf
-    DESTINATION ${SYSTEM_CONFIG_DIR}
-    RENAME "config.conf.default"
-    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-  )
-  
-  # Create system directories
-  install(CODE "
-    # Create system config directory if it doesn't exist
-    if(NOT EXISTS \"${SYSTEM_CONFIG_DIR}\")
-      file(MAKE_DIRECTORY \"${SYSTEM_CONFIG_DIR}\")
-      execute_process(COMMAND chmod 755 \"${SYSTEM_CONFIG_DIR}\")
-    endif()
-    
-    # Create system log directory if it doesn't exist
-    if(NOT EXISTS \"${SYSTEM_LOG_DIR}\")
-      file(MAKE_DIRECTORY \"${SYSTEM_LOG_DIR}\")
-      execute_process(COMMAND chmod 755 \"${SYSTEM_LOG_DIR}\")
-    endif()
-    
-    # Don't override existing config
-    if(NOT EXISTS \"${SYSTEM_CONFIG_DIR}/config.conf\")
-      file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
-           DESTINATION \"${SYSTEM_CONFIG_DIR}\"
-           RENAME \"config.conf\"
-           FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-      message(STATUS \"System configuration installed at ${SYSTEM_CONFIG_DIR}/config.conf\")
-    else()
-      message(STATUS \"Existing system configuration found at ${SYSTEM_CONFIG_DIR}/config.conf - not overwriting\")
-    endif()
-  ")
-  
-  # Create message about checking permissions
-  install(CODE "message(STATUS \"Ensure the system directories have appropriate permissions:\")")
-  install(CODE "message(STATUS \"  sudo chown -R root:root ${SYSTEM_CONFIG_DIR}\")")
-  install(CODE "message(STATUS \"  sudo chmod 755 ${SYSTEM_CONFIG_DIR}\")")
-  install(CODE "message(STATUS \"  sudo mkdir -p ${SYSTEM_LOG_DIR}\")")
-  install(CODE "message(STATUS \"  sudo chown -R root:root ${SYSTEM_LOG_DIR}\")")
-  install(CODE "message(STATUS \"  sudo chmod 755 ${SYSTEM_LOG_DIR}\")")
-  
 endif()
 
 # Create uninstall target
@@ -189,4 +178,6 @@ message(STATUS "libcec version: ${LIBCEC_VERSION}")
 message(STATUS "dbus version: ${DBUS_VERSION}")
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Binary install location: ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}")
-message(STATUS "System-wide installation: ${SYSTEM_WIDE_INSTALL}")
+message(STATUS "Config directory: ${CONFIG_DIR}")
+message(STATUS "Log directory: ${LOG_DIR}")
+message(STATUS "Runtime directory: ${RUNTIME_DIR}")

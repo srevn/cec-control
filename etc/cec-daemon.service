@@ -6,20 +6,10 @@ Wants=dbus.service
 [Service]
 Type=simple
 User=@INSTALL_USER@
-Group=@INSTALL_USER@
+Group=@INSTALL_GROUP@
 ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
 Restart=on-failure
 RestartSec=5
-
-# Runtime directories and permissions
-RuntimeDirectory=cec-control
-RuntimeDirectoryMode=0755
-StateDirectory=cec-control
-StateDirectoryMode=0750
-CacheDirectory=cec-control
-CacheDirectoryMode=0750
-LogsDirectory=cec-control
-LogsDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
