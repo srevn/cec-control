@@ -11,8 +11,9 @@ namespace cec_control {
 // Mutex for synchronizing adapter operations across all instances
 static std::mutex g_adapterMutex;
 
-CECManager::CECManager(Options options) 
-    : m_options(options) {
+CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool) 
+    : m_options(options),
+      m_threadPool(threadPool) {
     // Create the components
     CECAdapter::Options adapterOptions;
     
@@ -171,11 +172,21 @@ bool CECManager::reconnect() {
                 // If running as a systemd service, exit with error
                 if (getenv("NOTIFY_SOCKET") != nullptr) {
                     LOG_INFO("Notifying systemd of persistent adapter failure");
-                    std::thread([]() {
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
-                        LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                        exit(EXIT_FAILURE);
-                    }).detach();
+                    // Use thread pool if available, otherwise fall back to detached thread
+                    if (m_threadPool) {
+                        m_threadPool->submit([]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(1));
+                            LOG_FATAL("Exiting due to persistent CEC adapter failure");
+                            exit(EXIT_FAILURE);
+                        });
+                    } else {
+                        // Fallback to detached thread if no thread pool available
+                        std::thread([]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(1));
+                            LOG_FATAL("Exiting due to persistent CEC adapter failure");
+                            exit(EXIT_FAILURE);
+                        }).detach();
+                    }
                 }
             }
             
@@ -288,8 +299,8 @@ Message CECManager::handleCommand(const Message& command) {
             {
                 LOG_INFO("Processing restart adapter command");
                 
-                // Run this in a new thread but use the reconnect method which has proper synchronization
-                std::thread([this]() {
+                // Run this in a thread pool task if available
+                auto restartTask = [this]() {
                     LOG_INFO("Performing asynchronous adapter restart");
                     
                     // Acquire the adapter mutex so no other operations can interfere
@@ -314,7 +325,15 @@ Message CECManager::handleCommand(const Message& command) {
                     } else {
                         LOG_ERROR("Failed to restart adapter");
                     }
-                }).detach();
+                };
+                
+                if (m_threadPool) {
+                    // Use thread pool for better resource management
+                    m_threadPool->submit(restartTask);
+                } else {
+                    // Fallback to detached thread if no thread pool available
+                    std::thread(restartTask).detach();
+                }
                 
                 // Return success immediately, actual restart happens in background
                 success = true;

@@ -15,6 +15,7 @@
 #include "cec_adapter.h"
 #include "command_throttler.h"
 #include "device_operations.h"
+#include "thread_pool.h"
 
 namespace cec_control {
 
@@ -30,7 +31,8 @@ public:
               commandTimeoutMs(5000) {}  // 5 second default timeout
     };
 
-    CECManager(Options options = Options());
+    // Constructor now takes a thread pool reference for background operations
+    CECManager(Options options = Options(), std::shared_ptr<ThreadPool> threadPool = nullptr);
     ~CECManager();
 
     // Initialize the CEC adapter
@@ -74,6 +76,9 @@ private:
     
     // Options
     Options m_options;
+    
+    // Thread pool for background operations (may be shared with daemon)
+    std::shared_ptr<ThreadPool> m_threadPool;
 
     // Internal command handler for the command queue
     Message handleCommand(const Message& command);

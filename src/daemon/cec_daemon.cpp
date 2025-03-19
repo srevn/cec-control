@@ -28,7 +28,7 @@ CECDaemon::CECDaemon(Options options)
       m_queueCommandsDuringSuspend(options.queueCommandsDuringSuspend) {
     
     // Create thread pool for background tasks (4 threads)
-    m_threadPool = std::make_unique<ThreadPool>(4);
+    m_threadPool = std::make_shared<ThreadPool>(4);
     
     // Set static instance
     s_instance = this;
@@ -50,11 +50,11 @@ bool CECDaemon::start() {
     LOG_INFO("Starting CEC daemon");
     
     try {
-        // Create CEC manager with our options
+        // Create CEC manager with our options and shared thread pool
         CECManager::Options cecOptions;
         cecOptions.scanDevicesAtStartup = m_options.scanDevicesAtStartup;
         
-        m_cecManager = std::make_unique<CECManager>(cecOptions);
+        m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
         if (!m_cecManager) {
             LOG_ERROR("Failed to create CEC manager");
             return false;
@@ -80,9 +80,9 @@ bool CECDaemon::start() {
             return false;
         }
         
-        // Create socket server
-        LOG_INFO("Creating socket server...");
-        m_socketServer = std::make_unique<SocketServer>();
+        // Create socket server with shared thread pool
+        LOG_INFO("Creating socket server with shared thread pool...");
+        m_socketServer = std::make_unique<SocketServer>(m_threadPool);
         if (!m_socketServer) {
             LOG_ERROR("Failed to create socket server");
             m_cecManager->shutdown();
@@ -541,29 +541,42 @@ void CECDaemon::signalHandler(int signal) {
             if (count == 1 && !shutdownInitiated.exchange(true)) {
                 LOG_INFO("Initiating graceful shutdown sequence");
                 
-                // Use thread pool if available, otherwise create a thread
-                // A dedicated shutdown thread is more reliable than relying on thread pool
-                std::thread([instance]() {
-                    LOG_INFO("Shutdown thread started");
-                    
-                    try {
-                        // Stop all daemon components in order
-                        LOG_INFO("Stopping daemon services");
-                        instance->stop();
+                // Use our thread pool for shutdown (with high priority)
+                if (instance->m_threadPool) {
+                    instance->m_threadPool->submit([instance]() {
+                        LOG_INFO("Shutdown thread started");
                         
-                        // Signal successful exit
-                        LOG_INFO("Shutdown completed successfully");
-                    } 
-                    catch (const std::exception& e) {
-                        LOG_ERROR("Exception during shutdown: ", e.what());
-                    }
-                    catch (...) {
-                        LOG_ERROR("Unknown exception during shutdown");
-                    }
-                    
-                    // Always exit after shutdown thread completes
-                    _exit(0);
-                }).detach();
+                        try {
+                            // Stop all daemon components in order
+                            LOG_INFO("Stopping daemon services");
+                            instance->stop();
+                            
+                            // Signal successful exit
+                            LOG_INFO("Shutdown completed successfully");
+                        } 
+                        catch (const std::exception& e) {
+                            LOG_ERROR("Exception during shutdown: ", e.what());
+                        }
+                        catch (...) {
+                            LOG_ERROR("Unknown exception during shutdown");
+                        }
+                        
+                        // Always exit after shutdown thread completes
+                        _exit(0);
+                    });
+                } else {
+                    // Fallback if thread pool is unavailable
+                    std::thread([instance]() {
+                        LOG_INFO("Shutdown thread started (fallback mode)");
+                        try {
+                            instance->stop();
+                            LOG_INFO("Shutdown completed successfully");
+                        } catch (...) {
+                            LOG_ERROR("Exception during shutdown");
+                        }
+                        _exit(0);
+                    }).detach();
+                }
                 
                 return;
             } 

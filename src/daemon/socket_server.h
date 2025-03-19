@@ -20,14 +20,17 @@ public:
     
     /**
      * Create socket server with default system socket path
+     * @param threadPool Optional external thread pool to use
      */
-    SocketServer() : SocketServer(SystemPaths::getSocketPath()) {}
+    SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr) 
+        : SocketServer(SystemPaths::getSocketPath(), threadPool) {}
     
     /**
      * Create socket server with specified socket path
      * @param socketPath Path to the socket file
+     * @param threadPool Optional external thread pool to use
      */
-    explicit SocketServer(const std::string& socketPath);
+    explicit SocketServer(const std::string& socketPath, std::shared_ptr<ThreadPool> threadPool = nullptr);
     
     ~SocketServer();
     
@@ -51,7 +54,7 @@ private:
     ClientHandler m_cmdHandler;
     
     // Thread pool for client connections
-    std::unique_ptr<ThreadPool> m_threadPool;
+    std::shared_ptr<ThreadPool> m_threadPool;
     
     // Active client connections
     std::mutex m_clientsMutex;

@@ -2,6 +2,7 @@
 #include "../common/logger.h"
 #include "../common/buffer_manager.h"
 #include "../common/system_paths.h"
+#include "../common/protocol.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -17,18 +18,12 @@
 
 namespace cec_control {
 
-SocketServer::SocketServer(const std::string& socketPath)
-    : m_socketFd(-1),
+// Fix the member initialization order to match class declaration order
+SocketServer::SocketServer(const std::string& socketPath, std::shared_ptr<ThreadPool> threadPool)
+    : m_socketPath(socketPath),
+      m_socketFd(-1),
       m_running(false),
-      m_cmdHandler(nullptr) {
-    
-    if (socketPath.empty()) {
-        m_socketPath = SystemPaths::getSocketPath();
-    } else {
-        m_socketPath = socketPath;
-    }
-    
-    LOG_INFO("Using socket path: ", m_socketPath);
+      m_threadPool(threadPool) {
 }
 
 SocketServer::~SocketServer() {
@@ -45,14 +40,19 @@ bool SocketServer::start() {
         return false;
     }
     
-    // Create thread pool - use a reasonable number of threads based on CPU cores
-    // but limit to a maximum of 8 threads to avoid resource exhaustion
-    unsigned int threadCount = std::min(std::thread::hardware_concurrency(), 8U);
-    if (threadCount == 0) threadCount = 4; // Default if hardware_concurrency is not available
-    
-    m_threadPool = std::make_unique<ThreadPool>(threadCount);
-    m_threadPool->start();
-    LOG_INFO("Created thread pool with ", threadCount, " worker threads for client connections");
+    // Create thread pool if one wasn't provided
+    if (!m_threadPool) {
+        // Use a reasonable number of threads based on CPU cores
+        // but limit to a maximum of 8 threads to avoid resource exhaustion
+        unsigned int threadCount = std::min(std::thread::hardware_concurrency(), 8U);
+        if (threadCount == 0) threadCount = 4; // Default if hardware_concurrency is not available
+        
+        m_threadPool = std::make_unique<ThreadPool>(threadCount);
+        m_threadPool->start();
+        LOG_INFO("Created thread pool with ", threadCount, " worker threads for client connections");
+    } else {
+        LOG_INFO("Using shared thread pool for client connections");
+    }
     
     m_running = true;
     m_serverThread = std::thread(&SocketServer::serverLoop, this);
