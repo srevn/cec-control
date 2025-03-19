@@ -257,8 +257,25 @@ cec_control::CECDaemon::Options createDaemonOptions(const cec_control::ConfigMan
  * @return True if running under systemd
  */
 bool isRunningUnderSystemd() {
+    // Primary method: Check for NOTIFY_SOCKET environment variable
     const char* notifySocket = getenv("NOTIFY_SOCKET");
-    return (notifySocket && *notifySocket);
+    if (notifySocket && *notifySocket) {
+        return true;
+    }
+    
+    // Secondary method: Check for INVOCATION_ID (set for systemd services)
+    const char* invocationId = getenv("INVOCATION_ID");
+    if (invocationId && *invocationId) {
+        return true;
+    }
+    
+    // Tertiary method: Check for SYSTEMD_EXEC_PID (should be set to our PID)
+    const char* execPid = getenv("SYSTEMD_EXEC_PID");
+    if (execPid && *execPid) {
+        return true;
+    }
+    
+    return false;
 }
 
 int main(int argc, char* argv[]) {
