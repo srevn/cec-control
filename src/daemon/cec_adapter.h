@@ -35,7 +35,6 @@ public:
             activateSource(false),
             powerOffOnStandby(false),
             systemAudioMode(false) {
-            // Initialize logical addresses to empty
             wakeDevices.Clear();
             powerOffDevices.Clear();
         }
