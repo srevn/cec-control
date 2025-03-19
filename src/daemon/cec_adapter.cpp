@@ -228,42 +228,32 @@ bool CECAdapter::volumeUp() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
     
-    int result = m_adapter->VolumeUp();
-    LOG_DEBUG("Volume up command returned: ", result);
-    return isCecSuccess(result);
+    return m_adapter->VolumeUp();
 }
 
 bool CECAdapter::volumeDown() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
     
-    int result = m_adapter->VolumeDown();
-    LOG_DEBUG("Volume down command returned: ", result);
-    return isCecSuccess(result);
+    return m_adapter->VolumeDown();
 }
 
 bool CECAdapter::toggleMute() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
     
-    int result = m_adapter->AudioToggleMute();
-    LOG_DEBUG("Toggle mute command returned: ", result);
-    return isCecSuccess(result);
+    return m_adapter->AudioToggleMute();
 }
 
 bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
     
-    int result;
     if (release) {
-        result = m_adapter->SendKeyRelease(address);
+        return m_adapter->SendKeyRelease(address);
     } else {
-        result = m_adapter->SendKeypress(address, key, false);
+        return m_adapter->SendKeypress(address, key, false);
     }
-    
-    LOG_DEBUG("Send key", release ? " release" : "press", " command returned: ", result);
-    return isCecSuccess(result);
 }
 
 uint16_t CECAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {

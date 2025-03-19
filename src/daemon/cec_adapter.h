@@ -201,14 +201,6 @@ private:
     static void cecCommandCallback(void *cbParam, const CEC::cec_command* command);
     static void cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter param);
     static void cecMenuCallback(void *cbParam, const CEC::cec_menu_state state);
-
-    // Helper to check if a CEC operation result indicates success
-    // libCEC success codes can be 0 or 1 depending on the command
-    bool isCecSuccess(int result) const {
-        // For volume/audio commands, 1 means success, but 0 can also indicate success in some cases
-        // where the command was sent but no acknowledgment is expected
-        return result != -1;  // Only treat -1 as absolute failure
-    }
 };
 
 } // namespace cec_control
