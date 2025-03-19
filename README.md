@@ -12,13 +12,13 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 - **Input Source Switching**: Change inputs on TVs and receivers
 - **System Integration**: Automatic handling of system sleep/wake events
 - **Daemon/Client Architecture**: Run as a background service with command-line control
-- **XDG Compatible**: Follows the XDG Base Directory Specification
-- **Systemd Integration**: Run as a user or system service
+- **Automatic Power Handling**: Can automatically power off devices when putting PC to sleep
+- **Automatic Suspend**: The PC can be put to sleep when turning off TV
 
 ## Requirements
 
 - Linux-based operating system
-- libcec 4.0.0 or newer
+- libcec 5.0.0 or newer
 - D-Bus 1.6 or newer
 - CMake 3.10 or newer
 - C++ 17 compatible compiler
@@ -47,13 +47,7 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 
 3. Build & Install
    ```bash
-   # For normal user installation
    cmake -B build -S .
-   cmake --build build
-   cmake --install build
-
-   # For system-wide installation
-   cmake -B build -S . -DSYSTEM_WIDE_INSTALL=ON
    cmake --build build
    sudo cmake --install build
    ```
@@ -62,13 +56,6 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 
 After installation, you can enable the CEC daemon service:
 
-For user-level service:
-```bash
-systemctl --user enable cec-daemon.service
-systemctl --user start cec-daemon.service
-```
-
-For system-level service:
 ```bash
 sudo systemctl enable cec-daemon.service
 sudo systemctl start cec-daemon.service
@@ -139,30 +126,36 @@ DEVICE_ID typically ranges from 0-15 and maps to CEC logical addresses:
 
 ## Configuration
 
-CEC Control uses an INI-style configuration file. The default location is:
-- System-wide: `/usr/local/etc/cec-control/config.conf`
-- User-specific: `~/.config/cec-control/config.conf`
-
-### Configuration Examples
-
 ```ini
 [Adapter]
 # Name displayed by the CEC device on the network
-DeviceName = CEC Control
+DeviceName = HTPC
 # Whether to automatically wake the TV when usb is powered
 AutoPowerOn = true
+# Whether to wake the AVR automatically when the source is activated
+AutoWakeAVR = false
 # Whether to activate as source on the bus when starting the application
-ActivateSource = true
+ActivateSource = false
+# Whether to use audiosystem mode
+SystemAudioMode = false
+# Whether to put this PC in standby mode when the TV is switched off
+PowerOffOnStandby = true
+# Comma-separated list of logical addresses (0-15) to wake on resume
+WakeDevices = 0,5
+# Comma-separated list of logical addresses (0-15) to power off on suspend
+PowerOffDevices = 4
 
 [Daemon]
 # Whether to scan for devices at startup
-ScanDevicesAtStartup = true
+ScanDevicesAtStartup = false
 # Whether to queue commands during suspend
 QueueCommandsDuringSuspend = true
+# Whether to enable D-Bus power state monitoring for automatic suspend/resume handling
+EnablePowerMonitor = true
 
 [Throttler]
 # Base interval between commands (milliseconds)
-BaseIntervalMs = 150
+BaseIntervalMs = 200
 # Maximum interval between commands (milliseconds)
 MaxIntervalMs = 1000
 # Maximum retry attempts for failed commands
@@ -171,70 +164,14 @@ MaxRetryAttempts = 3
 
 ## File Locations
 
-CEC Control follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/):
-
-### System Service Mode
-- Config File: `/usr/local/etc/cec-control/config.conf`
+- Config File: `/etc/cec-control/config.conf`
 - Log File: `/var/log/cec-control/daemon.log`
 - Socket Path: `/run/cec-control/socket`
-
-### User Mode
-- Config File: `~/.config/cec-control/config.conf`
-- Log File: `~/.cache/cec-control/daemon.log`
-- Socket Path: `$XDG_RUNTIME_DIR/cec-control/socket` (typically `/run/user/$UID/cec-control/socket`)
 
 Environment variables can override these paths:
 - `CEC_CONTROL_CONFIG`: Override the config file path
 - `CEC_CONTROL_LOG`: Override the log file path
 - `CEC_CONTROL_SOCKET`: Override the socket path
-
-## Troubleshooting
-
-### Common Issues
-
-1. **No CEC adapter found**
-   
-   Ensure your HDMI-CEC adapter is properly connected and supported by libcec.
-   
-   ```bash
-   # Check if libcec can see your adapter
-   cec-client -l
-   ```
-
-2. **Permission Denied**
-
-   When running as a normal user, check that you have permissions to access the CEC adapter:
-   
-   ```bash
-   sudo usermod -a -G plugdev $USER  # May vary depending on your system
-   ```
-
-3. **Client Cannot Connect to Daemon**
-
-   Verify that the daemon is running:
-   
-   ```bash
-   # For user service
-   systemctl --user status cec-daemon
-   
-   # For system service
-   sudo systemctl status cec-daemon
-   ```
-   
-   Check the socket path:
-   
-   ```bash
-   # For system service, use:
-   CEC_CONTROL_SOCKET=/run/cec-control/socket cec-client help
-   ```
-
-4. **Commands Not Working**
-
-   Some TVs may have limited CEC support. Check the daemon logs for details:
-   
-   ```bash
-   cat ~/.cache/cec-control/daemon.log
-   ```
 
 ## Advanced Usage
 

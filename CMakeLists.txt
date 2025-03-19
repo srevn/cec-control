@@ -18,7 +18,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 
 # Find libcec package
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBCEC REQUIRED libcec>=4.0.0)
+pkg_check_modules(LIBCEC REQUIRED libcec>=5.0.0)
 
 # Find D-Bus
 pkg_check_modules(DBUS REQUIRED dbus-1>=1.6)

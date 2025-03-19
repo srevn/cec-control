@@ -2,19 +2,6 @@
 
 CEC Control uses an INI-style configuration file for customizing its behavior. The program follows the XDG Base Directory Specification for finding configuration, cache, and runtime files.
 
-## File Locations
-
-CEC Control follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) exclusively. Locations are:
-
-- **Configuration file**: 
-  - `$XDG_CONFIG_HOME/cec-control/config.conf` (typically `~/.config/cec-control/config.conf`)
-
-- **Log file**: 
-  - `$XDG_CACHE_HOME/cec-control/daemon.log` (typically `~/.cache/cec-control/daemon.log`)
-
-- **Socket file**: 
-  - `$XDG_RUNTIME_DIR/cec-control/socket` (typically `/run/user/[UID]/cec-control/socket`)
-
 ## Specifying an Alternative Configuration File
 
 ### For the daemon:
@@ -33,16 +20,6 @@ cec-daemon --config /path/to/custom/config.conf
 
 ```bash
 cec-client --config=/path/to/custom/config.conf power on 0
-```
-
-## Configuration File Format
-
-The configuration file uses an INI-style format with sections and key-value pairs:
-
-```ini
-[SectionName]
-Key1 = Value1
-Key2 = Value2
 ```
 
 ## Available Configuration Options
@@ -89,6 +66,10 @@ ScanDevicesAtStartup = false
 
 # Whether to queue commands during system suspend
 QueueCommandsDuringSuspend = true
+
+# Enable D-Bus power state monitoring for suspend/resume handling
+# (works with WakeDevices and PowerOffDevices)
+EnablePowerMonitor = true
 ```
 
 ### Throttler Section
@@ -113,17 +94,3 @@ The following string values are recognized as Boolean true:
 - `true`, `yes`, `1`, `on` (case insensitive)
 
 Any other value is considered false.
-
-## Examples
-
-### Minimal Configuration
-
-```ini
-[Adapter]
-DeviceName = CEC Controller
-AutoPowerOn = true
-ActivateSource = true
-
-[Throttler]
-BaseIntervalMs = 150
-```
