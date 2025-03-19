@@ -15,9 +15,6 @@
 #include <cerrno>
 #include <future>
 
-// Use the RuntimeEnvironment enum
-using cec_control::RuntimeEnvironment;
-
 namespace cec_control {
 
 SocketServer::SocketServer(const std::string& socketPath)

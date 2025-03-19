@@ -18,10 +18,9 @@
 /**
  * Set up process for systemd service
  * 
- * @param verboseMode If true, keep stdout/stderr open for logging
  * @return Always returns true
  */
-bool setupService(bool verboseMode) {
+bool setupService() {
     LOG_INFO("Running as system service");
     
     // Redirect stdin to /dev/null (we don't need it)
@@ -39,10 +38,9 @@ bool setupService(bool verboseMode) {
 /**
  * Daemonize the process by forking into the background
  * 
- * @param verboseMode If true, keep stdout/stderr open for logging
  * @return True if we're running in the daemon context, false if we should exit (parent)
  */
-bool daemonize(bool verboseMode) {
+bool daemonize() {
     // Set reasonable file permissions
     umask(022);
     
@@ -96,74 +94,202 @@ bool daemonize(bool verboseMode) {
     return true; // We're the daemon process
 }
 
-int main(int argc, char* argv[]) {
+/**
+ * Structure to hold command line arguments
+ */
+struct ProgramOptions {
     bool verboseMode = false;
     bool runAsDaemon = true;
-    std::string logFile = cec_control::SystemPaths::getLogPath();
+    bool showHelp = false;
+    std::string logFile;
     std::string configFile;
+};
 
+/**
+ * Parse command line arguments
+ * 
+ * @param argc Argument count
+ * @param argv Argument values
+ * @return Parsed program options
+ */
+ProgramOptions parseCommandLine(int argc, char* argv[]) {
+    ProgramOptions options;
+    
+    // Set default paths
+    options.logFile = cec_control::SystemPaths::getLogPath();
+    
     // Process command line options
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        
         if (arg == "--verbose" || arg == "-v") {
-            verboseMode = true;
+            options.verboseMode = true;
         }
         else if (arg == "--foreground" || arg == "-f") {
-            runAsDaemon = false;
+            options.runAsDaemon = false;
         }
         else if ((arg == "--log" || arg == "-l") && i + 1 < argc) {
-            logFile = argv[++i];
+            options.logFile = argv[++i];
+            
+            // Validate log file path
+            if (options.logFile.empty()) {
+                std::cerr << "Error: Empty log file path provided" << std::endl;
+                options.showHelp = true;
+            }
         }
         else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
-            configFile = argv[++i];
+            options.configFile = argv[++i];
+            
+            // Validate config file path
+            if (options.configFile.empty()) {
+                std::cerr << "Error: Empty config file path provided" << std::endl;
+                options.showHelp = true;
+            } else if (!cec_control::SystemPaths::pathExists(options.configFile)) {
+                std::cerr << "Warning: Config file does not exist: " << options.configFile << std::endl;
+                // Don't set showHelp, as this is just a warning
+            }
         }
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: " << argv[0] << " [OPTIONS]\n"
-                      << "Options:\n"
-                      << "  -v, --verbose           Enable verbose logging (to console and log file)\n"
-                      << "  -f, --foreground        Run in foreground (don't daemonize)\n"
-                      << "  -l, --log FILE          Log to FILE (default: " << cec_control::SystemPaths::getLogPath() << ")\n"
-                      << "  -c, --config FILE       Set configuration file path\n"
-                      << "                          (default: " << cec_control::SystemPaths::getConfigPath() << ")\n"
-                      << "  -h, --help              Show this help message\n";
-            return EXIT_SUCCESS;
+            options.showHelp = true;
+        }
+        else {
+            std::cerr << "Error: Unknown option: " << arg << std::endl;
+            options.showHelp = true;
         }
     }
-    // Configure logging
-    cec_control::Logger::getInstance().setLogFile(logFile);
+    
+    return options;
+}
+
+/**
+ * Print usage information
+ * 
+ * @param programName The name of the program
+ */
+void printUsage(const char* programName) {
+    std::cout << "Usage: " << programName << " [OPTIONS]\n"
+              << "Options:\n"
+              << "  -v, --verbose           Enable verbose logging (to console and log file)\n"
+              << "  -f, --foreground        Run in foreground (don't daemonize)\n"
+              << "  -l, --log FILE          Log to FILE (default: " << cec_control::SystemPaths::getLogPath() << ")\n"
+              << "  -c, --config FILE       Set configuration file path\n"
+              << "                          (default: " << cec_control::SystemPaths::getConfigPath() << ")\n"
+              << "  -h, --help              Show this help message\n";
+}
+
+/**
+ * Initialize and configure the logger
+ * 
+ * @param options Program options from command line
+ */
+void setupLogging(const ProgramOptions& options) {
+    // Configure log file
+    cec_control::Logger::getInstance().setLogFile(options.logFile);
     
     // Set log level based on verbose mode
-    if (verboseMode) {
+    if (options.verboseMode) {
         cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::DEBUG);
     } else {
         cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::INFO);
     }
     
-    // Initialize the configuration manager
+    LOG_INFO("Logging initialized with file: ", options.logFile);
+}
+
+/**
+ * Load configuration and set up the config manager
+ * 
+ * @param options Program options from command line
+ * @return ConfigManager with loaded configuration
+ */
+cec_control::ConfigManager& setupConfiguration(const ProgramOptions& options) {
+    // Use singleton pattern for the config manager
     cec_control::ConfigManager& configManager = cec_control::ConfigManager::getInstance();
-
+    
     // Set custom config path if provided
-    if (!configFile.empty()) {
-        configManager = cec_control::ConfigManager(configFile);
+    if (!options.configFile.empty()) {
+        LOG_INFO("Using custom configuration file: ", options.configFile);
+        configManager = cec_control::ConfigManager(options.configFile);
+    } else {
+        LOG_INFO("Using default configuration file: ", configManager.getConfigPath());
     }
-
+    
     // Load the configuration
     if (!configManager.load()) {
         LOG_WARNING("Failed to load configuration file, using defaults");
+        LOG_INFO("Default config path: ", configManager.getConfigPath());
+    } else {
+        LOG_INFO("Configuration loaded successfully from: ", configManager.getConfigPath());
     }
     
-    // Check if running under systemd
-    const char* notifySocket = getenv("NOTIFY_SOCKET");
-    bool runningUnderSystemd = (notifySocket && *notifySocket);
+    return configManager;
+}
+
+/**
+ * Create CEC daemon options from configuration
+ * 
+ * @param configManager Loaded configuration manager
+ * @return CEC daemon options
+ */
+cec_control::CECDaemon::Options createDaemonOptions(const cec_control::ConfigManager& configManager) {
+    cec_control::CECDaemon::Options options;
     
-    // Only daemonize if requested and not running under systemd
-    if (runAsDaemon && !runningUnderSystemd) {
+    // Get and log configuration values
+    bool scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
+    bool queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    bool enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
+    
+    LOG_INFO("Configuration: ScanDevicesAtStartup = ", (scanDevicesAtStartup ? "true" : "false"));
+    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ", (queueCommandsDuringSuspend ? "true" : "false"));
+    LOG_INFO("Configuration: EnablePowerMonitor = ", (enablePowerMonitor ? "true" : "false"));
+    
+    // Set options
+    options.scanDevicesAtStartup = scanDevicesAtStartup;
+    options.queueCommandsDuringSuspend = queueCommandsDuringSuspend;
+    options.enablePowerMonitor = enablePowerMonitor;
+    
+    return options;
+}
+
+/**
+ * Check if running under systemd
+ * 
+ * @return True if running under systemd
+ */
+bool isRunningUnderSystemd() {
+    const char* notifySocket = getenv("NOTIFY_SOCKET");
+    return (notifySocket && *notifySocket);
+}
+
+int main(int argc, char* argv[]) {
+    // Parse command line arguments
+    ProgramOptions options = parseCommandLine(argc, argv);
+    
+    // Check if help is requested
+    if (options.showHelp) {
+        printUsage(argv[0]);
+        return EXIT_SUCCESS;
+    }
+    
+    // Set up logging first so we can log any issues
+    setupLogging(options);
+    
+    // Load configuration
+    cec_control::ConfigManager& configManager = setupConfiguration(options);
+    
+    // Check if running under systemd
+    bool runningUnderSystemd = isRunningUnderSystemd();
+    
+    // Determine if we should daemonize
+    if (options.runAsDaemon && !runningUnderSystemd) {
         LOG_INFO("Running as normal executable, will daemonize");
+        
         // daemonize returns false for the parent process that should exit
-        if (!daemonize(verboseMode)) {
+        if (!daemonize()) {
             LOG_INFO("Parent process exiting, daemon started");
             return EXIT_SUCCESS;
         }
+        
         LOG_INFO("Daemon process started with PID: ", getpid());
     } else {
         if (runningUnderSystemd) {
@@ -175,29 +301,45 @@ int main(int argc, char* argv[]) {
         // When running as service or in foreground, just redirect stdin
         close(STDIN_FILENO);
         int null = open("/dev/null", O_RDWR);
-        dup2(null, STDIN_FILENO);
-        if (null > 0) {
-            close(null);
+        if (null >= 0) {
+            dup2(null, STDIN_FILENO);
+            if (null > STDIN_FILENO) {
+                close(null);
+            }
+        } else {
+            LOG_WARNING("Failed to open /dev/null: ", strerror(errno));
         }
     }
     
     // Log runtime environment and PID
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
     
-    // Create daemon with options
-    cec_control::CECDaemon::Options options;
-    options.scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
-    options.queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
-    options.enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
+    // Create daemon with options from config
+    cec_control::CECDaemon::Options daemonOptions = createDaemonOptions(configManager);
     
-    cec_control::CECDaemon daemon(options);
-    if (!daemon.start()) {
-        LOG_FATAL("Failed to start CEC daemon");
+    try {
+        // Create and start daemon
+        cec_control::CECDaemon daemon(daemonOptions);
+        
+        if (!daemon.start()) {
+            LOG_FATAL("Failed to start CEC daemon");
+            return EXIT_FAILURE;
+        }
+        
+        // Run the main loop
+        LOG_INFO("CEC daemon initialized successfully, starting main loop");
+        daemon.run();
+        
+        // Should only get here if daemon.run() returns
+        LOG_INFO("CEC daemon exited normally");
+        return EXIT_SUCCESS;
+    } 
+    catch (const std::exception& e) {
+        LOG_FATAL("Exception in CEC daemon: ", e.what());
         return EXIT_FAILURE;
     }
-    
-    // Run the main loop
-    daemon.run();
-    
-    return EXIT_SUCCESS;
+    catch (...) {
+        LOG_FATAL("Unknown exception in CEC daemon");
+        return EXIT_FAILURE;
+    }
 }
