@@ -122,21 +122,22 @@ size_t CommandQueue::getPendingCount() const {
 void CommandQueue::cancelAll() {
     std::lock_guard<std::mutex> lock(m_queueMutex);
     
-    // Create a temporary queue to swap with the current queue
-    std::priority_queue<std::shared_ptr<CECOperation>, 
-                       std::vector<std::shared_ptr<CECOperation>>,
-                       CECOperationComparator> emptyQueue;
-    std::swap(m_queue, emptyQueue);
+    // Process all queued operations directly
+    std::vector<std::shared_ptr<CECOperation>> operations;
+    operations.reserve(m_queue.size());  // Reserve space to avoid reallocations
+    
+    // Move all operations to a temporary vector for processing
+    while (!m_queue.empty()) {
+        operations.push_back(m_queue.top());
+        m_queue.pop();
+    }
     
     // Complete all operations with error
-    while (!emptyQueue.empty()) {
-        auto operation = emptyQueue.top();
-        emptyQueue.pop();
-        
+    for (auto& operation : operations) {
         operation->complete(Message(MessageType::RESP_ERROR));
     }
     
-    // Complete active operations
+    // Clear and complete active operations
     for (auto& pair : m_activeOperations) {
         pair.second->complete(Message(MessageType::RESP_ERROR));
     }

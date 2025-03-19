@@ -27,6 +27,9 @@ CECDaemon::CECDaemon(Options options)
       m_options(options),
       m_queueCommandsDuringSuspend(options.queueCommandsDuringSuspend) {
     
+    // Create thread pool for background tasks (4 threads)
+    m_threadPool = std::make_unique<ThreadPool>(4);
+    
     // Set static instance
     s_instance = this;
 }
@@ -40,6 +43,9 @@ bool CECDaemon::start() {
     // Add mutex to protect initialization
     static std::mutex startupMutex;
     std::lock_guard<std::mutex> lock(startupMutex);
+    
+    // Start thread pool
+    m_threadPool->start();
     
     LOG_INFO("Starting CEC daemon");
     
@@ -192,6 +198,13 @@ void CECDaemon::stop() {
     m_socketServer.reset();
     m_cecManager.reset();
     
+    // Shutdown thread pool last since other components might use it during their shutdown
+    if (m_threadPool) {
+        LOG_INFO("Shutting down thread pool");
+        m_threadPool->shutdown();
+        m_threadPool.reset();
+    }
+    
     LOG_INFO("CEC daemon stopped - shutdown sequence complete");
 }
 
@@ -234,8 +247,8 @@ void CECDaemon::onSuspend() {
     LOG_INFO("System suspending, preparing CEC adapter");
     m_suspended = true;
     
-    // Safety timeout: release inhibitor lock after 10 seconds no matter what
-    std::thread safetyThread([this]() {
+    // Safety timeout using our thread pool instead of detached thread
+    m_threadPool->submit([this]() {
         std::this_thread::sleep_for(std::chrono::seconds(10));
         bool stillSuspended;
         {
@@ -248,7 +261,6 @@ void CECDaemon::onSuspend() {
             m_dbusMonitor->releaseInhibitLock();
         }
     });
-    safetyThread.detach();
     
     try {
         // Only release CEC adapter resources, keep socket server running
@@ -315,23 +327,30 @@ void CECDaemon::onResume() {
         } else {
             LOG_ERROR("Failed to reconnect CEC adapter on resume");
             
-            // Schedule a background reconnection attempt after a delay
-            std::thread([this]() {
-                LOG_INFO("Scheduling delayed reconnection attempt");
-                // Wait 10 seconds before attempting again
-                std::this_thread::sleep_for(std::chrono::seconds(10));
-                
-                bool shouldReconnect = false;
-                {
-                    std::lock_guard<std::mutex> lock(m_suspendMutex);
-                    shouldReconnect = !m_suspended && m_cecManager && !m_cecManager->isAdapterValid();
-                }
-                
-                if (shouldReconnect) {
-                    LOG_INFO("Performing delayed reconnection attempt");
-                    m_cecManager->reconnect();
-                }
-            }).detach();
+            // Schedule a background reconnection attempt using thread pool
+            LOG_INFO("Scheduling delayed reconnection attempt");
+            
+            // Use our thread pool instead of detached thread for better resource management
+            if (m_cecManager) {
+                m_threadPool->submit([this]() {
+                    // Wait 10 seconds before attempting again
+                    std::this_thread::sleep_for(std::chrono::seconds(10));
+                    
+                    bool shouldReconnect = false;
+                    CECManager* cecManager = nullptr;
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(m_suspendMutex);
+                        shouldReconnect = !m_suspended && m_cecManager && !m_cecManager->isAdapterValid();
+                        cecManager = m_cecManager.get();
+                    }
+                    
+                    if (shouldReconnect && cecManager) {
+                        LOG_INFO("Performing delayed reconnection attempt");
+                        cecManager->reconnect();
+                    }
+                });
+            }
         }
         
         // Mark as not suspended regardless of reconnection result
@@ -494,58 +513,84 @@ void CECDaemon::setupSignalHandlers() {
 }
 
 void CECDaemon::signalHandler(int signal) {
-    LOG_INFO("Received signal ", signal);
+    // Signal handlers should be as simple and fast as possible to minimize race conditions
+    // Static atomic variables are safe in signal handlers
+    static std::atomic<bool> shutdownInitiated(false);
+    static std::atomic<int> termSignalCount(0);
     
-    // Use the proper getter method to get the instance safely
-    CECDaemon* instance = CECDaemon::getInstance();
-    
-    if (instance) {
-        // Set running to false first to break the main loop
+    try {
+        LOG_INFO("Received signal ", signal);
+        
+        // Get the singleton instance (already protected in getInstance)
+        CECDaemon* instance = CECDaemon::getInstance();
+        if (!instance) {
+            LOG_ERROR("Signal handler called but instance is null");
+            _exit(1);
+            return;
+        }
+        
+        // Set running to false to break the main loop
         instance->m_running = false;
         
-        // For SIGTERM or SIGINT, track how many signals we've received
+        // For termination signals (SIGTERM, SIGINT)
         if (signal == SIGTERM || signal == SIGINT) {
-            // Use atomic operation to safely increment signal count
-            static std::atomic<int> atomicTermSignalCount(0);
-            int count = ++atomicTermSignalCount;
+            int count = ++termSignalCount;
             s_termSignalCount = count; // For backwards compatibility
             
-            if (count == 1) {
-                // Create a thread with the instance pointer obtained via the getter
-                std::thread shutdownThread([]() {
-                    LOG_INFO("Shutdown initiated, please wait...");
+            // First signal: initiate graceful shutdown
+            if (count == 1 && !shutdownInitiated.exchange(true)) {
+                LOG_INFO("Initiating graceful shutdown sequence");
+                
+                // Use thread pool if available, otherwise create a thread
+                // A dedicated shutdown thread is more reliable than relying on thread pool
+                std::thread([instance]() {
+                    LOG_INFO("Shutdown thread started");
                     
-                    // Get the instance again inside the thread for safety
-                    CECDaemon* instanceInThread = CECDaemon::getInstance();
-                    if (instanceInThread) {
-                        // Log each step of the shutdown process
+                    try {
+                        // Stop all daemon components in order
                         LOG_INFO("Stopping daemon services");
-                        instanceInThread->stop();
+                        instance->stop();
                         
                         // Signal successful exit
                         LOG_INFO("Shutdown completed successfully");
-                        _exit(0); // Ensure we exit cleanly after shutdown
-                    } else {
-                        LOG_ERROR("Instance became null during shutdown thread execution");
-                        _exit(1); // Error exit
+                    } 
+                    catch (const std::exception& e) {
+                        LOG_ERROR("Exception during shutdown: ", e.what());
                     }
-                });
+                    catch (...) {
+                        LOG_ERROR("Unknown exception during shutdown");
+                    }
+                    
+                    // Always exit after shutdown thread completes
+                    _exit(0);
+                }).detach();
                 
-                // Detach the thread to let it run independently
-                shutdownThread.detach();
-                
-                // Don't exit - allow the shutdown thread to handle everything
                 return;
-            } else {
-                LOG_INFO("Exiting immediately due to multiple signals");
+            } 
+            // Multiple signals: force immediate exit
+            else if (count > 1) {
+                LOG_INFO("Exiting immediately due to multiple signals (", count, ")");
                 _exit(0);
+                return;
             }
-        } else {
-            // For other signals, just initiate normal shutdown
+        } 
+        // Other signals like SIGHUP
+        else {
+            // For other signals, initiate normal shutdown within main thread
+            LOG_INFO("Starting normal shutdown for signal ", signal);
             instance->stop();
         }
-    } else {
-        LOG_ERROR("Signal handler called but instance is null");
+    }
+    catch (const std::exception& e) {
+        // Last resort error handling in signal handler
+        try {
+            LOG_ERROR("Exception in signal handler: ", e.what());
+        } catch (...) {}
+        _exit(1);
+    }
+    catch (...) {
+        // Cannot log here safely
+        _exit(1);
     }
 }
 

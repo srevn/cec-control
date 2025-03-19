@@ -10,6 +10,7 @@
 #include "cec_manager.h"
 #include "socket_server.h"
 #include "dbus_monitor.h"
+#include "thread_pool.h"
 #include "../common/logger.h"
 
 namespace cec_control {
@@ -58,6 +59,7 @@ private:
     std::unique_ptr<CECManager> m_cecManager;
     std::unique_ptr<SocketServer> m_socketServer;
     std::unique_ptr<DBusMonitor> m_dbusMonitor;
+    std::unique_ptr<ThreadPool> m_threadPool;  // Thread pool for background tasks
     std::atomic<bool> m_running;
     std::atomic<bool> m_suspended;  // Keep as atomic for quick checks
     std::mutex m_suspendMutex;      // Add mutex for suspend/resume operations

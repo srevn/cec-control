@@ -26,9 +26,21 @@ std::shared_ptr<std::vector<uint8_t>> BufferPool::acquireBuffer() {
     }
     
     if (m_availableBuffers.empty()) {
-        // Create a new buffer if none are available
+        // Create multiple buffers at once to reduce allocation overhead
+        // Batch size chosen to balance memory usage vs allocation frequency
+        const size_t batchSize = 4;
+        
+        // Prepare the buffer we'll return
         auto newBuffer = std::make_shared<std::vector<uint8_t>>();
         newBuffer->reserve(m_bufferSize);
+        
+        // Create additional buffers for the pool
+        for (size_t i = 1; i < batchSize; i++) {
+            auto poolBuffer = std::make_shared<std::vector<uint8_t>>();
+            poolBuffer->reserve(m_bufferSize);
+            m_availableBuffers.push(std::move(poolBuffer));
+        }
+        
         return newBuffer;
     }
     
