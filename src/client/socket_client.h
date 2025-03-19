@@ -5,16 +5,16 @@
 #include <functional>
 
 #include "../common/protocol.h"
-#include "../common/xdg_paths.h"
+#include "../common/system_paths.h"
 
 namespace cec_control {
 
 class SocketClient {
 public:
     /**
-     * Create socket client with default socket path from XDG paths
+     * Create socket client with default system socket path
      */
-    SocketClient() : SocketClient(XDGPaths::getSocketPath()) {}
+    SocketClient() : SocketClient(SystemPaths::getSocketPath()) {}
     
     /**
      * Create socket client with specified socket path

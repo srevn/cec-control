@@ -38,7 +38,7 @@ set(COMMON_SOURCES
     src/common/buffer_pool.cpp
     src/common/buffer_manager.cpp
     src/common/config_manager.cpp
-    src/common/xdg_paths.cpp
+    src/common/system_paths.cpp
 )
 
 set(DAEMON_SOURCES
@@ -76,15 +76,8 @@ target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread stdc++fs)
 install(TARGETS cec-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS cec-daemon RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# Add installation option for system-wide installation
-option(SYSTEM_WIDE_INSTALL "Install for all users (requires root privileges)" OFF)
-
-if(NOT SYSTEM_WIDE_INSTALL)
-  # For user installation, set the install prefix to ~/.local by default
-  if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-    set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/.local" CACHE PATH "User installation prefix" FORCE)
-  endif()
-endif()
+# Always do system-wide installation
+set(SYSTEM_WIDE_INSTALL ON CACHE BOOL "Install for all users (requires root privileges)" FORCE)
 
 # Define system-wide and user-specific paths
 set(SYSTEM_CONFIG_DIR "/usr/local/etc/cec-control")
@@ -121,38 +114,15 @@ if(PKG_CONFIG_FOUND)
       @ONLY
     )
 
-    # Install systemd service file for system-wide installation
-    if(SYSTEM_WIDE_INSTALL)
-      install(
-        FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
-        DESTINATION ${SYSTEMD_UNIT_DIR}
-        PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-      )
-      
-      # Create message about enabling the service
-      install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
-    else()
-      # For user installation, install to XDG user's systemd directory
-      install(CODE "
-        # Determine XDG_CONFIG_HOME
-        set(XDG_CONFIG_HOME \"$ENV{XDG_CONFIG_HOME}\")
-        if(NOT XDG_CONFIG_HOME)
-          set(XDG_CONFIG_HOME \"$ENV{HOME}/.config\")
-        endif()
-        
-        # Create user systemd directory
-        set(USER_SYSTEMD_DIR \"\${XDG_CONFIG_HOME}/systemd/user\")
-        file(MAKE_DIRECTORY \"\${USER_SYSTEMD_DIR}\")
-        
-        # Install service file
-        file(INSTALL \"${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service\"
-             DESTINATION \"\${USER_SYSTEMD_DIR}\"
-             FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-        
-        message(STATUS \"User service installed to \${USER_SYSTEMD_DIR}/cec-daemon.service\")
-        message(STATUS \"To enable the user service, run: systemctl --user enable --now cec-daemon.service\")
-      ")
-    endif()
+    # Install systemd service file
+    install(
+      FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
+      DESTINATION ${SYSTEMD_UNIT_DIR}
+      PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+    )
+    
+    # Create message about enabling the service
+    install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
   else()
     message(STATUS "systemd not found, skipping service installation")
   endif()
@@ -202,47 +172,6 @@ if(SYSTEM_WIDE_INSTALL)
   install(CODE "message(STATUS \"  sudo chown -R root:root ${SYSTEM_LOG_DIR}\")")
   install(CODE "message(STATUS \"  sudo chmod 755 ${SYSTEM_LOG_DIR}\")")
   
-# User-specific installation
-else()
-  # Use XDG directories for user installation
-  install(CODE "
-    # Determine XDG_CONFIG_HOME
-    set(XDG_CONFIG_HOME \"$ENV{XDG_CONFIG_HOME}\")
-    if(NOT XDG_CONFIG_HOME)
-      set(XDG_CONFIG_HOME \"$ENV{HOME}/.config\")
-    endif()
-    
-    # Determine XDG_CACHE_HOME for log files
-    set(XDG_CACHE_HOME \"$ENV{XDG_CACHE_HOME}\")
-    if(NOT XDG_CACHE_HOME)
-      set(XDG_CACHE_HOME \"$ENV{HOME}/.cache\")
-    endif()
-    
-    # Create user config directory
-    set(USER_CONFIG_DIR \"\${XDG_CONFIG_HOME}/cec-control\")
-    file(MAKE_DIRECTORY \"\${USER_CONFIG_DIR}\")
-    
-    # Create user cache directory for logs
-    set(USER_CACHE_DIR \"\${XDG_CACHE_HOME}/cec-control\")
-    file(MAKE_DIRECTORY \"\${USER_CACHE_DIR}\")
-    
-    # Check if config file already exists
-    if(EXISTS \"\${USER_CONFIG_DIR}/config.conf\")
-      # Install as .sample file since the real config exists
-      file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
-           DESTINATION \"\${USER_CONFIG_DIR}\"
-           RENAME \"config.conf.sample\"
-           FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-      message(STATUS \"Existing configuration found. Sample configuration installed at \${USER_CONFIG_DIR}/config.conf.sample\")
-    else()
-      # Install as the main config file
-      file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
-           DESTINATION \"\${USER_CONFIG_DIR}\"
-           RENAME \"config.conf\"
-           FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
-      message(STATUS \"Configuration installed at \${USER_CONFIG_DIR}/config.conf\")
-    endif()
-  ")
 endif()
 
 # Create uninstall target

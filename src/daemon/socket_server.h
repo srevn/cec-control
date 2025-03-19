@@ -9,7 +9,7 @@
 #include <functional>
 
 #include "../common/protocol.h"
-#include "../common/xdg_paths.h"
+#include "../common/system_paths.h"
 #include "thread_pool.h"
 
 namespace cec_control {
@@ -19,9 +19,9 @@ public:
     using ClientHandler = std::function<Message(const Message&)>;
     
     /**
-     * Create socket server with default XDG socket path
+     * Create socket server with default system socket path
      */
-    SocketServer() : SocketServer(XDGPaths::getSocketPath()) {}
+    SocketServer() : SocketServer(SystemPaths::getSocketPath()) {}
     
     /**
      * Create socket server with specified socket path

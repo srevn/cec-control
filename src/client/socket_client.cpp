@@ -1,6 +1,6 @@
 #include "socket_client.h"
 #include "../common/logger.h"
-#include "../common/xdg_paths.h"
+#include "../common/system_paths.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -18,7 +18,7 @@ SocketClient::SocketClient(const std::string& socketPath)
       m_connected(false) {
     
     if (socketPath.empty()) {
-        m_socketPath = XDGPaths::getSocketPath();
+        m_socketPath = SystemPaths::getSocketPath();
     } else {
         m_socketPath = socketPath;
     }

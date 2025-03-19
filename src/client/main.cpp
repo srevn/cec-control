@@ -1,6 +1,6 @@
 #include "cec_client.h"
 #include "../common/logger.h"
-#include "../common/xdg_paths.h"
+#include "../common/system_paths.h"
 
 #include <iostream>
 #include <cstdlib>
@@ -25,9 +25,9 @@ void printUsage() {
               << "\n"
               << "Options:\n"
               << "  --socket-path=PATH                Set path to daemon socket\n"
-              << "                                    (default: " << cec_control::XDGPaths::getSocketPath() << ")\n"
+              << "                                    (default: " << cec_control::SystemPaths::getSocketPath() << ")\n"
               << "  --config=/path/to/config.conf     Set path to config file\n"
-              << "                                    (default: " << cec_control::XDGPaths::getConfigPath() << ")\n"
+              << "                                    (default: " << cec_control::SystemPaths::getConfigPath() << ")\n"
               << "\n"
               << "Environment Variables:\n"
               << "  CEC_CONTROL_SOCKET                Override the default socket path\n"

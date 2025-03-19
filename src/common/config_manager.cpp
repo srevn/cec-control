@@ -1,5 +1,5 @@
 #include "logger.h"
-#include "xdg_paths.h"
+#include "system_paths.h"
 #include "config_manager.h"
 
 #include <fstream>
@@ -13,12 +13,12 @@ namespace cec_control {
 std::unique_ptr<ConfigManager> ConfigManager::s_instance;
 
 ConfigManager::ConfigManager() 
-    : m_configPath(XDGPaths::getConfigPath()) {
+    : m_configPath(SystemPaths::getConfigPath()) {
     LOG_INFO("Using default configuration path: ", m_configPath);
 }
 
 ConfigManager::ConfigManager(const std::string& configPath)
-    : m_configPath(configPath.empty() ? XDGPaths::getConfigPath() : configPath) {
+    : m_configPath(configPath.empty() ? SystemPaths::getConfigPath() : configPath) {
     if (configPath.empty()) {
         LOG_INFO("No configuration path specified, using default: ", m_configPath);
     } else {

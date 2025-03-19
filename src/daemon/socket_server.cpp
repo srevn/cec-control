@@ -1,7 +1,7 @@
 #include "socket_server.h"
 #include "../common/logger.h"
 #include "../common/buffer_manager.h"
-#include "../common/xdg_paths.h"
+#include "../common/system_paths.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -26,7 +26,7 @@ SocketServer::SocketServer(const std::string& socketPath)
       m_cmdHandler(nullptr) {
     
     if (socketPath.empty()) {
-        m_socketPath = XDGPaths::getSocketPath();
+        m_socketPath = SystemPaths::getSocketPath();
     } else {
         m_socketPath = socketPath;
     }
@@ -166,7 +166,7 @@ bool SocketServer::setupSocket() {
     
     // Ensure parent directory exists
     std::string parentDir = m_socketPath.substr(0, m_socketPath.find_last_of('/'));
-    if (!XDGPaths::createDirectories(parentDir)) {
+    if (!SystemPaths::createDirectories(parentDir)) {
         LOG_ERROR("Failed to create parent directory for socket: ", parentDir);
         close(m_socketFd);
         m_socketFd = -1;
@@ -186,23 +186,9 @@ bool SocketServer::setupSocket() {
         return false;
     }
     
-    // Set appropriate socket file permissions based on our runtime environment
-    RuntimeEnvironment env = cec_control::XDGPaths::getEnvironment();
-    mode_t socketMode = 0;
-    
-    switch (env) {
-        case RuntimeEnvironment::SYSTEM_SERVICE:
-            // System socket should be accessible by all users
-            socketMode = 0666;
-            break;
-            
-        case RuntimeEnvironment::USER_SERVICE:
-        case RuntimeEnvironment::NORMAL_USER:
-            // User socket should be accessible only by the user 
-            // (though we make it group readable for multi-user systems)
-            socketMode = 0660;
-            break;
-    }
+    // Set appropriate socket file permissions 
+    // System socket should be accessible by all users
+    mode_t socketMode = 0666;
     
     if (chmod(m_socketPath.c_str(), socketMode) != 0) {
         LOG_WARNING("Failed to set socket permissions: ", strerror(errno));

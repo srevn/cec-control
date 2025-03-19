@@ -5,22 +5,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <filesystem>
 
 namespace cec_control {
 
 /**
- * Runtime environment detection for proper path handling
+ * Utility class for handling system file paths
  */
-enum class RuntimeEnvironment {
-    NORMAL_USER,           // Running as normal user
-    SYSTEM_SERVICE,        // Running as system service (systemd, etc.)
-    USER_SERVICE           // Running as user service (systemd user unit)
-};
-
-/**
- * Comprehensive utility class for handling file paths across different runtime environments
- */
-class XDGPaths {
+class SystemPaths {
 public:
     // Application constants - public for consistent use externally
     static const std::string APP_NAME;
@@ -28,18 +20,29 @@ public:
     static const std::string LOG_FILENAME;
     static const std::string SOCKET_FILENAME;
     
+    // Standard system paths
+    static const std::string SYSTEM_CONFIG_BASE;
+    static const std::string SYSTEM_LOG_BASE;
+    static const std::string SYSTEM_RUN_BASE;
+    
 private:
-    
-    // Runtime environment detection
-    static RuntimeEnvironment detectEnvironment();
-    
-    // Private path helpers
-    static std::string getHomeDir();
+    // System path helpers
     static std::string getSystemRuntimeDir();
-    static std::string getUserRuntimeDir();
-    static std::string getSystemConfigDir();
-    static std::string getUserConfigDir(bool createIfMissing = true);
-    static std::string getUserCacheDir(bool createIfMissing = true);
+    
+    /**
+     * Gets the parent directory of a path
+     * @param path The path to get the parent directory of
+     * @return The parent directory path
+     */
+    static std::string getParentDir(const std::string& path);
+    
+    /**
+     * Joins path components safely
+     * @param base The base path
+     * @param component The component to append
+     * @return The joined path
+     */
+    static std::string joinPath(const std::string& base, const std::string& component);
     
 public:
     /**
@@ -51,38 +54,39 @@ public:
     static bool createDirectories(const std::string& path, mode_t mode = 0755);
     
     /**
-     * Get the current runtime environment
-     * @return Detected runtime environment (NORMAL_USER, SYSTEM_SERVICE, USER_SERVICE)
-     */
-    static RuntimeEnvironment getEnvironment();
-    
-    /**
-     * Get a consistent socket path that works across all environments
+     * Get a consistent socket path
      * @param createIfMissing Create the directory if it doesn't exist
      * @return Fully qualified socket path
      */
     static std::string getSocketPath(bool createIfMissing = true);
     
     /**
-     * Get appropriate config file path for current environment
+     * Get the appropriate config file path
      * @param createIfMissing Create the directory if it doesn't exist
      * @return Fully qualified config file path
      */
     static std::string getConfigPath(bool createIfMissing = true);
     
     /**
-     * Get appropriate log file path for current environment
+     * Get the appropriate log file path
      * @param createIfMissing Create the directory if it doesn't exist
      * @return Fully qualified log file path
      */
     static std::string getLogPath(bool createIfMissing = true);
     
     /**
-     * Get temporary runtime directory appropriate for current environment
+     * Get the runtime directory
      * @param createIfMissing Create the directory if it doesn't exist
      * @return Fully qualified runtime directory path
      */
     static std::string getRuntimeDir(bool createIfMissing = true);
+    
+    /**
+     * Check if a path exists
+     * @param path The path to check
+     * @return True if the path exists
+     */
+    static bool pathExists(const std::string& path);
 };
 
 } // namespace cec_control

@@ -12,7 +12,7 @@ namespace cec_control {
 class ConfigManager {
 public:
     /**
-     * Create a new config manager using default XDG path
+     * Create a new config manager using default system path
      */
     ConfigManager();
     
