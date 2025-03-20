@@ -211,6 +211,10 @@ void CECDaemon::stop() {
 void CECDaemon::run() {
     LOG_INFO("Entering main daemon loop");
     
+    std::mutex loopMutex;
+    std::unique_lock<std::mutex> loopLock(loopMutex);
+    std::condition_variable loopCondition;
+    
     while (m_running) {
         // Read suspended state atomically
         bool isSuspended;
@@ -233,8 +237,10 @@ void CECDaemon::run() {
             }
         }
         
-        // Sleep to avoid busy loop
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // Use timed wait instead of sleep to allow immediate exit
+        loopCondition.wait_for(loopLock, std::chrono::seconds(1), [this] {
+            return !m_running;  // Check running state periodically
+        });
     }
 }
 
@@ -565,7 +571,7 @@ void CECDaemon::signalHandler(int signal) {
                         _exit(0);
                     });
                 } else {
-                    // Fallback if thread pool is unavailable
+                    // Fallback if thread pool is unavailable or queue full
                     std::thread([instance]() {
                         LOG_INFO("Shutdown thread started (fallback mode)");
                         try {

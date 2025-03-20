@@ -18,6 +18,12 @@ class SocketServer {
 public:
     using ClientHandler = std::function<Message(const Message&)>;
     
+    // Disable copying and moving
+    SocketServer(const SocketServer&) = delete;
+    SocketServer& operator=(const SocketServer&) = delete;
+    SocketServer(SocketServer&&) = delete;
+    SocketServer& operator=(SocketServer&&) = delete;
+    
     /**
      * Create socket server with default system socket path
      * @param threadPool Optional external thread pool to use

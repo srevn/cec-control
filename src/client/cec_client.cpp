@@ -47,32 +47,28 @@ bool CECClient::parseArgs(int argc, char* argv[]) {
     }
     
     // Parse command
-    if (command == "volume") {
-        if (argc < 4) {
-            std::cerr << "Error: volume command requires action and device ID" << std::endl;
+    auto checkArgCount = [&](int expectedCount, const std::string& commandName) {
+        if (argc < expectedCount) {
+            std::cerr << "Error: " << commandName << " command requires " << expectedCount - 2 << " arguments(s)" << std::endl;
             return false;
         }
+        return true;
+    };
+
+    if (command == "volume") {
+        if (!checkArgCount(4, command)) return false;
         m_command = CommandBuilder::buildVolumeCommand(argv[2], argv[3]);
     }
     else if (command == "power") {
-        if (argc < 4) {
-            std::cerr << "Error: power command requires action and device ID" << std::endl;
-            return false;
-        }
+        if (!checkArgCount(4, command)) return false;
         m_command = CommandBuilder::buildPowerCommand(argv[2], argv[3]);
     }
     else if (command == "source") {
-        if (argc < 4) {
-            std::cerr << "Error: source command requires device ID and source" << std::endl;
-            return false;
-        }
+        if (!checkArgCount(4, command)) return false;
         m_command = CommandBuilder::buildSourceCommand(argv[2], argv[3]);
     }
     else if (command == "auto-standby") {
-        if (argc < 3) {
-            std::cerr << "Error: auto-standby command requires 'on' or 'off'" << std::endl;
-            return false;
-        }
+        if (!checkArgCount(3, command)) return false;
         m_command = CommandBuilder::buildAutoStandbyCommand(argv[2]);
     }
     else if (command == "restart") {
@@ -88,12 +84,11 @@ bool CECClient::parseArgs(int argc, char* argv[]) {
         std::cerr << "Error: Unknown command: " << command << std::endl;
         return false;
     }
-    
-    // Check if command was successfully built
+
     if (!m_command.has_value()) {
         return false;
     }
-    
+
     return true;
 }
 

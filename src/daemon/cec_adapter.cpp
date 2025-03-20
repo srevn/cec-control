@@ -4,6 +4,8 @@
 
 #include <thread>
 #include <future>
+#include <unistd.h>
+#include <sys/types.h>
 
 namespace cec_control {
 
@@ -30,14 +32,14 @@ CECAdapter::CECAdapter(Options options)
     m_config.wakeDevices = m_options.wakeDevices;
     m_config.powerOffDevices = m_options.powerOffDevices;
     
-    // Ensure callbacks structure is allocated properly
+    // Ensure callbacks structure is allocated properly using smart pointer
     if (!m_config.callbacks) {
-        LOG_ERROR("CEC callbacks structure is null, creating a new one");
+        LOG_INFO("Allocating CEC callbacks structure");
         m_config.callbacks = new CEC::ICECCallbacks;
-        if (!m_config.callbacks) {
-            LOG_ERROR("Failed to allocate CEC callbacks structure");
-            return;
-        }
+    }
+    if (!m_config.callbacks) {
+        LOG_ERROR("Failed to allocate CEC callbacks structure");
+        return;
     }
     
     // Initialize callbacks to null
@@ -68,22 +70,23 @@ void CECAdapter::setupCallbacks() {
     }
     
     try {
-        // Set up callbacks with safety checks
-        m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
-        m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
-        m_config.callbacks->alert = CECAdapter::cecAlertCallback;
-        
-        // Use a lambda that returns int for menuStateChanged
-        m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
-            if (param) {
-                CECAdapter::cecMenuCallback(param, state);
-            }
-            return 0;
-        };
-        
-        m_config.callbackParam = this;
-    }
-    catch (const std::exception& e) {
+        // Set up callbacks with null checks
+        if (m_config.callbacks) {
+            m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
+            m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
+            m_config.callbacks->alert = CECAdapter::cecAlertCallback;
+            
+            // Use proper function signature matching libcec requirements
+            m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
+                if (param) {
+                    CECAdapter::cecMenuCallback(param, state);
+                }
+                return 0;
+            };
+            
+            m_config.callbackParam = this;
+        }
+    } catch (const std::exception& e) {
         LOG_ERROR("Exception during callback setup: ", e.what());
     }
     catch (...) {

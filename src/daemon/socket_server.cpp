@@ -145,31 +145,36 @@ bool SocketServer::isRunning() const {
 }
 
 bool SocketServer::setupSocket() {
-    // Create socket
+    // Create socket with improved error handling
     m_socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_socketFd < 0) {
-        LOG_ERROR("Failed to create socket: ", strerror(errno));
+        LOG_ERROR("Failed to create server socket: ", strerror(errno), ". Socket creation failed.");
         return false;
     }
-    
-    // Set socket options
-    int opt = 1;
-    if (setsockopt(m_socketFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        LOG_WARNING("Failed to set socket options: ", strerror(errno));
-    }
+    LOG_DEBUG("Server socket created successfully: ", m_socketFd);
     
     // Remove existing socket file if it exists
     cleanupSocket();
     
-    // Ensure parent directory exists
+    // Ensure parent directory exists with validation
     std::string parentDir = m_socketPath.substr(0, m_socketPath.find_last_of('/'));
+    LOG_DEBUG("Creating socket directory: ", parentDir);
     if (!SystemPaths::createDirectories(parentDir)) {
-        LOG_ERROR("Failed to create parent directory for socket: ", parentDir);
+        LOG_ERROR("Failed to create parent directory for socket: ", parentDir, ". Directory creation failed: ", parentDir);
         close(m_socketFd);
         m_socketFd = -1;
         return false;
     }
     
+    // Verify directory permissions
+    if (access(parentDir.c_str(), W_OK) != 0) {
+        LOG_ERROR("Insufficient permissions for socket directory: ", parentDir, ". No write access.");
+        close(m_socketFd);
+        m_socketFd = -1;
+        return false;
+    }
+    LOG_DEBUG("Socket directory verified and accessible: ", parentDir);
+
     // Bind socket
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -177,36 +182,44 @@ bool SocketServer::setupSocket() {
     strncpy(addr.sun_path, m_socketPath.c_str(), sizeof(addr.sun_path) - 1);
     
     if (bind(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("Failed to bind socket: ", strerror(errno));
+        LOG_ERROR("Failed to bind socket to path: ", m_socketPath, " error: ", strerror(errno));
         close(m_socketFd);
         m_socketFd = -1;
         return false;
     }
-    
-    // Set appropriate socket file permissions 
-    // System socket should be accessible by all users
-    mode_t socketMode = 0666;
-    
+    LOG_DEBUG("Socket bound to path successfully: ", m_socketPath);
+
+    // Set and validate socket file permissions
+    mode_t socketMode = 0660;
     if (chmod(m_socketPath.c_str(), socketMode) != 0) {
         LOG_WARNING("Failed to set socket permissions: ", strerror(errno));
+    } else {
+        LOG_DEBUG("Socket permissions set to 0660 for: ", m_socketPath);
     }
     
     // Listen for connections
     if (listen(m_socketFd, 5) < 0) {
-        LOG_ERROR("Failed to listen on socket: ", strerror(errno));
+        LOG_ERROR("Failed to listen on socket: ", m_socketPath, " error: ", strerror(errno));
         close(m_socketFd);
         m_socketFd = -1;
         cleanupSocket();
         return false;
     }
-    
+    LOG_DEBUG("Socket listening for connections on: ", m_socketPath);
+
     return true;
 }
 
 void SocketServer::cleanupSocket() {
     // Remove the socket file if it exists
     if (access(m_socketPath.c_str(), F_OK) != -1) {
-        unlink(m_socketPath.c_str());
+        if (unlink(m_socketPath.c_str()) == 0) {
+            LOG_DEBUG("Removed socket file: ", m_socketPath);
+        } else {
+            LOG_WARNING("Failed to remove socket file: ", m_socketPath, " error: ", strerror(errno));
+        }
+    } else {
+        LOG_DEBUG("Socket file does not exist, no cleanup needed: ", m_socketPath);
     }
 }
 
@@ -231,11 +244,11 @@ void SocketServer::serverLoop() {
             if (pollResult < 0) {
                 // Error in poll
                 if (errno != EINTR) {
-                    LOG_ERROR("Server poll error: ", strerror(errno));
+                    LOG_ERROR("Server poll error in server loop: ", strerror(errno));
                     consecutiveErrors++;
                     
                     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        LOG_ERROR("Too many consecutive poll errors, restarting server loop");
+                        LOG_ERROR("Too many consecutive poll errors in server loop, restarting server loop");
                         // Reset error counter and continue
                         consecutiveErrors = 0;
                     }
@@ -250,12 +263,15 @@ void SocketServer::serverLoop() {
             
             // Check for socket errors
             if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                LOG_ERROR("Server socket error detected, trying to recover");
+                LOG_ERROR("Server socket error detected in server loop, trying to recover");
+                if (pfd.revents & POLLERR) LOG_ERROR("POLLERR set on server socket");
+                if (pfd.revents & POLLHUP) LOG_ERROR("POLLHUP set on server socket");
+                if (pfd.revents & POLLNVAL) LOG_ERROR("POLLNVAL set on server socket");
                 
                 // Try to recreate the socket
                 close(m_socketFd);
                 if (!setupSocket()) {
-                    LOG_ERROR("Failed to restore server socket, exiting server loop");
+                    LOG_ERROR("Failed to restore server socket, exiting server loop after socket error");
                     break;
                 }
                 
@@ -273,13 +289,13 @@ void SocketServer::serverLoop() {
                 if (clientFd < 0) {
                     // If server is stopping, this error is expected
                     if (m_running && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR("Failed to accept connection: ", strerror(errno));
+                        LOG_ERROR("Failed to accept new connection: ", strerror(errno), ". Server may be overloaded or out of resources.");
                         consecutiveErrors++;
                     }
                     
                     // If socket was closed, we're probably shutting down
                     if (errno == EBADF || errno == EINVAL) {
-                        LOG_INFO("Socket closed, server loop exiting");
+                        LOG_INFO("Server socket closed, server loop exiting");
                         break;
                     }
                     
@@ -293,13 +309,13 @@ void SocketServer::serverLoop() {
                 int clientFlags = fcntl(clientFd, F_GETFL, 0);
                 fcntl(clientFd, F_SETFL, clientFlags | O_NONBLOCK);
                 
-                LOG_INFO("Client connected");
+                LOG_INFO("Client connected on fd: ", clientFd);
                 
                 // Limit the number of concurrent client connections
                 {
                     std::lock_guard<std::mutex> lock(m_clientsMutex);
                     if (m_activeClients.size() >= 20) {  // Increased limit since we're using a thread pool
-                        LOG_WARNING("Too many client connections, rejecting new client");
+                        LOG_WARNING("Too many client connections, rejecting new client on fd: ", clientFd);
                         close(clientFd);
                         continue;
                     }
@@ -315,7 +331,7 @@ void SocketServer::serverLoop() {
                     });
                 }
                 catch (const std::exception& e) {
-                    LOG_ERROR("Failed to submit client task to thread pool: ", e.what());
+                    LOG_ERROR("Failed to submit client task to thread pool for fd: ", clientFd, " error: ", e.what());
                     closeClient(clientFd);
                 }
             }
@@ -384,10 +400,10 @@ void SocketServer::handleClient(int clientFd) {
                 if (pollResult < 0) {
                     // Error in poll
                     if (errno != EINTR) {
-                        LOG_ERROR("Poll error: ", strerror(errno));
+                        LOG_ERROR("Poll error in client handler for fd: ", clientFd, " error: ", strerror(errno));
                         consecutiveErrors++;
                         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                            LOG_ERROR("Too many consecutive poll errors, closing connection");
+                            LOG_ERROR("Too many consecutive poll errors in client handler for fd: ", clientFd, ", closing connection");
                             connectionActive = false;
                         }
                     }
@@ -401,13 +417,10 @@ void SocketServer::handleClient(int clientFd) {
                 
                 // Check for socket errors
                 if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                    if (pfd.revents & POLLERR) {
-                        LOG_WARNING("Socket error detected");
-                    } else if (pfd.revents & POLLHUP) {
-                        LOG_DEBUG("Socket hangup detected (client disconnected normally)");
-                    } else if (pfd.revents & POLLNVAL) {
-                        LOG_WARNING("Socket invalid (possibly already closed)");
-                    }
+                    LOG_ERROR("Socket error detected in client handler for fd: ", clientFd);
+                    if (pfd.revents & POLLERR) LOG_WARNING("POLLERR set on client socket fd: ", clientFd);
+                    if (pfd.revents & POLLHUP) LOG_DEBUG("POLLHUP set on client socket fd: ", clientFd, " (client disconnected normally)");
+                    if (pfd.revents & POLLNVAL) LOG_WARNING("POLLNVAL set on client socket fd: ", clientFd, " (socket invalid, possibly already closed)");
                     connectionActive = false;
                     continue;
                 }
@@ -463,13 +476,13 @@ void SocketServer::handleClient(int clientFd) {
                                             totalSent += sent;
                                         } else if (sent < 0) {
                                             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                                                LOG_ERROR("Error sending response: ", strerror(errno));
+                                                LOG_ERROR("Error sending response to client fd: ", clientFd, " error: ", strerror(errno));
                                                 connectionActive = false;
                                                 break;
                                             }
                                         }
                                     } else {
-                                        LOG_ERROR("Timeout or error while waiting to send response");
+                                        LOG_ERROR("Timeout or error while waiting to send response to client fd: ", clientFd);
                                         connectionActive = false;
                                         break;
                                     }
@@ -499,7 +512,7 @@ void SocketServer::handleClient(int clientFd) {
                                 }
                             }
                             catch (const std::exception& e) {
-                                LOG_ERROR("Exception processing message: ", e.what());
+                                LOG_ERROR("Exception processing message from client fd: ", clientFd, " error: ", e.what());
                                 receivedData->clear();
                                 break;
                             }
@@ -507,26 +520,26 @@ void SocketServer::handleClient(int clientFd) {
                     }
                     else if (bytesRead == 0) {
                         // Client disconnected gracefully
-                        LOG_DEBUG("Client closed connection gracefully");
+                        LOG_DEBUG("Client closed connection gracefully on fd: ", clientFd);
                         connectionActive = false;
                     }
                     else {
                         // Error reading
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             // Non-blocking socket timeout, continue
-                            LOG_DEBUG("Socket read timeout (non-blocking)");
+                            LOG_DEBUG("Socket read timeout (non-blocking) on fd: ", clientFd);
                         } else {
-                            LOG_ERROR("Error reading from client: ", strerror(errno));
+                            LOG_ERROR("Error reading from client fd: ", clientFd, " error: ", strerror(errno));
                             connectionActive = false;
                         }
                     }
                 }
             }
             catch (const std::exception& e) {
-                LOG_ERROR("Exception in client handler loop: ", e.what());
+                LOG_ERROR("Exception in client handler loop for fd: ", clientFd, " error: ", e.what());
                 consecutiveErrors++;
                 if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                    LOG_ERROR("Too many consecutive errors, closing connection");
+                    LOG_ERROR("Too many consecutive errors in client handler loop for fd: ", clientFd, ", closing connection");
                     connectionActive = false;
                 }
             }
@@ -537,13 +550,13 @@ void SocketServer::handleClient(int clientFd) {
         dataBufferPool.releaseBuffer(std::move(receivedData));
     }
     catch (const std::exception& e) {
-        LOG_ERROR("Unhandled exception in client handler: ", e.what());
+        LOG_ERROR("Unhandled exception in client handler for fd: ", clientFd, " error: ", e.what());
     }
     catch (...) {
-        LOG_ERROR("Unknown exception in client handler");
+        LOG_ERROR("Unknown exception in client handler for fd: ", clientFd);
     }
     
-    LOG_INFO("Client disconnected");
+    LOG_INFO("Client disconnected from fd: ", clientFd);
     
     // Close client connection and clean up
     closeClient(clientFd);
