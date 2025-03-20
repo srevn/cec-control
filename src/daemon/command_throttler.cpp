@@ -36,11 +36,11 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
         // even when reporting failure due to no acknowledgment
         if (attempt == 0) {
             // First retry quickly
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         } else {
             // Subsequent retries with exponential backoff
             std::this_thread::sleep_for(std::chrono::milliseconds(
-                50 * (1 << attempt)));  // 50ms, 100ms, 200ms
+                100 * (1 << attempt)));  // 100ms, 200ms, 400ms
         }
     }
     
@@ -83,7 +83,7 @@ bool CommandThrottler::throttleCommand() {
     // Wait until adapter is no longer busy
     if (isAdapterBusy()) {
         LOG_DEBUG("Waiting for CEC adapter to be ready");
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
     // Update last command time
@@ -99,7 +99,7 @@ uint32_t CommandThrottler::getAdaptiveThrottleTime() const {
     if (m_commandStatus.consecutiveFailures > 0) {
         // Exponential backoff based on failure count
         uint32_t additionalDelay = std::min(
-            static_cast<uint32_t>(50 * (1 << std::min(m_commandStatus.consecutiveFailures, 5))),
+            static_cast<uint32_t>(100 * (1 << std::min(m_commandStatus.consecutiveFailures, 5))),
             static_cast<uint32_t>(m_options.maxIntervalMs - m_options.baseIntervalMs)
         );
         
@@ -133,7 +133,7 @@ bool CommandThrottler::isAdapterBusy() const {
     // Consider adapter busy if we had very recent failures
     bool recentFailure = (m_commandStatus.consecutiveFailures > 0) && 
         (std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - m_commandStatus.lastExecutionTime).count() < 50);
+            std::chrono::steady_clock::now() - m_commandStatus.lastExecutionTime).count() < 100);
     
     return recentFailure;
 }
