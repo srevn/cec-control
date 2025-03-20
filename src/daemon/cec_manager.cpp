@@ -14,7 +14,7 @@ static std::mutex g_adapterMutex;
 CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool) 
     : m_options(options),
       m_threadPool(threadPool) {
-    // Create the components
+    
     CECAdapter::Options adapterOptions;
     
     // Load adapter options from configuration
@@ -26,38 +26,41 @@ CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
     adapterOptions.systemAudioMode = config.getBool("Adapter", "SystemAudioMode", false);
     adapterOptions.powerOffOnStandby = config.getBool("Adapter", "PowerOffOnStandby", false);
     
-    // Helper function to parse device addresses from config
-    auto parseDeviceAddresses = [](const std::string& addressStr, CEC::cec_logical_addresses& addresses) {
-        if (addressStr.empty()) return;
-        
-        addresses.Clear();
-        std::stringstream ss(addressStr);
+    // Parse wake devices string (comma-separated list of logical addresses)
+    std::string wakeDevicesStr = config.getString("Adapter", "WakeDevices", "");
+    if (!wakeDevicesStr.empty()) {
+        adapterOptions.wakeDevices.Clear();
+        std::stringstream ss(wakeDevicesStr);
         std::string device;
         while (std::getline(ss, device, ',')) {
             try {
                 int deviceId = std::stoi(device);
                 if (deviceId >= 0 && deviceId <= 15) { // Valid CEC logical addresses are 0-15
-                    addresses.Set((CEC::cec_logical_address)deviceId);
-                } else {
-                    LOG_WARNING("Device address out of range (0-15): ", device);
+                    adapterOptions.wakeDevices.Set((CEC::cec_logical_address)deviceId);
                 }
             } catch (const std::exception& e) {
-                LOG_WARNING("Invalid device address in config: ", device);
+                LOG_WARNING("Invalid wake device address in config: ", device);
             }
         }
-    };
+    }
     
-    // Parse wake devices string
-    parseDeviceAddresses(
-        config.getString("Adapter", "WakeDevices", ""),
-        adapterOptions.wakeDevices
-    );
-    
-    // Parse power off devices string
-    parseDeviceAddresses(
-        config.getString("Adapter", "PowerOffDevices", ""),
-        adapterOptions.powerOffDevices
-    );
+    // Parse power off devices string (comma-separated list of logical addresses)
+    std::string powerOffDevicesStr = config.getString("Adapter", "PowerOffDevices", "");
+    if (!powerOffDevicesStr.empty()) {
+        adapterOptions.powerOffDevices.Clear();
+        std::stringstream ss(powerOffDevicesStr);
+        std::string device;
+        while (std::getline(ss, device, ',')) {
+            try {
+                int deviceId = std::stoi(device);
+                if (deviceId >= 0 && deviceId <= 15) { // Valid CEC logical addresses are 0-15
+                    adapterOptions.powerOffDevices.Set((CEC::cec_logical_address)deviceId);
+                }
+            } catch (const std::exception& e) {
+                LOG_WARNING("Invalid power off device address in config: ", device);
+            }
+        }
+    }
     
     // Create command throttler with proper options
     CommandThrottler::Options throttlerOptions;
