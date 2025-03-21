@@ -145,77 +145,66 @@ bool CECManager::reconnect() {
         return true;
     }
 
-    try {
-        // Check if we need to shut down first - only if adapter is initialized but not connected
-        bool needsShutdown = m_adapter && m_adapter->hasAdapter() && !m_adapter->isConnected();
+    // Check if we need to shut down first - only if adapter is initialized but not connected
+    bool needsShutdown = m_adapter && m_adapter->hasAdapter() && !m_adapter->isConnected();
 
-        if (needsShutdown) {
-            LOG_DEBUG("Shutting down adapter before reconnection attempt");
-            m_adapter->shutdown();
+    if (needsShutdown) {
+        LOG_DEBUG("Shutting down adapter before reconnection attempt");
+        m_adapter->shutdown();
 
-            // Wait before reconnecting when we had to shut down first
-            LOG_DEBUG("Brief pause before reinitializing CEC adapter");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        } else {
-            LOG_DEBUG("Adapter already shut down, proceeding to initialization");
-        }
+        // Wait before reconnecting when we had to shut down first
+        LOG_DEBUG("Brief pause before reinitializing CEC adapter");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    } else {
+        LOG_DEBUG("Adapter already shut down, proceeding to initialization");
+    }
 
-        // Try to initialize the adapter
-        if (!m_adapter->initialize()) {
-            LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
-            reconnectFailures++;
+    // Try to initialize the adapter
+    if (!m_adapter->initialize()) {
+        LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
+        reconnectFailures++;
 
-            if (reconnectFailures >= 3) {
-                LOG_ERROR("Multiple reconnect failures (", reconnectFailures, ") - daemon will exit");
+        if (reconnectFailures >= 3) {
+            LOG_ERROR("Multiple reconnect failures (", reconnectFailures, ") - daemon will exit");
 
-                // If running as a systemd service, exit with error
-                if (getenv("NOTIFY_SOCKET") != nullptr) {
-                    LOG_INFO("Notifying systemd of persistent adapter failure");
-                    // Use thread pool if available, otherwise fall back to detached thread
-                    if (m_threadPool) {
-                        m_threadPool->submit([]() {
-                            std::this_thread::sleep_for(std::chrono::seconds(1));
-                            LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                            exit(EXIT_FAILURE);
-                        });
-                    } else {
-                        // Fallback to detached thread if no thread pool available
-                        std::thread([]() {
-                            std::this_thread::sleep_for(std::chrono::seconds(1));
-                            LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                            exit(EXIT_FAILURE);
-                        }).detach();
-                    }
+            // If running as a systemd service, exit with error
+            if (getenv("NOTIFY_SOCKET") != nullptr) {
+                LOG_INFO("Notifying systemd of persistent adapter failure");
+                auto exitFunc = []() {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    LOG_FATAL("Exiting due to persistent CEC adapter failure");
+                    exit(EXIT_FAILURE);
+                };
+
+                // Use thread pool if available, otherwise fall back to detached thread
+                if (m_threadPool) {
+                    m_threadPool->submit(exitFunc);
+                } else {
+                    std::thread(exitFunc).detach();
                 }
             }
-
             return false;
         }
-
-        // Reset failure counter on successful adapter initialization
-        reconnectFailures = 0;
-
-        // Start the command queue if needed
-        if (!m_commandQueue->isRunning()) {
-            LOG_INFO("Starting command queue");
-            if (!m_commandQueue->start()) {
-                LOG_ERROR("Failed to start command queue during reconnect");
-                m_adapter->shutdown();
-                return false;
-            }
-        } else {
-            LOG_DEBUG("Command queue is already running");
-        }
-
-        LOG_INFO("CEC adapter reconnected successfully");
-        return true;
-    } catch (const std::exception& e) {
-        LOG_ERROR("Exception during reconnect: ", e.what());
-        return false;
-    } catch (...) {
-        LOG_ERROR("Unknown exception during reconnect");
         return false;
     }
+
+    // Reset failure counter on successful adapter initialization
+    reconnectFailures = 0;
+
+    // Start the command queue if needed
+    if (!m_commandQueue->isRunning()) {
+        LOG_INFO("Starting command queue");
+        if (!m_commandQueue->start()) {
+            LOG_ERROR("Failed to start command queue during reconnect");
+            m_adapter->shutdown();
+            return false;
+        }
+    } else {
+        LOG_DEBUG("Command queue is already running");
+    }
+
+    LOG_INFO("CEC adapter reconnected successfully");
+    return true;
 }
 
 bool CECManager::isAdapterValid() const {
@@ -229,17 +218,14 @@ Message CECManager::processCommand(const Message& command) {
 
 std::shared_ptr<CECOperation> CECManager::processCommandAsync(const Message& command, uint32_t timeoutMs) {
     // Asynchronous version - returns operation that can be waited on
-    if (timeoutMs == 0) {
-        timeoutMs = m_options.commandTimeoutMs;
-    }
+    uint32_t timeout = timeoutMs == 0 ? m_options.commandTimeoutMs : timeoutMs;
 
     // Determine priority based on command type
-    CECOperation::Priority priority = CECOperation::Priority::NORMAL;
-    if (command.type == MessageType::CMD_RESTART_ADAPTER) {
-        priority = CECOperation::Priority::HIGH;
-    }
+    CECOperation::Priority priority = (command.type == MessageType::CMD_RESTART_ADAPTER) ?
+                                        CECOperation::Priority::HIGH :
+                                        CECOperation::Priority::NORMAL;
 
-    return m_commandQueue->enqueue(command, priority, timeoutMs);
+    return m_commandQueue->enqueue(command, priority, timeout);
 }
 
 Message CECManager::handleCommand(const Message& command) {
@@ -258,43 +244,35 @@ Message CECManager::handleCommand(const Message& command) {
         case MessageType::CMD_VOLUME_UP:
             success = m_deviceOps->setVolume(command.deviceId, true);
             break;
-
         case MessageType::CMD_VOLUME_DOWN:
             success = m_deviceOps->setVolume(command.deviceId, false);
             break;
-
         case MessageType::CMD_VOLUME_MUTE:
             success = m_deviceOps->setMute(command.deviceId, true);
             break;
-
         case MessageType::CMD_POWER_ON:
             success = m_deviceOps->powerOnDevice(command.deviceId);
             break;
-
         case MessageType::CMD_POWER_OFF:
             success = m_deviceOps->powerOffDevice(command.deviceId);
             break;
-
         case MessageType::CMD_CHANGE_SOURCE:
             if (!command.data.empty()) {
                 success = m_deviceOps->setSource(command.deviceId, command.data[0]);
             }
             break;
-
         case MessageType::CMD_AUTO_STANDBY:
             if (!command.data.empty()) {
-                bool enabled = command.data[0] > 0;
                 if (m_adapter) {
-                    m_adapter->setAutoStandby(enabled);
+                    m_adapter->setAutoStandby(command.data[0] > 0);
                     success = true;
                 }
             }
             break;
-
         case MessageType::CMD_RESTART_ADAPTER: {
             LOG_INFO("Processing restart adapter command");
 
-            // Run this in a thread pool task if available
+            // Define the restart task
             auto restartTask = [this]() {
                 LOG_INFO("Performing asynchronous adapter restart");
 
@@ -322,11 +300,10 @@ Message CECManager::handleCommand(const Message& command) {
                 }
             };
 
+            // Use thread pool for better resource management
             if (m_threadPool) {
-                // Use thread pool for better resource management
                 m_threadPool->submit(restartTask);
             } else {
-                // Fallback to detached thread if no thread pool available
                 std::thread(restartTask).detach();
             }
 
@@ -334,17 +311,12 @@ Message CECManager::handleCommand(const Message& command) {
             success = true;
             break;
         }
-
         default:
             LOG_ERROR("Unknown command type: ", static_cast<int>(command.type));
             return Message(MessageType::RESP_ERROR);
     }
 
-    if (success) {
-        return Message(MessageType::RESP_SUCCESS);
-    } else {
-        return Message(MessageType::RESP_ERROR);
-    }
+    return success ? Message(MessageType::RESP_SUCCESS) : Message(MessageType::RESP_ERROR);
 }
 
 bool CECManager::standbyDevices() {
