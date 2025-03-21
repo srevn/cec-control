@@ -87,28 +87,11 @@ void SocketServer::stop() {
         m_socketFd = -1;
     }
     
-    // Wait for server thread to finish with timeout
+    // Wait for server thread to finish
     if (m_serverThread.joinable()) {
         LOG_INFO("Waiting for server thread to exit");
-        try {
-            // Use async with future to implement timeout for thread join
-            auto joinFuture = std::async(std::launch::async, [this]() {
-                m_serverThread.join();
-                return true;
-            });
-            
-            // Wait for thread to join with timeout
-            if (joinFuture.wait_for(std::chrono::seconds(THREAD_JOIN_TIMEOUT_SEC)) == std::future_status::timeout) {
-                LOG_WARNING("Server thread did not exit cleanly within timeout, detaching");
-                m_serverThread.detach();
-            } else {
-                LOG_INFO("Server thread joined successfully");
-            }
-        }
-        catch (const std::exception& e) {
-            LOG_ERROR("Exception joining server thread: ", e.what());
-            m_serverThread.detach();
-        }
+        m_serverThread.join();
+        LOG_INFO("Server thread joined successfully");
     }
     
     // Close all client connections
@@ -308,16 +291,10 @@ void SocketServer::serverLoop() {
                             m_activeClients.insert(clientFd);
                         }
                         
-                        try {
-                            // Submit client handling task to thread pool
-                            m_threadPool->submit([this, clientFd]() {
-                                this->handleClient(clientFd);
-                            });
-                        }
-                        catch (const std::exception& e) {
-                            LOG_ERROR("Failed to submit client task: ", e.what());
-                            closeClient(clientFd);
-                        }
+                        // Submit client handling task to thread pool
+                        m_threadPool->submit([this, clientFd]() {
+                            this->handleClient(clientFd);
+                        });
                     }
                 }
             }
@@ -422,130 +399,122 @@ void SocketServer::handleClient(int clientFd) {
     bool connectionActive = true;
     int consecutiveErrors = 0;
     
-    try {
-        // Set socket options for reliability
-        int keepAlive = 1;
-        if (setsockopt(clientFd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive)) < 0) {
-            LOG_WARNING("Failed to set SO_KEEPALIVE: ", strerror(errno));
+    // Set socket options for reliability
+    int keepAlive = 1;
+    if (setsockopt(clientFd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive)) < 0) {
+        LOG_WARNING("Failed to set SO_KEEPALIVE: ", strerror(errno));
+    }
+    
+    // Set receive timeout
+    struct timeval tv;
+    tv.tv_sec = CLIENT_RECV_TIMEOUT_SEC;
+    tv.tv_usec = 0;
+    if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        LOG_WARNING("Failed to set SO_RCVTIMEO: ", strerror(errno));
+    }
+    
+    while (connectionActive && m_running) {
+        // Wait for data with a short timeout
+        auto events = poller.wait(CLIENT_POLL_TIMEOUT_MS);
+        
+        if (events.empty()) {
+            // Timeout - reset error counter
+            consecutiveErrors = 0;
+            continue;
         }
         
-        // Set receive timeout
-        struct timeval tv;
-        tv.tv_sec = CLIENT_RECV_TIMEOUT_SEC;
-        tv.tv_usec = 0;
-        if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-            LOG_WARNING("Failed to set SO_RCVTIMEO: ", strerror(errno));
-        }
-        
-        while (connectionActive && m_running) {
-            // Wait for data with a short timeout
-            auto events = poller.wait(CLIENT_POLL_TIMEOUT_MS);
-            
-            if (events.empty()) {
-                // Timeout - reset error counter
+        for (const auto& event : events) {
+            if (event.fd == clientFd) {
+                // Check for socket errors
+                if (event.events & EventPoller::ERROR_EVENTS) {
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR))
+                        LOG_WARNING("Error event on client fd ", clientFd);
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::HANGUP))
+                        LOG_DEBUG("Client disconnected normally on fd ", clientFd);
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::INVALID))
+                        LOG_WARNING("Invalid socket fd ", clientFd);
+                    connectionActive = false;
+                    continue;
+                }
+                
                 consecutiveErrors = 0;
-                continue;
-            }
-            
-            for (const auto& event : events) {
-                if (event.fd == clientFd) {
-                    // Check for socket errors
-                    if (event.events & EventPoller::ERROR_EVENTS) {
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR))
-                            LOG_WARNING("Error event on client fd ", clientFd);
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::HANGUP))
-                            LOG_DEBUG("Client disconnected normally on fd ", clientFd);
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::INVALID))
-                            LOG_WARNING("Invalid socket fd ", clientFd);
-                        connectionActive = false;
-                        continue;
-                    }
-                    
-                    consecutiveErrors = 0;
-                    
-                    // Data is available to read
-                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                        // In edge-triggered mode, we need to read all data
-                        while (connectionActive) {
-                            recvBuffer->resize(CLIENT_BUFFER_SIZE);
+                
+                // Data is available to read
+                if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                    // In edge-triggered mode, we need to read all data
+                    while (connectionActive) {
+                        recvBuffer->resize(CLIENT_BUFFER_SIZE);
+                        
+                        ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
+                        
+                        if (bytesRead > 0) {
+                            // Append data to received buffer
+                            receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
                             
-                            ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
-                            
-                            if (bytesRead > 0) {
-                                // Append data to received buffer
-                                receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
-                                
-                                // Process complete messages
-                                while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
-                                    try {
-                                        // Extract and process message
-                                        Message cmd = Protocol::unpackMessage(*receivedData);
-                                        
-                                        // Process and send response
-                                        if (!sendDataToClient(clientFd, cmd)) {
-                                            connectionActive = false;
-                                            break;
-                                        }
-                                        
-                                        // Remove processed message
-                                        if (receivedData->size() >= 5) {
-                                            uint16_t size = static_cast<uint16_t>((*receivedData)[3]) |
-                                                          (static_cast<uint16_t>((*receivedData)[4]) << 8);
-                                            size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
-                                            
-                                            if (receivedData->size() < msgSize) {
-                                                // Incomplete message, clear buffer
-                                                receivedData->clear();
-                                                break;
-                                            }
-                                            
-                                            receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
-                                        } else {
-                                            // Not enough data for a valid header
-                                            break;
-                                        }
+                            // Process complete messages
+                            while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
+                                try {
+                                    // Extract and process message
+                                    Message cmd = Protocol::unpackMessage(*receivedData);
+                                    
+                                    // Process and send response
+                                    if (!sendDataToClient(clientFd, cmd)) {
+                                        connectionActive = false;
+                                        break;
                                     }
-                                    catch (const std::exception& e) {
-                                        LOG_ERROR("Exception processing message: ", e.what());
-                                        receivedData->clear();
+                                    
+                                    // Remove processed message
+                                    if (receivedData->size() >= 5) {
+                                        uint16_t size = static_cast<uint16_t>((*receivedData)[3]) |
+                                                      (static_cast<uint16_t>((*receivedData)[4]) << 8);
+                                        size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
+                                        
+                                        if (receivedData->size() < msgSize) {
+                                            // Incomplete message, clear buffer
+                                            receivedData->clear();
+                                            break;
+                                        }
+                                        
+                                        receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
+                                    } else {
+                                        // Not enough data for a valid header
                                         break;
                                     }
                                 }
-                            }
-                            else if (bytesRead == 0) {
-                                // Client disconnected
-                                LOG_DEBUG("Client closed connection on fd ", clientFd);
-                                connectionActive = false;
-                                break;
-                            }
-                            else {
-                                // Error reading or would block
-                                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                    // No more data available for now
-                                    break;
-                                } else {
-                                    LOG_ERROR("Error reading from client: ", strerror(errno));
-                                    connectionActive = false;
+                                catch (const std::exception& e) {
+                                    LOG_ERROR("Exception processing message: ", e.what());
+                                    receivedData->clear();
                                     break;
                                 }
+                            }
+                        }
+                        else if (bytesRead == 0) {
+                            // Client disconnected
+                            LOG_DEBUG("Client closed connection on fd ", clientFd);
+                            connectionActive = false;
+                            break;
+                        }
+                        else {
+                            // Error reading or would block
+                            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                // No more data available for now
+                                break;
+                            } else {
+                                LOG_ERROR("Error reading from client: ", strerror(errno));
+                                connectionActive = false;
+                                break;
                             }
                         }
                     }
                 }
             }
-            
-            // Check if too many consecutive errors
-            if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
-                LOG_ERROR("Too many consecutive errors on client fd ", clientFd, ", disconnecting");
-                connectionActive = false;
-            }
         }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Unhandled exception in client handler: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception in client handler");
+        
+        // Check if too many consecutive errors
+        if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
+            LOG_ERROR("Too many consecutive errors on client fd ", clientFd, ", disconnecting");
+            connectionActive = false;
+        }
     }
     
     // Return buffers to pools

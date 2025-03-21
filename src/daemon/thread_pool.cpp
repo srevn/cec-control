@@ -10,7 +10,7 @@ ThreadPool::ThreadPool(size_t numThreads)
     if (numThreads == 0) {
         m_threadCount = std::thread::hardware_concurrency();
         if (m_threadCount == 0) {
-            m_threadCount = 4; // Default to 4 threads if hardware_concurrency is not supported
+            m_threadCount = 4;
         }
     } else {
         m_threadCount = numThreads;
@@ -51,11 +51,7 @@ void ThreadPool::shutdown() {
     // Wait for all threads to finish
     for (auto& worker : m_workers) {
         if (worker.joinable()) {
-            try {
-                worker.join();
-            } catch (const std::exception& e) {
-                LOG_ERROR("Exception when joining worker thread: ", e.what());
-            }
+            worker.join();
         }
     }
     
@@ -70,45 +66,37 @@ size_t ThreadPool::queueSize() const {
 }
 
 void ThreadPool::workerThread() {
-    try {
-        while (true) {
-            std::function<void()> task;
+    while (true) {
+        std::function<void()> task;
+        
+        {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
             
-            {
-                std::unique_lock<std::mutex> lock(m_queueMutex);
-                
-                // Wait for task or stop signal
-                m_condition.wait(lock, [this] {
-                    return m_stop || !m_tasks.empty();
-                });
-                
-                // If stopping and no tasks left, exit
-                if (m_stop && m_tasks.empty()) {
-                    break;
-                }
-                
-                // Get task from queue
-                task = std::move(m_tasks.front());
-                m_tasks.pop();
+            // Wait for task or stop signal
+            m_condition.wait(lock, [this] {
+                return m_stop || !m_tasks.empty();
+            });
+            
+            // If stopping and no tasks left, exit
+            if (m_stop && m_tasks.empty()) {
+                break;
             }
             
-            // Execute task
-            try {
-                task();
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("Exception in worker thread task: ", e.what());
-            }
-            catch (...) {
-                LOG_ERROR("Unknown exception in worker thread task");
-            }
+            // Get task from queue
+            task = std::move(m_tasks.front());
+            m_tasks.pop();
         }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in worker thread: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception in worker thread");
+        
+        // Execute task
+        try {
+            task();
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("Exception in worker thread task: ", e.what());
+        }
+        catch (...) {
+            LOG_ERROR("Unknown exception in worker thread task");
+        }
     }
     
     LOG_DEBUG("Worker thread exiting");
@@ -134,7 +122,6 @@ void ThreadPool::recycleTaskWrapper(std::shared_ptr<TaskWrapper> wrapper) {
     if (m_taskWrapperPool.size() < m_maxPooledTaskWrappers) {
         m_taskWrapperPool.push(std::move(wrapper));
     }
-    // If pool is full, let the wrapper be destroyed
 }
 
 } // namespace cec_control

@@ -21,7 +21,7 @@ public:
     
     /**
      * Get a buffer from the pool. Creates a new buffer if none are available.
-     * @return A shared_ptr to a vector with the appropriate size
+          * @return A shared_ptr to a vector with the appropriate size
      */
     std::shared_ptr<std::vector<uint8_t>> acquireBuffer();
     

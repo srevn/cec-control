@@ -12,7 +12,6 @@ CommandThrottler::CommandThrottler(Options options)
 
 bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
     bool success = false;
-    bool commandSent = false;  // Track if at least one attempt was made
     
     for (uint32_t attempt = 0; attempt < m_options.maxRetryAttempts; attempt++) {
         // Throttle command to avoid overwhelming the adapter
@@ -20,41 +19,30 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
         
         // Try to execute the command
         success = command();
-        commandSent = true;
         
         // Update command status
         updateCommandStatus(success);
         
         if (success) {
-            return true; // Success!
+            return true;
         }
         
         // Failed, log and retry after increasing delay
         LOG_WARNING("CEC command failed, retry attempt ", attempt + 1, " of ", m_options.maxRetryAttempts);
         
-        // For volume commands, we might want to retry less aggressively since they often work
-        // even when reporting failure due to no acknowledgment
-        if (attempt == 0) {
-            // First retry quickly
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        } else {
-            // Subsequent retries with exponential backoff
-            std::this_thread::sleep_for(std::chrono::milliseconds(
-                100 * (1 << attempt)));  // 100ms, 200ms, 400ms
-        }
+        // Exponential backoff with special case for first retry
+        uint32_t delayMs = (attempt == 0) ? 100 : (100 * (1 << attempt));
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     }
     
-    // If we made at least one attempt, consider it partial success
-    // This helps with volume commands which work but don't get acknowledgments
-    if (commandSent) {
-        LOG_INFO("Command sent but no successful acknowledgment received");
-        // Don't immediately count this as a failure for throttling purposes
-        if (m_commandStatus.consecutiveFailures > 0) {
-            m_commandStatus.consecutiveFailures--;
-        }
+    // All retries failed, but we might consider it partial success for volume commands
+    LOG_INFO("Command sent but no successful acknowledgment received");
+    
+    // Don't immediately count this as a complete failure for throttling purposes
+    if (m_commandStatus.consecutiveFailures > 0) {
+        m_commandStatus.consecutiveFailures--;
     }
     
-    // All retries failed
     return false;
 }
 
@@ -80,12 +68,6 @@ bool CommandThrottler::throttleCommand() {
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
     }
     
-    // Wait until adapter is no longer busy
-    if (isAdapterBusy()) {
-        LOG_DEBUG("Waiting for CEC adapter to be ready");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    
     // Update last command time
     m_lastCommandTime = std::chrono::steady_clock::now();
     return true;
@@ -93,20 +75,18 @@ bool CommandThrottler::throttleCommand() {
 
 uint32_t CommandThrottler::getAdaptiveThrottleTime() const {
     // Base throttle time
-    uint32_t throttleTime = m_options.baseIntervalMs;
-    
-    // Increase throttle time based on consecutive failures
-    if (m_commandStatus.consecutiveFailures > 0) {
-        // Exponential backoff based on failure count
-        uint32_t additionalDelay = std::min(
-            static_cast<uint32_t>(100 * (1 << std::min(m_commandStatus.consecutiveFailures, 5))),
-            static_cast<uint32_t>(m_options.maxIntervalMs - m_options.baseIntervalMs)
-        );
-        
-        throttleTime += additionalDelay;
+    if (m_commandStatus.consecutiveFailures == 0) {
+        return m_options.baseIntervalMs;
     }
     
-    return throttleTime;
+    // Exponential backoff based on failure count (limit to 5 failures to prevent overflow)
+    uint32_t failureCount = std::min(m_commandStatus.consecutiveFailures, 5u);
+    uint32_t additionalDelay = std::min(
+        static_cast<uint32_t>(100 * (1 << failureCount)),
+        static_cast<uint32_t>(m_options.maxIntervalMs - m_options.baseIntervalMs)
+    );
+    
+    return m_options.baseIntervalMs + additionalDelay;
 }
 
 void CommandThrottler::updateCommandStatus(bool success) {
@@ -131,11 +111,8 @@ void CommandThrottler::resetConsecutiveFailures() {
 
 bool CommandThrottler::isAdapterBusy() const {
     // Consider adapter busy if we had very recent failures
-    bool recentFailure = (m_commandStatus.consecutiveFailures > 0) && 
-        (std::chrono::duration_cast<std::chrono::milliseconds>(
+    return (std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - m_commandStatus.lastExecutionTime).count() < 100);
-    
-    return recentFailure;
 }
 
 } // namespace cec_control

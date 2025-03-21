@@ -327,7 +327,6 @@ void DBusMonitor::monitorLoop() {
                 gettimeofday(&tv, nullptr);
                 now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
                 
-                hasTimeouts = false;
                 int64_t earliest = INT64_MAX;
                 
                 for (const auto& timeoutInfo : m_timeouts) {
@@ -340,11 +339,7 @@ void DBusMonitor::monitorLoop() {
                 }
                 
                 if (hasTimeouts) {
-                    if (earliest <= now) {
-                        maxTimeout = 0;
-                    } else {
-                        maxTimeout = static_cast<int>(earliest - now);
-                    }
+                    maxTimeout = (earliest <= now) ? 0 : static_cast<int>(earliest - now);
                 }
             }
         }

@@ -68,19 +68,10 @@ void CECOperation::complete(const Message& result) {
     // Update response first
     m_response = result;
     
-    // Only set promise value if future is still valid
-    if (!m_future.valid()) {
-        LOG_WARNING("Attempted to complete already completed operation #", m_id);
-        return;
-    }
-    
     try {
         m_promise.set_value();
         LOG_DEBUG("Completed operation #", m_id, " with result: ", 
                   (m_response.type == MessageType::RESP_SUCCESS ? "Success" : "Error"));
-    } catch (const std::future_error& e) {
-        // Handle specific future errors
-        LOG_ERROR("Future error completing operation #", m_id, ": ", e.what());
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to complete operation #", m_id, ": ", e.what());
     }

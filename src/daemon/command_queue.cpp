@@ -39,13 +39,9 @@ void CommandQueue::stop() {
     
     // Wait for the thread to exit with timeout
     if (m_workerThread.joinable()) {
-        // Use async with future to implement timeout for thread join
         auto joinFuture = std::async(std::launch::async, [this]() {
-            if (m_workerThread.joinable()) {
-                m_workerThread.join();
-                return true;
-            }
-            return false;
+            m_workerThread.join();
+            return true;
         });
         
         // Wait for thread to join with 3 second timeout
@@ -71,16 +67,15 @@ std::shared_ptr<CECOperation> CommandQueue::enqueue(
     CECOperation::Priority priority,
     uint32_t timeoutMs) {
     
+    auto operation = std::make_shared<CECOperation>(command, priority, timeoutMs);
+    
     if (!m_running || !m_handler) {
         LOG_ERROR("Cannot enqueue operation: queue not running or no handler set");
-        auto operation = std::make_shared<CECOperation>(command, priority, timeoutMs);
         operation->complete(Message(MessageType::RESP_ERROR));
         return operation;
     }
     
-    auto operation = std::make_shared<CECOperation>(command, priority, timeoutMs);
-    
-    // Add directly to the queue without trying to merge
+    // Add to the queue
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         m_queue.push(operation);
@@ -105,13 +100,8 @@ Message CommandQueue::executeSync(const Message& command, uint32_t timeoutMs) {
     
     auto operation = enqueue(command, priority, timeoutMs);
     
-    // Wait for operation to complete
-    if (operation->wait(timeoutMs)) {
-        return operation->getResponse();
-    } else {
-        LOG_WARNING("Operation timed out: ", operation->getDescription());
-        return Message(MessageType::RESP_ERROR);
-    }
+    // Return result if operation completed within timeout, otherwise error
+    return operation->wait(timeoutMs) ? operation->getResponse() : Message(MessageType::RESP_ERROR);
 }
 
 size_t CommandQueue::getPendingCount() const {
@@ -210,20 +200,19 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             result = m_handler(operation->getCommand());
             
-            // If successful or explicitly failed, we can stop
+            // If we have a definitive result, we can stop
             if (result.type == MessageType::RESP_SUCCESS || 
                 result.type == MessageType::RESP_ERROR) {
                 break;
             }
             
-            // Otherwise, pause briefly and try again
+            // Otherwise, pause briefly and try again for indeterminate results
             if (attempt < maxAttempts - 1) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 LOG_INFO("Retrying operation due to indeterminate result");
             }
         }
         
-        // Log the result
         LOG_DEBUG("Operation completed: ", operation->getDescription(), 
                   " result=", static_cast<int>(result.type));
         
@@ -232,10 +221,8 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
         m_processedCount++;
         
         // Remove from active operations
-        {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_activeOperations.erase(operation->getId());
-        }
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_activeOperations.erase(operation->getId());
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception processing operation: ", e.what());

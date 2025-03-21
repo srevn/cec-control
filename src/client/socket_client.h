@@ -24,16 +24,28 @@ public:
     
     ~SocketClient();
     
-    // Connect to daemon
+    /**
+     * Connect to daemon
+     * @return True if connection was successful, false otherwise
+     */
     bool connect();
     
-    // Disconnect from daemon
+    /**
+     * Disconnect from daemon
+     */
     void disconnect();
     
-    // Send command and wait for response
+    /**
+     * Send command to daemon and wait for response
+     * @param command Command to send
+     * @return Response from daemon
+     */
     Message sendCommand(const Message& command);
     
-    // Check if client is connected
+    /**
+     * Check if client is connected to daemon
+     * @return True if connected, false otherwise
+     */
     bool isConnected() const;
 
 private:

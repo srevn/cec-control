@@ -321,9 +321,7 @@ void CECDaemon::onResume() {
             LOG_INFO("Processing ", queuedCommands.size(), " queued commands");
             for (const auto& cmd : queuedCommands) {
                 try {
-                    if (m_cecManager) {
-                        m_cecManager->processCommand(cmd);
-                    }
+                    m_cecManager->processCommand(cmd);
                 }
                 catch (const std::exception& e) {
                     LOG_ERROR("Exception processing queued command: ", e.what());

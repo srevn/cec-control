@@ -57,12 +57,9 @@ std::shared_ptr<std::vector<uint8_t>> BufferPool::acquireBuffer() {
 void BufferPool::releaseBuffer(std::shared_ptr<std::vector<uint8_t>> buffer) {
     if (!buffer) return;
     
-    // Only keep buffers of the right capacity
-    if (buffer->capacity() >= m_bufferSize) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_totalReleased++;
-        m_availableBuffers.push(std::move(buffer));
-    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_totalReleased++;
+    m_availableBuffers.push(std::move(buffer));
 }
 
 size_t BufferPool::availableBuffers() const {

@@ -322,7 +322,6 @@ bool CECManager::standbyDevices() {
 
     try {
         LOG_INFO("Sending standby commands to configured devices");
-        // Use CECDEVICE_BROADCAST to use the powerOffDevices bitmask from configuration
         return m_adapter->standbyDevices(CEC::CECDEVICE_BROADCAST);
     } catch (const std::exception& e) {
         LOG_ERROR("Exception sending standby commands: ", e.what());
@@ -341,8 +340,6 @@ bool CECManager::powerOnDevices() {
 
     try {
         LOG_INFO("Sending power on commands to configured devices");
-        // According to the API, this will use the wakeDevices bitmask from configuration
-        // when using CECDEVICE_TV (which is the default)
         return m_adapter->powerOnDevices(CEC::CECDEVICE_TV);
     } catch (const std::exception& e) {
         LOG_ERROR("Exception sending power on commands: ", e.what());

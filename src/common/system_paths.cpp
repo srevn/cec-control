@@ -136,9 +136,8 @@ std::string SystemPaths::getSocketPath(bool createIfMissing) {
         return socketPath;
     }
     
-    // System service socket - always use /run/cec-control/socket
+    // System service socket
     std::string socketDir = getSystemRuntimeDir();
-    LOG_INFO("System runtime directory: ", socketDir);
     std::string socketPath = joinPath(socketDir, SOCKET_FILENAME);
     
     if (createIfMissing && !socketDir.empty()) {
