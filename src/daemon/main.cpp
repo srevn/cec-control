@@ -244,9 +244,9 @@ cec_control::CECDaemon::Options createDaemonOptions(const cec_control::ConfigMan
     options.enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
 
     // Log daemon options - use more concise logging with direct boolean values
-    LOG_INFO("Configuration: ScanDevicesAtStartup = {}", options.scanDevicesAtStartup);
-    LOG_INFO("Configuration: QueueCommandsDuringSuspend = {}", options.queueCommandsDuringSuspend);
-    LOG_INFO("Configuration: EnablePowerMonitor = {}", options.enablePowerMonitor);
+    LOG_INFO("Configuration: ScanDevicesAtStartup = ", (options.scanDevicesAtStartup ? "true" : "false"));
+    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ", (options.queueCommandsDuringSuspend ? "true" : "false"));
+    LOG_INFO("Configuration: EnablePowerMonitor = ", (options.enablePowerMonitor ? "true" : "false"));
 
     return options;
 }
