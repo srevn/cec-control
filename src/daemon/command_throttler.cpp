@@ -80,7 +80,7 @@ uint32_t CommandThrottler::getAdaptiveThrottleTime() const {
     }
     
     // Exponential backoff based on failure count (limit to 5 failures to prevent overflow)
-    uint32_t failureCount = std::min(m_commandStatus.consecutiveFailures, 5u);
+    uint32_t failureCount = std::min(static_cast<uint32_t>(m_commandStatus.consecutiveFailures), 5u);
     uint32_t additionalDelay = std::min(
         static_cast<uint32_t>(100 * (1 << failureCount)),
         static_cast<uint32_t>(m_options.maxIntervalMs - m_options.baseIntervalMs)
