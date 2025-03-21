@@ -44,6 +44,7 @@ set(COMMON_SOURCES
     src/common/buffer_manager.cpp
     src/common/config_manager.cpp
     src/common/system_paths.cpp
+    src/common/event_poller.cpp
 )
 
 set(DAEMON_SOURCES

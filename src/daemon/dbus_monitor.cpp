@@ -1,5 +1,6 @@
 #include "dbus_monitor.h"
 #include "../common/logger.h"
+#include "../common/event_poller.h"
 
 #include <dbus/dbus.h>
 #include <cstring>
@@ -9,7 +10,6 @@
 #include <algorithm>
 #include <unistd.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/time.h>
 
 namespace cec_control {
@@ -253,40 +253,73 @@ void DBusMonitor::monitorLoop() {
     
     LOG_INFO("D-Bus monitor thread started with event-driven approach");
     
-    // Pre-allocate poll file descriptors vector
-    std::vector<struct pollfd> pollfds;
-    pollfds.reserve(10);
+    // Create event poller
+    EventPoller poller;
     
     while (m_running) {
-        // Clear vector but maintain capacity
-        pollfds.clear();
-        
-        std::vector<struct pollfd> pollfds;
-        int maxTimeout = -1;
-        int64_t now = 0;
-        bool hasTimeouts = false;
-        
-        // Add all watched file descriptors to the poll set
+        // Update watches
         {
             std::lock_guard<std::mutex> lock(m_watchMutex);
+            
+            // First remove any watches that have been removed from m_watches
+            std::vector<int> fdsToRemove;
+            for (const auto& fdPoller : m_fdToPoller) {
+                bool found = false;
+                for (const auto& watch : m_watches) {
+                    if (watch.fd == fdPoller.first && watch.enabled) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    fdsToRemove.push_back(fdPoller.first);
+                }
+            }
+            
+            for (int fd : fdsToRemove) {
+                poller.remove(fd);
+                m_fdToPoller.erase(fd);
+            }
+            
+            // Then add or update watches
             for (const auto& watchInfo : m_watches) {
                 if (watchInfo.enabled) {
-                    struct pollfd pfd;
-                    pfd.fd = watchInfo.fd;
-                    pfd.events = 0;
+                    uint32_t events = 0;
                     if (watchInfo.flags & DBUS_WATCH_READABLE) {
-                        pfd.events |= POLLIN;
+                        events |= static_cast<uint32_t>(EventPoller::Event::READ);
                     }
                     if (watchInfo.flags & DBUS_WATCH_WRITABLE) {
-                        pfd.events |= POLLOUT;
+                        events |= static_cast<uint32_t>(EventPoller::Event::WRITE);
                     }
-                    pfd.revents = 0;
-                    pollfds.push_back(pfd);
+                    
+                    auto it = m_fdToPoller.find(watchInfo.fd);
+                    if (it == m_fdToPoller.end()) {
+                        // New fd to add
+                        if (poller.add(watchInfo.fd, events)) {
+                            m_fdToPoller[watchInfo.fd] = events;
+                        }
+                    } else if (it->second != events) {
+                        // Existing fd with changed events
+                        if (poller.modify(watchInfo.fd, events)) {
+                            it->second = events;
+                        }
+                    }
+                } else {
+                    // Watch is disabled, remove from poller
+                    auto it = m_fdToPoller.find(watchInfo.fd);
+                    if (it != m_fdToPoller.end()) {
+                        poller.remove(watchInfo.fd);
+                        m_fdToPoller.erase(it);
+                    }
                 }
             }
         }
         
-        // Calculate the shortest timeout
+        // Calculate timeout - default to 100ms if no timeouts
+        int maxTimeout = 100;
+        int64_t now = 0;
+        bool hasTimeouts = false;
+        
         {
             std::lock_guard<std::mutex> lock(m_timeoutMutex);
             if (!m_timeouts.empty()) {
@@ -315,44 +348,30 @@ void DBusMonitor::monitorLoop() {
                 }
             }
         }
-
-        // If no timeouts and no watches, wait a bit
-        if (pollfds.empty() && !hasTimeouts) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-
-        // Wait for events with the calculated timeout
-        int pollResult = poll(pollfds.data(), pollfds.size(), maxTimeout);
         
-        // Check for poll errors
-        if (pollResult < 0 && errno != EINTR) {
-            LOG_ERROR("Poll error in D-Bus monitor: ", strerror(errno));
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
+        // Wait for events with the calculated timeout
+        auto events = poller.wait(maxTimeout);
         
         // Handle watches that have activity
-        if (pollResult > 0) {
+        for (const auto& event : events) {
             std::lock_guard<std::mutex> lock(m_watchMutex);
-            size_t watchIndex = 0;
             for (const auto& watchInfo : m_watches) {
-                if (watchInfo.enabled && watchIndex < pollfds.size()) {
+                if (watchInfo.enabled && watchInfo.fd == event.fd) {
                     unsigned int flags = 0;
-                    if (pollfds[watchIndex].revents & POLLIN) {
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
                         flags |= DBUS_WATCH_READABLE;
                     }
-                    if (pollfds[watchIndex].revents & POLLOUT) {
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
                         flags |= DBUS_WATCH_WRITABLE;
                     }
-                    if (pollfds[watchIndex].revents & (POLLERR | POLLHUP)) {
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) {
                         flags |= DBUS_WATCH_ERROR;
                     }
                     
                     if (flags != 0) {
                         dbus_watch_handle(watchInfo.watch, flags);
                     }
-                    watchIndex++;
+                    break;
                 }
             }
         }

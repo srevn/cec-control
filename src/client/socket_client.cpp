@@ -1,6 +1,7 @@
 #include "socket_client.h"
 #include "../common/logger.h"
 #include "../common/system_paths.h"
+#include "../common/event_poller.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -8,7 +9,6 @@
 #include <fcntl.h>
 #include <cstring>
 #include <cerrno>
-#include <poll.h>
 #include <filesystem>
 
 namespace cec_control {
@@ -144,19 +144,38 @@ Message SocketClient::receiveResponse() {
     std::vector<uint8_t> buffer(1024);
     std::vector<uint8_t> receivedData;
     
-    // Set timeout for response
-    struct pollfd pfd;
-    pfd.fd = m_socketFd;
-    pfd.events = POLLIN;
+    // Set timeout for response using our EventPoller
+    EventPoller poller;
+    if (!poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ))) {
+        LOG_ERROR("Failed to add socket to event poller");
+        return Message(MessageType::RESP_ERROR);
+    }
     
     // Wait for up to 10 seconds for a response
-    int pollResult = poll(&pfd, 1, 10000);
+    auto events = poller.wait(10000);
     
-    if (pollResult < 0) {
-        LOG_ERROR("Poll error during response receive: ", strerror(errno));
-        return Message(MessageType::RESP_ERROR);
-    } else if (pollResult == 0) {
+    if (events.empty()) {
         LOG_ERROR("Timeout waiting for response from server");
+        return Message(MessageType::RESP_ERROR);
+    }
+    
+    bool hasData = false;
+    for (const auto& event : events) {
+        if (event.fd == m_socketFd) {
+            if (event.events & EventPoller::ERROR_EVENTS) {
+                LOG_ERROR("Socket error during response receive");
+                return Message(MessageType::RESP_ERROR);
+            }
+            
+            if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                hasData = true;
+                break;
+            }
+        }
+    }
+    
+    if (!hasData) {
+        LOG_ERROR("No read event received for socket");
         return Message(MessageType::RESP_ERROR);
     }
 

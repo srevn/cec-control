@@ -16,6 +16,9 @@ namespace cec_control {
 
 class SocketServer {
 public:
+    /**
+     * Callback type for processing client commands
+     */
     using ClientHandler = std::function<Message(const Message&)>;
     
     // Disable copying and moving
@@ -38,18 +41,29 @@ public:
      */
     explicit SocketServer(const std::string& socketPath, std::shared_ptr<ThreadPool> threadPool = nullptr);
     
+    /**
+     * Destructor
+     */
     ~SocketServer();
     
     // Start server in a separate thread
     bool start();
     
-    // Stop server gracefully
+    /**
+     * Stop the socket server
+     */
     void stop();
     
-    // Set command handler callback
+    /**
+     * Set the handler for processing client commands
+     * @param handler Function to handle client commands
+     */
     void setCommandHandler(ClientHandler handler);
     
-    // Check if server is running
+    /**
+     * Check if the server is running
+     * @return True if the server is running
+     */
     bool isRunning() const;
 
 private:
@@ -66,19 +80,32 @@ private:
     std::mutex m_clientsMutex;
     std::unordered_set<int> m_activeClients;
     
-    // Main server loop
+    /**
+     * Main server loop
+     */
     void serverLoop();
     
-    // Handle individual client connections
+    /**
+     * Handle a client connection
+     * @param clientFd File descriptor for the client
+     */
     void handleClient(int clientFd);
     
-    // Create and bind socket
+    /**
+     * Set up the server socket
+     * @return True if successful
+     */
     bool setupSocket();
     
-    // Clean up socket resources
+    /**
+     * Clean up the server socket
+     */
     void cleanupSocket();
     
-    // Close a client connection
+    /**
+     * Close a client connection
+     * @param clientFd File descriptor for the client
+     */
     void closeClient(int clientFd);
     
     /**
@@ -88,6 +115,13 @@ private:
      * @return true if successful, false otherwise
      */
     bool processAndSendResponse(int clientFd, const Message& cmd);
+    
+    /**
+     * Set a socket to non-blocking mode
+     * @param fd Socket file descriptor
+     * @return True if successful
+     */
+    bool setNonBlocking(int fd);
 };
 
 } // namespace cec_control
