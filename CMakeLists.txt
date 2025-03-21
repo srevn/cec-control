@@ -73,19 +73,35 @@ set(CLIENT_SOURCES
 add_executable(cec-daemon ${DAEMON_SOURCES})
 add_executable(cec-client ${CLIENT_SOURCES})
 
-# Link libraries
-target_link_libraries(cec-daemon ${LIBCEC_LIBRARIES} ${DBUS_LIBRARIES} pthread stdc++fs)
-target_link_libraries(cec-client ${LIBCEC_LIBRARIES} pthread stdc++fs)
+# Link libraries for cec-daemon
+target_link_libraries(cec-daemon
+    PRIVATE
+        pthread
+        stdc++fs
+    PUBLIC
+        ${LIBCEC_LIBRARIES}
+        ${DBUS_LIBRARIES}
+)
+
+# Link libraries for cec-client
+target_link_libraries(cec-client
+    PRIVATE
+        pthread
+        stdc++fs
+    PUBLIC
+        ${LIBCEC_LIBRARIES}
+)
 
 # Install targets
 install(TARGETS cec-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS cec-daemon RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Install documentation
-install(FILES 
-        ${CMAKE_CURRENT_SOURCE_DIR}/docs/configuration.md
-        ${CMAKE_CURRENT_SOURCE_DIR}/docs/default-paths.md
-        DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/configuration.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/default-paths.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
 
 # Install configuration sample (don't overwrite existing)
 install(
