@@ -36,10 +36,10 @@ CECAdapter::CECAdapter(Options options)
     if (!m_config.callbacks) {
         LOG_INFO("Allocating CEC callbacks structure");
         m_config.callbacks = new CEC::ICECCallbacks;
-    }
-    if (!m_config.callbacks) {
-        LOG_ERROR("Failed to allocate CEC callbacks structure");
-        return;
+        if (!m_config.callbacks) {
+            LOG_ERROR("Failed to allocate CEC callbacks structure");
+            return;
+        }
     }
     
     // Initialize callbacks to null
@@ -71,21 +71,20 @@ void CECAdapter::setupCallbacks() {
     
     try {
         // Set up callbacks with null checks
-        if (m_config.callbacks) {
-            m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
-            m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
-            m_config.callbacks->alert = CECAdapter::cecAlertCallback;
-            
-            // Use proper function signature matching libcec requirements
-            m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
-                if (param) {
-                    CECAdapter::cecMenuCallback(param, state);
-                }
-                return 0;
-            };
-            
-            m_config.callbackParam = this;
-        }
+        m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
+        m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
+        m_config.callbacks->alert = CECAdapter::cecAlertCallback;
+        
+        // Use proper function signature matching libcec requirements
+        m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
+            CECAdapter* adapter = static_cast<CECAdapter*>(param);
+            if (adapter) {
+                adapter->cecMenuCallback(state);
+            }
+            return 0;
+        };
+        
+        m_config.callbackParam = this;
     } catch (const std::exception& e) {
         LOG_ERROR("Exception during callback setup: ", e.what());
     }
@@ -354,8 +353,13 @@ void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* comma
                 LOG_INFO("Executing suspend command via D-Bus");
                 
                 // Execute the D-Bus command to suspend the system
-                system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
-                       "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+                int result = system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
+                                    "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+                if (result == 0) {
+                    LOG_INFO("Suspend command executed successfully via D-Bus");
+                } else {
+                    LOG_ERROR("Failed to execute suspend command via D-Bus. Result code: ", result);
+                }
             }).detach();
         }
     }
@@ -385,10 +389,7 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
     }
 }
 
-void CECAdapter::cecMenuCallback(void *cbParam, const CEC::cec_menu_state state) {
-    CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
-    if (!adapter) return;
-    
+void CECAdapter::cecMenuCallback(const CEC::cec_menu_state state) {
     LOG_DEBUG("CEC menu state changed: ", static_cast<int>(state));
 }
 
