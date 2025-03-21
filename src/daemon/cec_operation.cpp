@@ -27,8 +27,16 @@ CECOperation::~CECOperation() {
     try {
         if (m_future.valid() && 
             m_future.wait_for(std::chrono::seconds(0)) == std::future_status::timeout) {
+            
+            // Log that we're completing the operation in the destructor
+            LOG_DEBUG("Operation #", m_id, " was not completed before destruction");
+            
+            // Set value to avoid broken promise
             m_promise.set_value();
         }
+    } catch (const std::future_error& e) {
+        // Specific exception for future errors
+        LOG_DEBUG("Future error in ~CECOperation for operation #", m_id, ": ", e.what());
     } catch (const std::exception& e) {
         LOG_DEBUG("Exception in ~CECOperation for operation #", m_id, ": ", e.what());
     }
@@ -46,24 +54,33 @@ bool CECOperation::hasTimedOut() const {
 }
 
 bool CECOperation::wait(uint32_t timeoutMs) {
-    if (timeoutMs == 0) {
-        // Use operation's own timeout
-        auto waitTime = std::chrono::milliseconds(m_timeoutMs);
-        return m_future.wait_for(waitTime) == std::future_status::ready;
-    } else {
-        // Use provided timeout
-        auto waitTime = std::chrono::milliseconds(timeoutMs);
-        return m_future.wait_for(waitTime) == std::future_status::ready;
+    // Ensure the future is valid before waiting
+    if (!m_future.valid()) {
+        LOG_ERROR("Attempted to wait on invalid future for operation #", m_id);
+        return false;
     }
+    
+    auto waitTime = std::chrono::milliseconds(timeoutMs == 0 ? m_timeoutMs : timeoutMs);
+    return m_future.wait_for(waitTime) == std::future_status::ready;
 }
 
 void CECOperation::complete(const Message& result) {
+    // Update response first
     m_response = result;
+    
+    // Only set promise value if future is still valid
+    if (!m_future.valid()) {
+        LOG_WARNING("Attempted to complete already completed operation #", m_id);
+        return;
+    }
     
     try {
         m_promise.set_value();
         LOG_DEBUG("Completed operation #", m_id, " with result: ", 
                   (m_response.type == MessageType::RESP_SUCCESS ? "Success" : "Error"));
+    } catch (const std::future_error& e) {
+        // Handle specific future errors
+        LOG_ERROR("Future error completing operation #", m_id, ": ", e.what());
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to complete operation #", m_id, ": ", e.what());
     }

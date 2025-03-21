@@ -13,6 +13,9 @@ namespace cec_control {
  */
 class CECOperation {
 public:
+    /**
+     * Operation priority levels that determine execution order
+     */
     enum class Priority {
         HIGH,   // Critical operations like restart
         NORMAL, // Standard commands
@@ -31,6 +34,14 @@ public:
     
     ~CECOperation();
     
+    // Prevent copying to avoid issues with promise/future
+    CECOperation(const CECOperation&) = delete;
+    CECOperation& operator=(const CECOperation&) = delete;
+    
+    // Allow moving
+    CECOperation(CECOperation&&) = default;
+    CECOperation& operator=(CECOperation&&) = default;
+    
     // Get the original command
     const Message& getCommand() const { return m_command; }
     
@@ -46,25 +57,42 @@ public:
     // Get the priority
     Priority getPriority() const { return m_priority; }
     
-    // Has this operation timed out?
+    /**
+     * Check if the operation has exceeded its timeout period
+     * @return true if operation has timed out
+     */
     bool hasTimedOut() const;
     
     // Get the operation timeout in milliseconds
     uint32_t getTimeoutMs() const { return m_timeoutMs; }
     
-    // Wait for completion with optional timeout
+    /**
+     * Wait for operation completion
+     * @param timeoutMs Timeout in milliseconds (0 to use operation's own timeout)
+     * @return true if operation completed, false if timed out
+     */
     bool wait(uint32_t timeoutMs = 0);
     
-    // Mark operation as complete with result
+    /**
+     * Mark operation as complete with result
+     * @param result Response message with operation result
+     */
     void complete(const Message& result);
     
     // Get operation ID
     uint64_t getId() const { return m_id; }
     
-    // Get a human-readable description of this operation
+    /**
+     * Get a human-readable description of this operation
+     * @return String description of the operation
+     */
     std::string getDescription() const;
     
-    // Compare operations (for priority queue)
+    /**
+     * Compare operations for priority queue ordering
+     * @param other Operation to compare against
+     * @return true if this operation has lower priority
+     */
     bool operator<(const CECOperation& other) const;
 
 private:
@@ -81,7 +109,9 @@ private:
     static std::atomic<uint64_t> s_nextId;
 };
 
-// Custom comparison for priority queue (inverted for highest priority first)
+/**
+ * Custom comparison for priority queue (inverted for highest priority first)
+ */
 struct CECOperationComparator {
     bool operator()(const std::shared_ptr<CECOperation>& a, 
                    const std::shared_ptr<CECOperation>& b) const {
