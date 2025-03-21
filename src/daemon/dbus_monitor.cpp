@@ -22,11 +22,7 @@ DBusMonitor::DBusMonitor()
 
 DBusMonitor::~DBusMonitor() {
     stop();
-    
-    // Make sure we release our inhibit lock
-    if (m_inhibitFd >= 0) {
-        releaseInhibitLock();
-    }
+    releaseInhibitLock();
     
     if (m_connection) {
         dbus_connection_unref(m_connection);
@@ -44,11 +40,6 @@ bool DBusMonitor::initialize() {
     if (dbus_error_is_set(&error)) {
         LOG_ERROR("Failed to connect to system D-Bus: ", error.message);
         dbus_error_free(&error);
-        return false;
-    }
-    
-    if (!m_connection) {
-        LOG_ERROR("Failed to get D-Bus connection");
         return false;
     }
     
@@ -161,11 +152,7 @@ bool DBusMonitor::takeInhibitLock() {
         return false;
     }
     
-    // Add arguments for the Inhibit call:
-    // - what: "sleep" - we want to delay sleep
-    // - who: our daemon name
-    // - why: a user-visible reason
-    // - mode: "delay" - we want to delay, not completely block
+    // Add arguments for the Inhibit call
     const char* what = "sleep";
     const char* who = "cec-daemon";
     const char* why = "Preparing CEC adapter for sleep";
@@ -262,54 +249,51 @@ void DBusMonitor::monitorLoop() {
             std::lock_guard<std::mutex> lock(m_watchMutex);
             
             // First remove any watches that have been removed from m_watches
-            std::vector<int> fdsToRemove;
-            for (const auto& fdPoller : m_fdToPoller) {
+            for (auto it = m_fdToPoller.begin(); it != m_fdToPoller.end();) {
                 bool found = false;
                 for (const auto& watch : m_watches) {
-                    if (watch.fd == fdPoller.first && watch.enabled) {
+                    if (watch.fd == it->first && watch.enabled) {
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    fdsToRemove.push_back(fdPoller.first);
+                    poller.remove(it->first);
+                    it = m_fdToPoller.erase(it);
+                } else {
+                    ++it;
                 }
-            }
-            
-            for (int fd : fdsToRemove) {
-                poller.remove(fd);
-                m_fdToPoller.erase(fd);
             }
             
             // Then add or update watches
             for (const auto& watchInfo : m_watches) {
-                if (watchInfo.enabled) {
-                    uint32_t events = 0;
-                    if (watchInfo.flags & DBUS_WATCH_READABLE) {
-                        events |= static_cast<uint32_t>(EventPoller::Event::READ);
-                    }
-                    if (watchInfo.flags & DBUS_WATCH_WRITABLE) {
-                        events |= static_cast<uint32_t>(EventPoller::Event::WRITE);
-                    }
-                    
-                    auto it = m_fdToPoller.find(watchInfo.fd);
-                    if (it == m_fdToPoller.end()) {
-                        // New fd to add
-                        if (poller.add(watchInfo.fd, events)) {
-                            m_fdToPoller[watchInfo.fd] = events;
-                        }
-                    } else if (it->second != events) {
-                        // Existing fd with changed events
-                        if (poller.modify(watchInfo.fd, events)) {
-                            it->second = events;
-                        }
-                    }
-                } else {
-                    // Watch is disabled, remove from poller
+                if (!watchInfo.enabled) {
                     auto it = m_fdToPoller.find(watchInfo.fd);
                     if (it != m_fdToPoller.end()) {
                         poller.remove(watchInfo.fd);
                         m_fdToPoller.erase(it);
+                    }
+                    continue;
+                }
+                
+                uint32_t events = 0;
+                if (watchInfo.flags & DBUS_WATCH_READABLE) {
+                    events |= static_cast<uint32_t>(EventPoller::Event::READ);
+                }
+                if (watchInfo.flags & DBUS_WATCH_WRITABLE) {
+                    events |= static_cast<uint32_t>(EventPoller::Event::WRITE);
+                }
+                
+                auto it = m_fdToPoller.find(watchInfo.fd);
+                if (it == m_fdToPoller.end()) {
+                    // New fd to add
+                    if (poller.add(watchInfo.fd, events)) {
+                        m_fdToPoller[watchInfo.fd] = events;
+                    }
+                } else if (it->second != events) {
+                    // Existing fd with changed events
+                    if (poller.modify(watchInfo.fd, events)) {
+                        it->second = events;
                     }
                 }
             }
@@ -317,17 +301,16 @@ void DBusMonitor::monitorLoop() {
         
         // Calculate timeout - default to 100ms if no timeouts
         int maxTimeout = 100;
-        int64_t now = 0;
-        bool hasTimeouts = false;
         
         {
             std::lock_guard<std::mutex> lock(m_timeoutMutex);
             if (!m_timeouts.empty()) {
                 struct timeval tv;
                 gettimeofday(&tv, nullptr);
-                now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+                int64_t now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
                 
                 int64_t earliest = INT64_MAX;
+                bool hasTimeouts = false;
                 
                 for (const auto& timeoutInfo : m_timeouts) {
                     if (timeoutInfo.enabled) {
@@ -348,51 +331,51 @@ void DBusMonitor::monitorLoop() {
         auto events = poller.wait(maxTimeout);
         
         // Handle watches that have activity
-        for (const auto& event : events) {
+        if (!events.empty()) {
             std::lock_guard<std::mutex> lock(m_watchMutex);
-            for (const auto& watchInfo : m_watches) {
-                if (watchInfo.enabled && watchInfo.fd == event.fd) {
-                    unsigned int flags = 0;
-                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                        flags |= DBUS_WATCH_READABLE;
+            for (const auto& event : events) {
+                for (const auto& watchInfo : m_watches) {
+                    if (watchInfo.enabled && watchInfo.fd == event.fd) {
+                        unsigned int flags = 0;
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                            flags |= DBUS_WATCH_READABLE;
+                        }
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
+                            flags |= DBUS_WATCH_WRITABLE;
+                        }
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) {
+                            flags |= DBUS_WATCH_ERROR;
+                        }
+                        
+                        if (flags != 0) {
+                            dbus_watch_handle(watchInfo.watch, flags);
+                        }
+                        break;
                     }
-                    if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
-                        flags |= DBUS_WATCH_WRITABLE;
-                    }
-                    if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) {
-                        flags |= DBUS_WATCH_ERROR;
-                    }
-                    
-                    if (flags != 0) {
-                        dbus_watch_handle(watchInfo.watch, flags);
-                    }
-                    break;
                 }
             }
         }
         
         // Handle timeouts that have expired
-        if (hasTimeouts) {
-            if (now == 0) {
+        {
+            std::lock_guard<std::mutex> lock(m_timeoutMutex);
+            if (!m_timeouts.empty()) {
                 struct timeval tv;
                 gettimeofday(&tv, nullptr);
-                now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            }
-            
-            std::lock_guard<std::mutex> lock(m_timeoutMutex);
-            for (auto& timeoutInfo : m_timeouts) {
-                if (timeoutInfo.enabled && timeoutInfo.expiry <= now) {
-                    dbus_timeout_handle(timeoutInfo.timeout);
-                    // Update expiry time for next interval
-                    updateTimeoutExpiry(timeoutInfo);
+                int64_t now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+                
+                for (auto& timeoutInfo : m_timeouts) {
+                    if (timeoutInfo.enabled && timeoutInfo.expiry <= now) {
+                        dbus_timeout_handle(timeoutInfo.timeout);
+                        // Update expiry time for next interval
+                        updateTimeoutExpiry(timeoutInfo);
+                    }
                 }
             }
         }
         
         // Dispatch any pending messages
-        while (dbus_connection_dispatch(m_connection) == DBUS_DISPATCH_DATA_REMAINS) {
-            // Keep dispatching until no more data remains
-        }
+        while (dbus_connection_dispatch(m_connection) == DBUS_DISPATCH_DATA_REMAINS);
     }
     
     LOG_INFO("D-Bus monitor thread exiting");
@@ -409,39 +392,38 @@ void DBusMonitor::processMessage(DBusMessage* msg) {
         dbus_error_init(&error);
         
         dbus_bool_t sleeping = FALSE;
-        if (dbus_message_get_args(msg, &error, 
+        if (!dbus_message_get_args(msg, &error, 
                                  DBUS_TYPE_BOOLEAN, &sleeping, 
                                  DBUS_TYPE_INVALID)) {
-            
-            if (m_callback) {
-                if (sleeping) {
-                    LOG_INFO("System is preparing to sleep");
-                    
-                    // Verify we have an inhibit lock for delaying sleep
-                    if (m_inhibitFd < 0) {
-                        LOG_WARNING("No inhibit lock when preparing for sleep, trying to get one now");
-                        takeInhibitLock();
-                    }
-                    
-                    // Notify the daemon about the sleep
-                    m_callback(PowerState::Suspending);
-                    
-                    // We DON'T release the lock here - this will be done by
-                    // the daemon after CEC operations are complete
-                } else {
-                    LOG_INFO("System is waking up");
-                    m_callback(PowerState::Resuming);
-                    
-                    // Ensure we have an inhibit lock for future sleep events
-                    if (m_inhibitFd < 0) {
-                        takeInhibitLock();
-                    }
-                }
-            }
-        } 
-        else {
             LOG_ERROR("Failed to parse PrepareForSleep args: ", error.message);
             dbus_error_free(&error);
+            return;
+        }
+        
+        if (!m_callback) return;
+        
+        if (sleeping) {
+            LOG_INFO("System is preparing to sleep");
+            
+            // Verify we have an inhibit lock for delaying sleep
+            if (m_inhibitFd < 0) {
+                LOG_WARNING("No inhibit lock when preparing for sleep, trying to get one now");
+                takeInhibitLock();
+            }
+            
+            // Notify the daemon about the sleep
+            m_callback(PowerState::Suspending);
+            
+            // We DON'T release the lock here - this will be done by
+            // the daemon after CEC operations are complete
+        } else {
+            LOG_INFO("System is waking up");
+            m_callback(PowerState::Resuming);
+            
+            // Ensure we have an inhibit lock for future sleep events
+            if (m_inhibitFd < 0) {
+                takeInhibitLock();
+            }
         }
     }
 }
@@ -473,12 +455,14 @@ void DBusMonitor::removeWatchCallback(DBusWatch* watch, void* data) {
     DBusMonitor* monitor = static_cast<DBusMonitor*>(data);
     if (!monitor) return;
     
+    int fd = dbus_watch_get_unix_fd(watch);
+    LOG_DEBUG("Removing D-Bus watch for fd ", fd);
+    
     std::lock_guard<std::mutex> lock(monitor->m_watchMutex);
     auto it = std::find_if(monitor->m_watches.begin(), monitor->m_watches.end(),
                           [watch](const WatchInfo& info) { return info.watch == watch; });
     
     if (it != monitor->m_watches.end()) {
-        LOG_DEBUG("Removing D-Bus watch for fd ", it->fd);
         monitor->m_watches.erase(it);
     }
 }

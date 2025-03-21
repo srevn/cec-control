@@ -207,23 +207,16 @@ void setupLogging(const ProgramOptions& options) {
  * @return ConfigManager with loaded configuration
  */
 cec_control::ConfigManager& setupConfiguration(const ProgramOptions& options) {
-    // Use singleton pattern for the config manager
     cec_control::ConfigManager& configManager = cec_control::ConfigManager::getInstance();
     
     // Set custom config path if provided
     if (!options.configFile.empty()) {
-        LOG_INFO("Using custom configuration file: ", options.configFile);
         configManager = cec_control::ConfigManager(options.configFile);
-    } else {
-        LOG_INFO("Using default configuration file: ", configManager.getConfigPath());
     }
     
     // Load the configuration
     if (!configManager.load()) {
         LOG_WARNING("Failed to load configuration file, using defaults");
-        LOG_INFO("Default config path: ", configManager.getConfigPath());
-    } else {
-        LOG_INFO("Configuration loaded successfully from: ", configManager.getConfigPath());
     }
     
     return configManager;
