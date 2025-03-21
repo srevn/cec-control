@@ -19,9 +19,18 @@
 
 namespace cec_control {
 
+/**
+ * @class CECManager
+ * @brief Manages CEC device operations and command processing
+ * 
+ * Provides a high-level interface for CEC device control, command processing,
+ * and adapter management. Handles reconnection logic and command throttling.
+ */
 class CECManager {
 public:
-    // Configuration options
+    /**
+     * @brief Configuration options for CEC Manager
+     */
     struct Options {
         bool scanDevicesAtStartup;
         uint32_t commandTimeoutMs;  // Default timeout for commands
@@ -31,39 +40,71 @@ public:
               commandTimeoutMs(5000) {}  // 5 second default timeout
     };
 
-    // Constructor now takes a thread pool reference for background operations
+    /**
+     * @brief Constructor
+     * @param options Configuration options
+     * @param threadPool Optional thread pool for background operations
+     */
     CECManager(Options options = Options(), std::shared_ptr<ThreadPool> threadPool = nullptr);
+    
+    /**
+     * @brief Destructor
+     */
     ~CECManager();
 
-    // Initialize the CEC adapter
+    /**
+     * @brief Initialize the CEC adapter
+     * @return true if successful, false otherwise
+     */
     bool initialize();
     
-    // Close and cleanup CEC adapter
+    /**
+     * @brief Close and cleanup CEC adapter
+     */
     void shutdown();
     
-    // Try to reconnect if connection is lost
+    /**
+     * @brief Try to reconnect if connection is lost
+     * @return true if reconnected successfully, false otherwise
+     */
     bool reconnect();
     
-    // Process client command (synchronous version)
+    /**
+     * @brief Process client command synchronously
+     * @param command Command message to process
+     * @return Response message
+     */
     Message processCommand(const Message& command);
     
-    // Process client command asynchronously
+    /**
+     * @brief Process client command asynchronously
+     * @param command Command message to process
+     * @param timeoutMs Command timeout in milliseconds (0 = use default)
+     * @return Operation handle that can be waited on
+     */
     std::shared_ptr<CECOperation> processCommandAsync(const Message& command, 
                                                     uint32_t timeoutMs = 0);
     
-    // Check if adapter is valid and ready for operations
+    /**
+     * @brief Check if adapter is valid and ready for operations
+     * @return true if adapter is connected and operational
+     */
     bool isAdapterValid() const;
     
-    // Scan for connected CEC devices
+    /**
+     * @brief Scan for connected CEC devices
+     */
     void scanDevices();
 
     /**
-     * Send standby commands to devices specified in the powerOffDevices mask
+     * @brief Send standby commands to devices specified in the powerOffDevices mask
+     * @return true if commands were sent successfully
      */
     bool standbyDevices();
     
     /**
-     * Power on devices specified in the wakeDevices mask
+     * @brief Power on devices specified in the wakeDevices mask
+     * @return true if commands were sent successfully
      */
     bool powerOnDevices();
 
@@ -80,7 +121,11 @@ private:
     // Thread pool for background operations (may be shared with daemon)
     std::shared_ptr<ThreadPool> m_threadPool;
 
-    // Internal command handler for the command queue
+    /**
+     * @brief Internal command handler for the command queue
+     * @param command Command message to handle
+     * @return Response message
+     */
     Message handleCommand(const Message& command);
 };
 

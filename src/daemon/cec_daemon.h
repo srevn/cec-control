@@ -15,9 +15,19 @@
 
 namespace cec_control {
 
+/**
+ * @class CECDaemon
+ * @brief Main daemon class that handles CEC control, socket communication, and system events
+ * 
+ * This class manages the lifecycle of the CEC daemon, including initialization, 
+ * command handling, system power state monitoring, and graceful shutdown processes.
+ * It acts as a central coordinator between the CEC manager, socket server, and D-Bus monitor.
+ */
 class CECDaemon {
 public:
-    // Configuration options for the daemon
+    /**
+     * @brief Configuration options for the daemon
+     */
     struct Options {
         bool scanDevicesAtStartup;       // Whether to scan for devices at startup
         bool queueCommandsDuringSuspend; // Whether to queue commands during suspend
@@ -29,42 +39,83 @@ public:
               enablePowerMonitor(true) {}
     };
     
-    CECDaemon(Options options = Options());
+    /**
+     * @brief Constructor
+     * @param options Configuration options
+     */
+    explicit CECDaemon(Options options = Options());
+    
+    /**
+     * @brief Destructor
+     */
     ~CECDaemon();
     
-    // Initialize and start daemon
+    /**
+     * @brief Initialize and start daemon
+     * @return true if daemon started successfully
+     */
     bool start();
     
-    // Shutdown daemon gracefully
+    /**
+     * @brief Shutdown daemon gracefully
+     */
     void stop();
     
-    // Run the daemon main loop
+    /**
+     * @brief Run the daemon main loop
+     */
     void run();
     
-    // Handle signals (static to be used with signal())
+    /**
+     * @brief Handle signals (static to be used with signal())
+     * @param signal Signal number
+     */
     static void signalHandler(int signal);
     
-    // Get singleton instance 
+    /**
+     * @brief Get singleton instance
+     * @return Pointer to daemon instance
+     */
     static CECDaemon* getInstance() { return s_instance; }
     
-    // System suspend/resume handling
+    /**
+     * @brief Handle system suspend event
+     */
     void onSuspend();
+    
+    /**
+     * @brief Handle system resume event
+     */
     void onResume();
     
-    // Manual suspend/resume commands
+    /**
+     * @brief Process explicit suspend command
+     */
     void processSuspendCommand();
+    
+    /**
+     * @brief Process explicit resume command
+     */
     void processResumeCommand();
 
 private:
+    // Core components
     std::unique_ptr<CECManager> m_cecManager;
     std::unique_ptr<SocketServer> m_socketServer;
     std::unique_ptr<DBusMonitor> m_dbusMonitor;
     std::shared_ptr<ThreadPool> m_threadPool;
-    std::atomic<bool> m_running;
-    std::atomic<bool> m_suspended;  // Keep as atomic for quick checks
-    std::mutex m_suspendMutex;      // Add mutex for suspend/resume operations
+    
+    // State flags
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_suspended{false};
+    
+    // Synchronization
+    std::mutex m_suspendMutex;
+    
+    // Configuration
     Options m_options;
     
+    // Singleton instance
     static CECDaemon* s_instance;
     
     // Command queuing during suspend
@@ -72,16 +123,28 @@ private:
     std::vector<Message> m_queuedCommands;
     bool m_queueCommandsDuringSuspend;
     
-    // Command handler for socket messages
+    /**
+     * @brief Command handler for socket messages
+     * @param command Command to handle
+     * @return Response message
+     */
     Message handleCommand(const Message& command);
     
-    // Setup signal handlers
+    /**
+     * @brief Setup signal handlers
+     */
     void setupSignalHandlers();
     
-    // D-Bus power monitoring
+    /**
+     * @brief Handle power state change from D-Bus
+     * @param state New power state
+     */
     void handlePowerStateChange(DBusMonitor::PowerState state);
     
-    // Setup power monitoring
+    /**
+     * @brief Setup power monitoring
+     * @return true if setup successful
+     */
     bool setupPowerMonitor();
 };
 
