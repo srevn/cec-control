@@ -22,15 +22,23 @@
  */
 bool setupService() {
     LOG_INFO("Running as system service");
-    
+
     // Redirect stdin to /dev/null (we don't need it)
-    close(STDIN_FILENO);
-    int null = open("/dev/null", O_RDWR);
-    dup2(null, STDIN_FILENO);
-    if (null > 0) {
-        close(null);
+    if (close(STDIN_FILENO) != 0) {
+        LOG_ERROR("Failed to close STDIN: ", strerror(errno));
+        return false;
     }
-    
+    int null_fd = open("/dev/null", O_RDWR);
+    if (null_fd < 0) {
+        LOG_ERROR("Failed to open /dev/null: ", strerror(errno));
+        return false;
+    }
+    if (dup2(null_fd, STDIN_FILENO) < 0) {
+        LOG_ERROR("Failed to redirect /dev/null to STDIN: ", strerror(errno));
+        close(null_fd); // Close null_fd in case dup2 failed
+        return false;
+    }
+
     // Keep stdout/stderr open for service manager journal
     return true;
 }
@@ -87,10 +95,6 @@ bool daemonize() {
     dup2(null, STDIN_FILENO);
     dup2(null, STDOUT_FILENO);
     dup2(null, STDERR_FILENO);
-    if (null > 2) {
-        close(null);
-    }
-    
     return true; // We're the daemon process
 }
 
@@ -180,7 +184,7 @@ void printUsage(const char* programName) {
 /**
  * Initialize and configure the logger
  * 
- * @param options Program options from command line
+ * @param options ProgramOptions from command line
  */
 void setupLogging(const ProgramOptions& options) {
     // Configure log file
@@ -199,7 +203,7 @@ void setupLogging(const ProgramOptions& options) {
 /**
  * Load configuration and set up the config manager
  * 
- * @param options Program options from command line
+ * @param options ProgramOptions from command line
  * @return ConfigManager with loaded configuration
  */
 cec_control::ConfigManager& setupConfiguration(const ProgramOptions& options) {
@@ -229,25 +233,21 @@ cec_control::ConfigManager& setupConfiguration(const ProgramOptions& options) {
  * Create CEC daemon options from configuration
  * 
  * @param configManager Loaded configuration manager
- * @return CEC daemon options
+ * @return CECDaemon::Options daemon options
  */
 cec_control::CECDaemon::Options createDaemonOptions(const cec_control::ConfigManager& configManager) {
     cec_control::CECDaemon::Options options;
-    
-    // Get and log configuration values
-    bool scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
-    bool queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
-    bool enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
-    
-    LOG_INFO("Configuration: ScanDevicesAtStartup = ", (scanDevicesAtStartup ? "true" : "false"));
-    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ", (queueCommandsDuringSuspend ? "true" : "false"));
-    LOG_INFO("Configuration: EnablePowerMonitor = ", (enablePowerMonitor ? "true" : "false"));
-    
-    // Set options
-    options.scanDevicesAtStartup = scanDevicesAtStartup;
-    options.queueCommandsDuringSuspend = queueCommandsDuringSuspend;
-    options.enablePowerMonitor = enablePowerMonitor;
-    
+
+    // Set daemon options from configuration
+    options.scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
+    options.queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    options.enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
+
+    // Log daemon options - use more concise logging with direct boolean values
+    LOG_INFO("Configuration: ScanDevicesAtStartup = {}", options.scanDevicesAtStartup);
+    LOG_INFO("Configuration: QueueCommandsDuringSuspend = {}", options.queueCommandsDuringSuspend);
+    LOG_INFO("Configuration: EnablePowerMonitor = {}", options.enablePowerMonitor);
+
     return options;
 }
 

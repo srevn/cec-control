@@ -2,9 +2,6 @@
 
 An application for controlling HDMI devices over the CEC (Consumer Electronics Control) protocol. CEC Control provides both a daemon service for continuous HDMI device management and a command-line client for sending commands to your devices.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0-green.svg)
-
 ## Features
 
 - **Power Management**: Turn devices on/off
