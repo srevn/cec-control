@@ -199,7 +199,6 @@ private:
     static void cecLogCallback(void *cbParam, const CEC::cec_log_message* message);
     static void cecCommandCallback(void *cbParam, const CEC::cec_command* command);
     static void cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter param);
-    static void cecMenuCallback(void *cbParam, const CEC::cec_menu_state state);
 };
 
 } // namespace cec_control

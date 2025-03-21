@@ -46,7 +46,6 @@ CECAdapter::CECAdapter(Options options)
     m_config.callbacks->logMessage = nullptr;
     m_config.callbacks->commandReceived = nullptr;
     m_config.callbacks->alert = nullptr;
-    m_config.callbacks->menuStateChanged = nullptr;
     m_config.callbacks->sourceActivated = nullptr;
     
     // Set up our callbacks
@@ -74,17 +73,9 @@ void CECAdapter::setupCallbacks() {
         m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
         m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
         m_config.callbacks->alert = CECAdapter::cecAlertCallback;
-        
-        // Use proper function signature matching libcec requirements
-        m_config.callbacks->menuStateChanged = [](void* param, const CEC::cec_menu_state state) -> int {
-            CECAdapter* adapter = static_cast<CECAdapter*>(param);
-            if (adapter) {
-                adapter->cecMenuCallback(state);
-            }
-            return 0;
-        };
-        
+
         m_config.callbackParam = this;
+
     } catch (const std::exception& e) {
         LOG_ERROR("Exception during callback setup: ", e.what());
     }
@@ -387,10 +378,6 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
             LOG_DEBUG("CEC alert: ", static_cast<int>(alert));
             break;
     }
-}
-
-void CECAdapter::cecMenuCallback(const CEC::cec_menu_state state) {
-    LOG_DEBUG("CEC menu state changed: ", static_cast<int>(state));
 }
 
 void CECAdapter::setAutoStandby(bool enabled) {
