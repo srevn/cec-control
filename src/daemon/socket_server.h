@@ -114,7 +114,7 @@ private:
      * @param cmd The message/command to process
      * @return true if successful, false otherwise
      */
-    bool processAndSendResponse(int clientFd, const Message& cmd);
+    bool sendDataToClient(int clientFd, const Message& cmd);
     
     /**
      * Set a socket to non-blocking mode

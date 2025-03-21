@@ -371,7 +371,7 @@ void SocketServer::closeClient(int clientFd) {
     }
 }
 
-bool SocketServer::processAndSendResponse(int clientFd, const Message& cmd) {
+bool SocketServer::sendDataToClient(int clientFd, const Message& cmd) {
     // Process command
     Message response = m_cmdHandler ? m_cmdHandler(cmd) : Message(MessageType::RESP_ERROR);
     
@@ -496,7 +496,7 @@ void SocketServer::handleClient(int clientFd) {
                                             Message cmd = Protocol::unpackMessage(*receivedData);
                                             
                                             // Process and send response
-                                            if (!processAndSendResponse(clientFd, cmd)) {
+                                            if (!sendDataToClient(clientFd, cmd)) {
                                                 connectionActive = false;
                                                 break;
                                             }
