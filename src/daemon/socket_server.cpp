@@ -10,8 +10,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <cstring>
 #include <cerrno>
 #include <future>
@@ -95,28 +93,21 @@ void SocketServer::stop() {
         try {
             // Use async with future to implement timeout for thread join
             auto joinFuture = std::async(std::launch::async, [this]() {
-                if (m_serverThread.joinable()) {
-                    m_serverThread.join();
-                    return true;
-                }
-                return false;
+                m_serverThread.join();
+                return true;
             });
             
             // Wait for thread to join with timeout
             if (joinFuture.wait_for(std::chrono::seconds(THREAD_JOIN_TIMEOUT_SEC)) == std::future_status::timeout) {
                 LOG_WARNING("Server thread did not exit cleanly within timeout, detaching");
-                if (m_serverThread.joinable()) {
-                    m_serverThread.detach();
-                }
+                m_serverThread.detach();
             } else {
                 LOG_INFO("Server thread joined successfully");
             }
         }
         catch (const std::exception& e) {
             LOG_ERROR("Exception joining server thread: ", e.what());
-            if (m_serverThread.joinable()) {
-                m_serverThread.detach();
-            }
+            m_serverThread.detach();
         }
     }
     
@@ -228,127 +219,125 @@ void SocketServer::cleanupSocket() {
 }
 
 void SocketServer::serverLoop() {
-    try {
-        EventPoller poller;
+    EventPoller poller;
+    
+    // Add server socket to the poller
+    poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+    
+    int consecutiveErrors = 0;
+    
+    while (m_running) {
+        // Wait for events with a short timeout
+        auto events = poller.wait(SERVER_POLL_TIMEOUT_MS);
         
-        // Add server socket to the poller
-        poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+        if (events.empty()) {
+            // Timeout - reset error counter and continue
+            consecutiveErrors = 0;
+            continue;
+        }
         
-        int consecutiveErrors = 0;
-        
-        while (m_running) {
-            // Wait for events with a short timeout
-            auto events = poller.wait(SERVER_POLL_TIMEOUT_MS);
-            
-            if (events.empty()) {
-                // Timeout - reset error counter and continue
-                consecutiveErrors = 0;
-                continue;
-            }
-            
-            for (const auto& event : events) {
-                if (event.fd == m_socketFd) {
-                    // Check for socket errors
-                    if (event.events & EventPoller::ERROR_EVENTS) {
-                        LOG_ERROR("Server socket error detected, trying to recover");
-                        
-                        // Try to recreate the socket
-                        close(m_socketFd);
-                        poller.remove(m_socketFd);
-                        
-                        if (!setupSocket()) {
-                            LOG_ERROR("Failed to restore server socket, exiting server loop");
-                            break;
-                        }
-                        
-                        poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
-                        continue;
+        for (const auto& event : events) {
+            if (event.fd == m_socketFd) {
+                // Check for socket errors
+                if (event.events & EventPoller::ERROR_EVENTS) {
+                    LOG_ERROR("Server socket error detected, trying to recover");
+                    
+                    // Try to recreate the socket
+                    close(m_socketFd);
+                    poller.remove(m_socketFd);
+                    
+                    if (!setupSocket()) {
+                        LOG_ERROR("Failed to restore server socket, exiting server loop");
+                        break;
                     }
                     
-                    // Connection waiting - accept it
-                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                        // In edge-triggered mode, we need to accept all connections
-                        while (m_running) {
-                            struct sockaddr_un clientAddr;
-                            socklen_t clientLen = sizeof(clientAddr);
-                            
-                            int clientFd = accept(m_socketFd, (struct sockaddr*)&clientAddr, &clientLen);
-                            if (clientFd < 0) {
-                                // If we've accepted all pending connections, break
-                                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                    break;
-                                }
-                                
-                                // If server is stopping, this error is expected
-                                if (m_running && errno != EINTR) {
-                                    LOG_ERROR("Failed to accept connection: ", strerror(errno));
-                                    consecutiveErrors++;
-                                }
-                                
-                                // If socket was closed, we're probably shutting down
-                                if (errno == EBADF || errno == EINVAL) {
-                                    LOG_INFO("Server socket closed, exiting server loop");
-                                    m_running = false;
-                                }
-                                
+                    poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+                    continue;
+                }
+                
+                // Connection waiting - accept it
+                if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                    // In edge-triggered mode, we need to accept all connections
+                    while (m_running) {
+                        struct sockaddr_un clientAddr;
+                        socklen_t clientLen = sizeof(clientAddr);
+                        
+                        int clientFd = accept(m_socketFd, (struct sockaddr*)&clientAddr, &clientLen);
+                        if (clientFd < 0) {
+                            // If we've accepted all pending connections, break
+                            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                                 break;
                             }
                             
-                            // Successfully accepted a connection, reset error counter
-                            consecutiveErrors = 0;
+                            // If server is stopping, this error is expected
+                            if (m_running && errno != EINTR) {
+                                LOG_ERROR("Failed to accept connection: ", strerror(errno));
+                                consecutiveErrors++;
+                            }
                             
-                            // Set client socket to non-blocking
-                            if (!setNonBlocking(clientFd)) {
+                            // If socket was closed, we're probably shutting down
+                            if (errno == EBADF || errno == EINVAL) {
+                                LOG_INFO("Server socket closed, exiting server loop");
+                                m_running = false;
+                            }
+                            
+                            break;
+                        }
+                        
+                        // Successfully accepted a connection, reset error counter
+                        consecutiveErrors = 0;
+                        
+                        // Set client socket to non-blocking
+                        if (!setNonBlocking(clientFd)) {
+                            close(clientFd);
+                            continue;
+                        }
+                        
+                        LOG_INFO("Client connected on fd: ", clientFd);
+                        
+                        // Limit the number of concurrent client connections
+                        {
+                            std::lock_guard<std::mutex> lock(m_clientsMutex);
+                            if (m_activeClients.size() >= MAX_CLIENT_CONNECTIONS) {
+                                LOG_WARNING("Too many client connections, rejecting new client");
                                 close(clientFd);
                                 continue;
                             }
                             
-                            LOG_INFO("Client connected on fd: ", clientFd);
-                            
-                            // Limit the number of concurrent client connections
-                            {
-                                std::lock_guard<std::mutex> lock(m_clientsMutex);
-                                if (m_activeClients.size() >= MAX_CLIENT_CONNECTIONS) {
-                                    LOG_WARNING("Too many client connections, rejecting new client");
-                                    close(clientFd);
-                                    continue;
-                                }
-                                
-                                // Add to active clients
-                                m_activeClients.insert(clientFd);
-                            }
-                            
-                            try {
-                                // Submit client handling task to thread pool
-                                m_threadPool->submit([this, clientFd]() {
-                                    this->handleClient(clientFd);
-                                });
-                            }
-                            catch (const std::exception& e) {
-                                LOG_ERROR("Failed to submit client task: ", e.what());
-                                closeClient(clientFd);
-                            }
+                            // Add to active clients
+                            m_activeClients.insert(clientFd);
+                        }
+                        
+                        try {
+                            // Submit client handling task to thread pool
+                            m_threadPool->submit([this, clientFd]() {
+                                this->handleClient(clientFd);
+                            });
+                        }
+                        catch (const std::exception& e) {
+                            LOG_ERROR("Failed to submit client task: ", e.what());
+                            closeClient(clientFd);
                         }
                     }
                 }
             }
+        }
+        
+        // Check if too many consecutive errors
+        if (consecutiveErrors >= MAX_SERVER_CONSECUTIVE_ERRORS) {
+            LOG_ERROR("Too many consecutive errors, restarting server loop");
+            consecutiveErrors = 0;
             
-            // Check if too many consecutive errors
-            if (consecutiveErrors >= MAX_SERVER_CONSECUTIVE_ERRORS) {
-                LOG_ERROR("Too many consecutive errors, restarting server loop");
-                consecutiveErrors = 0;
-                
-                // Try to recreate the socket
-                close(m_socketFd);
-                poller.remove(m_socketFd);
-                
-                if (!setupSocket()) {
-                    LOG_ERROR("Failed to restore server socket, exiting server loop");
-                    break;
-                }
-                
-                poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+            // Try to recreate the socket
+            close(m_socketFd);
+            poller.remove(m_socketFd);
+            
+            if (!setupSocket()) {
+                LOG_ERROR("Failed to restore server socket, exiting server loop");
+                break;
             }
+            
+            poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
         }
     }
     catch (const std::exception& e) {
@@ -424,142 +413,139 @@ bool SocketServer::sendDataToClient(int clientFd, const Message& cmd) {
 }
 
 void SocketServer::handleClient(int clientFd) {
+    // Get buffers from pool
+    auto& bufferPool = BufferPoolManager::getInstance().getPool(CLIENT_BUFFER_SIZE);
+    auto recvBuffer = bufferPool.acquireBuffer();
+    
+    auto& dataBufferPool = BufferPoolManager::getInstance().getPool(DATA_BUFFER_SIZE);
+    auto receivedData = dataBufferPool.acquireBuffer();
+    receivedData->reserve(DATA_BUFFER_SIZE);
+    
+    // Setup event poller for more responsive I/O
+    EventPoller poller;
+    poller.add(clientFd, static_cast<uint32_t>(EventPoller::Event::READ));
+    
+    bool connectionActive = true;
+    int consecutiveErrors = 0;
+    
     try {
         // Set socket options for reliability
         int keepAlive = 1;
-        setsockopt(clientFd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
+        if (setsockopt(clientFd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive)) < 0) {
+            LOG_WARNING("Failed to set SO_KEEPALIVE: ", strerror(errno));
+        }
         
         // Set receive timeout
         struct timeval tv;
         tv.tv_sec = CLIENT_RECV_TIMEOUT_SEC;
         tv.tv_usec = 0;
-        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        
-        // Set up event poller for more responsive I/O
-        EventPoller poller;
-        poller.add(clientFd, static_cast<uint32_t>(EventPoller::Event::READ));
-        
-        // Get buffers from pool
-        auto& bufferPool = BufferPoolManager::getInstance().getPool(CLIENT_BUFFER_SIZE);
-        auto recvBuffer = bufferPool.acquireBuffer();
-        
-        auto& dataBufferPool = BufferPoolManager::getInstance().getPool(DATA_BUFFER_SIZE);
-        auto receivedData = dataBufferPool.acquireBuffer();
-        receivedData->reserve(DATA_BUFFER_SIZE);
-        
-        bool connectionActive = true;
-        int consecutiveErrors = 0;
+        if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            LOG_WARNING("Failed to set SO_RCVTIMEO: ", strerror(errno));
+        }
         
         while (connectionActive && m_running) {
-            try {
-                // Wait for data with a short timeout
-                auto events = poller.wait(CLIENT_POLL_TIMEOUT_MS);
-                
-                if (events.empty()) {
-                    // Timeout - reset error counter
+            // Wait for data with a short timeout
+            auto events = poller.wait(CLIENT_POLL_TIMEOUT_MS);
+            
+            if (events.empty()) {
+                // Timeout - reset error counter
+                consecutiveErrors = 0;
+                continue;
+            }
+            
+            for (const auto& event : events) {
+                if (event.fd == clientFd) {
+                    // Check for socket errors
+                    if (event.events & EventPoller::ERROR_EVENTS) {
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR))
+                            LOG_WARNING("Error event on client fd ", clientFd);
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::HANGUP))
+                            LOG_DEBUG("Client disconnected normally on fd ", clientFd);
+                        if (event.events & static_cast<uint32_t>(EventPoller::Event::INVALID))
+                            LOG_WARNING("Invalid socket fd ", clientFd);
+                        connectionActive = false;
+                        continue;
+                    }
+                    
                     consecutiveErrors = 0;
-                    continue;
-                }
-                
-                for (const auto& event : events) {
-                    if (event.fd == clientFd) {
-                        // Check for socket errors
-                        if (event.events & EventPoller::ERROR_EVENTS) {
-                            if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) 
-                                LOG_WARNING("Error event on client fd ", clientFd);
-                            if (event.events & static_cast<uint32_t>(EventPoller::Event::HANGUP)) 
-                                LOG_DEBUG("Client disconnected normally on fd ", clientFd);
-                            if (event.events & static_cast<uint32_t>(EventPoller::Event::INVALID)) 
-                                LOG_WARNING("Invalid socket fd ", clientFd);
-                            connectionActive = false;
-                            continue;
-                        }
-                        
-                        consecutiveErrors = 0;
-                        
-                        // Data is available to read
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                            // In edge-triggered mode, we need to read all data
-                            while (connectionActive) {
-                                recvBuffer->resize(CLIENT_BUFFER_SIZE);
+                    
+                    // Data is available to read
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                        // In edge-triggered mode, we need to read all data
+                        while (connectionActive) {
+                            recvBuffer->resize(CLIENT_BUFFER_SIZE);
+                            
+                            ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
+                            
+                            if (bytesRead > 0) {
+                                // Append data to received buffer
+                                receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
                                 
-                                ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
-                                
-                                if (bytesRead > 0) {
-                                    // Append data to received buffer
-                                    receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
-                                    
-                                    // Process complete messages
-                                    while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
-                                        try {
-                                            // Extract and process message
-                                            Message cmd = Protocol::unpackMessage(*receivedData);
-                                            
-                                            // Process and send response
-                                            if (!sendDataToClient(clientFd, cmd)) {
-                                                connectionActive = false;
-                                                break;
-                                            }
-                                            
-                                            // Remove processed message
-                                            if (receivedData->size() >= 5) {
-                                                uint16_t size = static_cast<uint16_t>((*receivedData)[3]) | 
-                                                              (static_cast<uint16_t>((*receivedData)[4]) << 8);
-                                                size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
-                                                
-                                                if (receivedData->size() < msgSize) {
-                                                    // Incomplete message, clear buffer
-                                                    receivedData->clear();
-                                                    break;
-                                                }
-                                                
-                                                receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
-                                            } else {
-                                                // Not enough data for a valid header
-                                                break;
-                                            }
+                                // Process complete messages
+                                while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
+                                    try {
+                                        // Extract and process message
+                                        Message cmd = Protocol::unpackMessage(*receivedData);
+                                        
+                                        // Process and send response
+                                        if (!sendDataToClient(clientFd, cmd)) {
+                                            connectionActive = false;
+                                            break;
                                         }
-                                        catch (const std::exception& e) {
-                                            LOG_ERROR("Exception processing message: ", e.what());
-                                            receivedData->clear();
+                                        
+                                        // Remove processed message
+                                        if (receivedData->size() >= 5) {
+                                            uint16_t size = static_cast<uint16_t>((*receivedData)[3]) |
+                                                          (static_cast<uint16_t>((*receivedData)[4]) << 8);
+                                            size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
+                                            
+                                            if (receivedData->size() < msgSize) {
+                                                // Incomplete message, clear buffer
+                                                receivedData->clear();
+                                                break;
+                                            }
+                                            
+                                            receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
+                                        } else {
+                                            // Not enough data for a valid header
                                             break;
                                         }
                                     }
-                                }
-                                else if (bytesRead == 0) {
-                                    // Client disconnected
-                                    LOG_DEBUG("Client closed connection on fd ", clientFd);
-                                    connectionActive = false;
-                                    break;
-                                }
-                                else {
-                                    // Error reading or would block
-                                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                        // No more data available for now
-                                        break;
-                                    } else {
-                                        LOG_ERROR("Error reading from client: ", strerror(errno));
-                                        connectionActive = false;
+                                    catch (const std::exception& e) {
+                                        LOG_ERROR("Exception processing message: ", e.what());
+                                        receivedData->clear();
                                         break;
                                     }
+                                }
+                            }
+                            else if (bytesRead == 0) {
+                                // Client disconnected
+                                LOG_DEBUG("Client closed connection on fd ", clientFd);
+                                connectionActive = false;
+                                break;
+                            }
+                            else {
+                                // Error reading or would block
+                                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                    // No more data available for now
+                                    break;
+                                } else {
+                                    LOG_ERROR("Error reading from client: ", strerror(errno));
+                                    connectionActive = false;
+                                    break;
                                 }
                             }
                         }
                     }
                 }
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("Exception in client handler: ", e.what());
-                consecutiveErrors++;
-                if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
-                    connectionActive = false;
-                }
+            
+            // Check if too many consecutive errors
+            if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
+                LOG_ERROR("Too many consecutive errors on client fd ", clientFd, ", disconnecting");
+                connectionActive = false;
             }
         }
-        
-        // Return buffers to pools
-        bufferPool.releaseBuffer(std::move(recvBuffer));
-        dataBufferPool.releaseBuffer(std::move(receivedData));
     }
     catch (const std::exception& e) {
         LOG_ERROR("Unhandled exception in client handler: ", e.what());
@@ -567,6 +553,10 @@ void SocketServer::handleClient(int clientFd) {
     catch (...) {
         LOG_ERROR("Unknown exception in client handler");
     }
+    
+    // Return buffers to pools
+    bufferPool.releaseBuffer(std::move(recvBuffer));
+    dataBufferPool.releaseBuffer(std::move(receivedData));
     
     LOG_INFO("Client disconnected from fd ", clientFd);
     closeClient(clientFd);
