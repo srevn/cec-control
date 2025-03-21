@@ -19,7 +19,7 @@ namespace cec_control {
 // Static instance pointer for signal handler
 CECDaemon* CECDaemon::s_instance = nullptr;
 // Track how many times we've received termination signals
-static volatile int s_termSignalCount = 0;
+static std::atomic<int> s_termSignalCount{0};
 
 CECDaemon::CECDaemon(Options options) 
     : m_running(false), 
@@ -55,45 +55,29 @@ bool CECDaemon::start() {
         cecOptions.scanDevicesAtStartup = m_options.scanDevicesAtStartup;
         
         m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
-        if (!m_cecManager) {
-            LOG_ERROR("Failed to create CEC manager");
-            return false;
-        }
         
         // Initialize CEC manager
         if (!m_cecManager->initialize()) {
             LOG_ERROR("Failed to initialize CEC manager");
             
-            // If no adapters found, exit with proper code
-            LOG_FATAL("Failed to start CEC daemon - no CEC adapters found");
-            
-            // Set up exit via daemon manager if possible
+            // If running under systemd, exit with proper code
             if (getenv("NOTIFY_SOCKET") != nullptr) {
                 LOG_INFO("Notifying systemd of failure");
-                // Return false will cause main to exit with error status
+                return false;
             } else {
                 LOG_INFO("Exiting daemon due to no CEC adapters found");
-                // Exit directly with error code
                 exit(EXIT_FAILURE);
             }
-            
-            return false;
         }
         
         // Create socket server with shared thread pool
-        LOG_INFO("Creating socket server with shared thread pool...");
+        LOG_INFO("Creating socket server with shared thread pool");
         m_socketServer = std::make_unique<SocketServer>(m_threadPool);
-        if (!m_socketServer) {
-            LOG_ERROR("Failed to create socket server");
-            m_cecManager->shutdown();
-            return false;
-        }
-        
         m_socketServer->setCommandHandler([this](const Message& cmd) {
             return this->handleCommand(cmd);
         });
         
-        LOG_INFO("Starting socket server...");
+        LOG_INFO("Starting socket server");
         if (!m_socketServer->start()) {
             LOG_ERROR("Failed to start socket server");
             m_cecManager->shutdown();
@@ -101,12 +85,12 @@ bool CECDaemon::start() {
         }
         
         // Set up signal handlers
-        LOG_INFO("Setting up signal handlers...");
+        LOG_INFO("Setting up signal handlers");
         setupSignalHandlers();
         
         // Set up power monitoring if enabled
         if (m_options.enablePowerMonitor) {
-            LOG_INFO("Setting up power monitor...");
+            LOG_INFO("Setting up power monitor");
             if (!setupPowerMonitor()) {
                 LOG_WARNING("Failed to set up power monitoring. Sleep/wake events will not be handled automatically.");
             }
@@ -121,10 +105,6 @@ bool CECDaemon::start() {
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during daemon startup: ", e.what());
-        return false;
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during daemon startup");
         return false;
     }
 }
@@ -155,14 +135,14 @@ void CECDaemon::stop() {
         LOG_INFO("Stopping daemon under systemd control");
     }
     
-    // Stop D-Bus monitor
-    LOG_INFO("Stopping D-Bus monitor");
-    if (m_dbusMonitor) {
-        m_dbusMonitor->stop();
-    }
-    
     try {
-        // Shutdown components in reverse order with timeouts
+        // Stop D-Bus monitor
+        if (m_dbusMonitor) {
+            LOG_INFO("Stopping D-Bus monitor");
+            m_dbusMonitor->stop();
+        }
+        
+        // Shutdown socket server
         if (m_socketServer) {
             LOG_INFO("Stopping socket server");
             auto serverStopStart = std::chrono::steady_clock::now();
@@ -170,10 +150,9 @@ void CECDaemon::stop() {
             auto serverStopDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - serverStopStart).count();
             LOG_INFO("Socket server stopped in ", serverStopDuration, "ms");
-        } else {
-            LOG_INFO("Socket server already null, skipping stop");
         }
         
+        // Shutdown CEC manager
         if (m_cecManager) {
             LOG_INFO("Shutting down CEC manager");
             auto cecShutdownStart = std::chrono::steady_clock::now();
@@ -181,15 +160,10 @@ void CECDaemon::stop() {
             auto cecShutdownDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - cecShutdownStart).count();
             LOG_INFO("CEC manager shutdown completed in ", cecShutdownDuration, "ms");
-        } else {
-            LOG_INFO("CEC manager already null, skipping shutdown");
         }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during daemon shutdown: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during daemon shutdown");
     }
     
     // Safely release resources
@@ -216,24 +190,16 @@ void CECDaemon::run() {
     std::condition_variable loopCondition;
     
     while (m_running) {
-        // Read suspended state atomically
-        bool isSuspended;
-        {
-            std::lock_guard<std::mutex> lock(m_suspendMutex);
-            isSuspended = m_suspended;
-        }
-        
         // Only check connection if not suspended
-        if (!isSuspended && m_cecManager && !m_cecManager->isAdapterValid()) {
+        if (!m_suspended.load(std::memory_order_acquire) && 
+            m_cecManager && !m_cecManager->isAdapterValid()) {
+            
             LOG_WARNING("CEC connection lost, attempting to reconnect");
             
-            // The reconnect method now handles proper synchronization
-            bool reconnected = m_cecManager->reconnect();
-            
-            if (!reconnected) {
-                LOG_ERROR("Failed to reconnect to CEC adapter - will retry");
-            } else {
+            if (m_cecManager->reconnect()) {
                 LOG_INFO("Successfully reconnected to CEC adapter");
+            } else {
+                LOG_ERROR("Failed to reconnect to CEC adapter - will retry");
             }
         }
         
@@ -253,16 +219,11 @@ void CECDaemon::onSuspend() {
     LOG_INFO("System suspending, preparing CEC adapter");
     m_suspended = true;
     
-    // Safety timeout using our thread pool instead of detached thread
+    // Safety timeout using thread pool
     m_threadPool->submit([this]() {
         std::this_thread::sleep_for(std::chrono::seconds(10));
-        bool stillSuspended;
-        {
-            std::lock_guard<std::mutex> lock(m_suspendMutex);
-            stillSuspended = m_suspended;
-        }
         
-        if (stillSuspended && m_dbusMonitor) {
+        if (m_suspended.load(std::memory_order_acquire) && m_dbusMonitor) {
             LOG_WARNING("Safety timeout reached - releasing inhibitor lock forcibly");
             m_dbusMonitor->releaseInhibitLock();
         }
@@ -285,8 +246,7 @@ void CECDaemon::onSuspend() {
                 std::chrono::steady_clock::now() - startTime).count();
             LOG_INFO("CEC shutdown took ", shutdownDuration, "ms");
             
-            // Now that preparation is complete, release the inhibitor lock
-            // to allow the system to proceed with sleep
+            // Release the inhibitor lock to allow the system to proceed with sleep
             if (m_dbusMonitor) {
                 LOG_INFO("CEC sleep preparation complete, allowing system to sleep");
                 m_dbusMonitor->releaseInhibitLock();
@@ -295,14 +255,6 @@ void CECDaemon::onSuspend() {
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during suspend: ", e.what());
-        
-        // Make sure we release the lock even in case of error
-        if (m_dbusMonitor) {
-            m_dbusMonitor->releaseInhibitLock();
-        }
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during suspend");
         
         // Make sure we release the lock even in case of error
         if (m_dbusMonitor) {
@@ -321,7 +273,6 @@ void CECDaemon::onResume() {
     
     try {
         // When resuming, simply request the CEC manager to reconnect
-        // This will properly synchronize with any other reconnect attempts
         bool reconnectSuccessful = m_cecManager && m_cecManager->reconnect();
         
         if (reconnectSuccessful) {
@@ -333,30 +284,19 @@ void CECDaemon::onResume() {
         } else {
             LOG_ERROR("Failed to reconnect CEC adapter on resume");
             
-            // Schedule a background reconnection attempt using thread pool
-            LOG_INFO("Scheduling delayed reconnection attempt");
-            
-            // Use our thread pool instead of detached thread for better resource management
-            if (m_cecManager) {
-                m_threadPool->submit([this]() {
-                    // Wait 10 seconds before attempting again
-                    std::this_thread::sleep_for(std::chrono::seconds(10));
+            // Schedule a background reconnection attempt
+            m_threadPool->submit([this]() {
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+                
+                // Check if we should still attempt to reconnect
+                if (!m_suspended.load(std::memory_order_acquire) && 
+                    m_cecManager && 
+                    !m_cecManager->isAdapterValid()) {
                     
-                    bool shouldReconnect = false;
-                    CECManager* cecManager = nullptr;
-                    
-                    {
-                        std::lock_guard<std::mutex> lock(m_suspendMutex);
-                        shouldReconnect = !m_suspended && m_cecManager && !m_cecManager->isAdapterValid();
-                        cecManager = m_cecManager.get();
-                    }
-                    
-                    if (shouldReconnect && cecManager) {
-                        LOG_INFO("Performing delayed reconnection attempt");
-                        cecManager->reconnect();
-                    }
-                });
-            }
+                    LOG_INFO("Performing delayed reconnection attempt");
+                    m_cecManager->reconnect();
+                }
+            });
         }
         
         // Mark as not suspended regardless of reconnection result
@@ -388,18 +328,11 @@ void CECDaemon::onResume() {
                 catch (const std::exception& e) {
                     LOG_ERROR("Exception processing queued command: ", e.what());
                 }
-                catch (...) {
-                    LOG_ERROR("Unknown exception processing queued command");
-                }
             }
         }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during resume: ", e.what());
-        m_suspended = false;  // Ensure we exit suspended state even on error
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during resume");
         m_suspended = false;  // Ensure we exit suspended state even on error
     }
 }
@@ -473,15 +406,8 @@ Message CECDaemon::handleCommand(const Message& command) {
         return Message(MessageType::RESP_ERROR);
     }
     
-    // Get suspended state atomically
-    bool isSuspended;
-    {
-        std::lock_guard<std::mutex> lock(m_suspendMutex);
-        isSuspended = m_suspended;
-    }
-    
-    // Handle suspended state
-    if (isSuspended && command.type != MessageType::CMD_RESUME) {
+    // Check if system is suspended
+    if (m_suspended.load(std::memory_order_acquire)) {
         // Commands that make sense to queue during suspend
         static const std::unordered_set<MessageType> queueableCommands = {
             MessageType::CMD_POWER_ON,
@@ -493,12 +419,10 @@ Message CECDaemon::handleCommand(const Message& command) {
         
         // Queue commands if enabled and command type is queueable
         if (m_queueCommandsDuringSuspend && queueableCommands.count(command.type) > 0) {
-            {
-                std::lock_guard<std::mutex> lock(m_queuedCommandsMutex);
-                m_queuedCommands.push_back(command);
-                LOG_INFO("Queued command type=", static_cast<int>(command.type), 
-                         " for execution after resume");
-            }
+            std::lock_guard<std::mutex> lock(m_queuedCommandsMutex);
+            m_queuedCommands.push_back(command);
+            LOG_INFO("Queued command type=", static_cast<int>(command.type), 
+                     " for execution after resume");
             return Message(MessageType::RESP_SUCCESS);
         }
         
@@ -507,7 +431,7 @@ Message CECDaemon::handleCommand(const Message& command) {
         return Message(MessageType::RESP_ERROR);
     }
     
-    // Use the command queue inside CECManager now
+    // Use the command queue inside CECManager
     return m_cecManager->processCommand(command);
 }
 
@@ -519,18 +443,15 @@ void CECDaemon::setupSignalHandlers() {
 }
 
 void CECDaemon::signalHandler(int signal) {
-    // Signal handlers should be as simple and fast as possible to minimize race conditions
-    // Static atomic variables are safe in signal handlers
-    static std::atomic<bool> shutdownInitiated(false);
-    static std::atomic<int> termSignalCount(0);
+    // Signal handlers should be minimal to reduce race conditions
+    static std::atomic<bool> shutdownInitiated{false};
     
     try {
         LOG_INFO("Received signal ", signal);
         
-        // Get the singleton instance (already protected in getInstance)
+        // Get the singleton instance
         CECDaemon* instance = CECDaemon::getInstance();
         if (!instance) {
-            LOG_ERROR("Signal handler called but instance is null");
             _exit(1);
             return;
         }
@@ -540,38 +461,31 @@ void CECDaemon::signalHandler(int signal) {
         
         // For termination signals (SIGTERM, SIGINT)
         if (signal == SIGTERM || signal == SIGINT) {
-            int count = ++termSignalCount;
-            s_termSignalCount = count; // For backwards compatibility
+            int count = ++s_termSignalCount;
             
             // First signal: initiate graceful shutdown
             if (count == 1 && !shutdownInitiated.exchange(true)) {
                 LOG_INFO("Initiating graceful shutdown sequence");
                 
-                // Use our thread pool for shutdown (with high priority)
+                // Use thread pool for shutdown
                 if (instance->m_threadPool) {
                     instance->m_threadPool->submit([instance]() {
                         LOG_INFO("Shutdown thread started");
                         
                         try {
                             // Stop all daemon components in order
-                            LOG_INFO("Stopping daemon services");
                             instance->stop();
-                            
-                            // Signal successful exit
                             LOG_INFO("Shutdown completed successfully");
                         } 
                         catch (const std::exception& e) {
                             LOG_ERROR("Exception during shutdown: ", e.what());
                         }
-                        catch (...) {
-                            LOG_ERROR("Unknown exception during shutdown");
-                        }
                         
-                        // Always exit after shutdown thread completes
+                        // Exit after shutdown thread completes
                         _exit(0);
                     });
                 } else {
-                    // Fallback if thread pool is unavailable or queue full
+                    // Fallback if thread pool is unavailable
                     std::thread([instance]() {
                         LOG_INFO("Shutdown thread started (fallback mode)");
                         try {
@@ -595,20 +509,18 @@ void CECDaemon::signalHandler(int signal) {
         } 
         // Other signals like SIGHUP
         else {
-            // For other signals, initiate normal shutdown within main thread
+            // For other signals, initiate normal shutdown
             LOG_INFO("Starting normal shutdown for signal ", signal);
             instance->stop();
         }
     }
     catch (const std::exception& e) {
-        // Last resort error handling in signal handler
         try {
             LOG_ERROR("Exception in signal handler: ", e.what());
         } catch (...) {}
         _exit(1);
     }
     catch (...) {
-        // Cannot log here safely
         _exit(1);
     }
 }

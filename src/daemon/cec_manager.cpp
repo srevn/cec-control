@@ -155,8 +155,6 @@ bool CECManager::reconnect() {
         // Wait before reconnecting when we had to shut down first
         LOG_DEBUG("Brief pause before reinitializing CEC adapter");
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    } else {
-        LOG_DEBUG("Adapter already shut down, proceeding to initialization");
     }
 
     // Try to initialize the adapter
@@ -167,9 +165,10 @@ bool CECManager::reconnect() {
         if (reconnectFailures >= 3) {
             LOG_ERROR("Multiple reconnect failures (", reconnectFailures, ") - daemon will exit");
 
-            // If running as a systemd service, exit with error
+            // If running as a systemd service, schedule exit
             if (getenv("NOTIFY_SOCKET") != nullptr) {
                 LOG_INFO("Notifying systemd of persistent adapter failure");
+                
                 auto exitFunc = []() {
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                     LOG_FATAL("Exiting due to persistent CEC adapter failure");
@@ -192,15 +191,10 @@ bool CECManager::reconnect() {
     reconnectFailures = 0;
 
     // Start the command queue if needed
-    if (!m_commandQueue->isRunning()) {
-        LOG_INFO("Starting command queue");
-        if (!m_commandQueue->start()) {
-            LOG_ERROR("Failed to start command queue during reconnect");
-            m_adapter->shutdown();
-            return false;
-        }
-    } else {
-        LOG_DEBUG("Command queue is already running");
+    if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
+        LOG_ERROR("Failed to start command queue during reconnect");
+        m_adapter->shutdown();
+        return false;
     }
 
     LOG_INFO("CEC adapter reconnected successfully");
@@ -262,11 +256,9 @@ Message CECManager::handleCommand(const Message& command) {
             }
             break;
         case MessageType::CMD_AUTO_STANDBY:
-            if (!command.data.empty()) {
-                if (m_adapter) {
-                    m_adapter->setAutoStandby(command.data[0] > 0);
-                    success = true;
-                }
+            if (!command.data.empty() && m_adapter) {
+                m_adapter->setAutoStandby(command.data[0] > 0);
+                success = true;
             }
             break;
         case MessageType::CMD_RESTART_ADAPTER: {
@@ -323,7 +315,7 @@ bool CECManager::standbyDevices() {
     // Take the global adapter mutex to ensure thread safety
     std::lock_guard<std::mutex> lock(g_adapterMutex);
 
-    if (!m_adapter || !isAdapterValid()) {
+    if (!isAdapterValid()) {
         LOG_ERROR("Cannot standby devices - CEC adapter not initialized or not connected");
         return false;
     }
@@ -342,7 +334,7 @@ bool CECManager::powerOnDevices() {
     // Take the global adapter mutex to ensure thread safety
     std::lock_guard<std::mutex> lock(g_adapterMutex);
 
-    if (!m_adapter || !isAdapterValid()) {
+    if (!isAdapterValid()) {
         LOG_ERROR("Cannot power on devices - CEC adapter not initialized or not connected");
         return false;
     }
