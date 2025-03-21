@@ -18,6 +18,34 @@
 
 namespace cec_control {
 
+// Constants for configuration
+constexpr int DEFAULT_THREAD_COUNT = 4;
+constexpr int MAX_THREADS = 8;
+constexpr int MAX_CLIENT_CONNECTIONS = 20;
+constexpr int SERVER_POLL_TIMEOUT_MS = 100;
+constexpr int CLIENT_POLL_TIMEOUT_MS = 50;
+constexpr int SEND_POLL_TIMEOUT_MS = 500;
+constexpr int THREAD_JOIN_TIMEOUT_SEC = 3;
+constexpr int MAX_SERVER_CONSECUTIVE_ERRORS = 5;
+constexpr int MAX_CLIENT_CONSECUTIVE_ERRORS = 3;
+constexpr int CLIENT_RECV_TIMEOUT_SEC = 2;
+constexpr mode_t SOCKET_FILE_PERMISSIONS = 0660;
+constexpr int CLIENT_BUFFER_SIZE = 4096;
+constexpr int DATA_BUFFER_SIZE = 8192;
+
+// Static helper functions
+namespace {
+    // Sets a socket to non-blocking mode
+    bool setNonBlocking(int fd) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            LOG_ERROR("Failed to set socket to non-blocking mode: ", strerror(errno));
+            return false;
+        }
+        return true;
+    }
+}
+
 SocketServer::SocketServer(const std::string& socketPath, std::shared_ptr<ThreadPool> threadPool)
     : m_socketPath(socketPath),
       m_socketFd(-1),
@@ -41,8 +69,8 @@ bool SocketServer::start() {
     
     // Create thread pool if one wasn't provided
     if (!m_threadPool) {
-        unsigned int threadCount = std::min(std::thread::hardware_concurrency(), 8U);
-        if (threadCount == 0) threadCount = 4; // Default if hardware_concurrency is not available
+        unsigned int threadCount = std::min(std::thread::hardware_concurrency(), static_cast<unsigned int>(MAX_THREADS));
+        if (threadCount == 0) threadCount = DEFAULT_THREAD_COUNT;
         
         m_threadPool = std::make_shared<ThreadPool>(threadCount);
         m_threadPool->start();
@@ -87,8 +115,8 @@ void SocketServer::stop() {
                 return false;
             });
             
-            // Wait for thread to join with 3 second timeout
-            if (joinFuture.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
+            // Wait for thread to join with timeout
+            if (joinFuture.wait_for(std::chrono::seconds(THREAD_JOIN_TIMEOUT_SEC)) == std::future_status::timeout) {
                 LOG_WARNING("Server thread did not exit cleanly within timeout, detaching");
                 if (m_serverThread.joinable()) {
                     m_serverThread.detach();
@@ -118,8 +146,8 @@ void SocketServer::stop() {
         m_activeClients.clear();
     }
     
-    // Shut down the thread pool if we created it
-    if (m_threadPool && !m_threadPool.use_count() > 1) {
+    // Shut down the thread pool
+    if (m_threadPool && m_threadPool.use_count() <= 1) {
         LOG_INFO("Shutting down thread pool");
         m_threadPool->shutdown();
         m_threadPool.reset();
@@ -148,9 +176,7 @@ bool SocketServer::setupSocket() {
     }
     
     // Set socket to non-blocking mode
-    int flags = fcntl(m_socketFd, F_GETFL, 0);
-    if (flags < 0 || fcntl(m_socketFd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        LOG_ERROR("Failed to set server socket to non-blocking mode: ", strerror(errno));
+    if (!setNonBlocking(m_socketFd)) {
         close(m_socketFd);
         m_socketFd = -1;
         return false;
@@ -190,8 +216,7 @@ bool SocketServer::setupSocket() {
     }
 
     // Set socket file permissions
-    mode_t socketMode = 0660;
-    if (chmod(m_socketPath.c_str(), socketMode) != 0) {
+    if (chmod(m_socketPath.c_str(), SOCKET_FILE_PERMISSIONS) != 0) {
         LOG_WARNING("Failed to set socket permissions: ", strerror(errno));
     }
     
@@ -222,18 +247,17 @@ void SocketServer::serverLoop() {
         pfd.events = POLLIN;
         
         int consecutiveErrors = 0;
-        const int MAX_CONSECUTIVE_ERRORS = 5;
         
         while (m_running) {
             // Use poll to wait for connections with a short timeout
-            int pollResult = poll(&pfd, 1, 100);  // 100ms timeout
+            int pollResult = poll(&pfd, 1, SERVER_POLL_TIMEOUT_MS);
             
             if (pollResult < 0) {
                 if (errno != EINTR) {
                     LOG_ERROR("Server poll error: ", strerror(errno));
                     consecutiveErrors++;
                     
-                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    if (consecutiveErrors >= MAX_SERVER_CONSECUTIVE_ERRORS) {
                         LOG_ERROR("Too many consecutive poll errors, restarting server loop");
                         consecutiveErrors = 0;
                     }
@@ -287,15 +311,17 @@ void SocketServer::serverLoop() {
                 consecutiveErrors = 0;
                 
                 // Set client socket to non-blocking
-                int clientFlags = fcntl(clientFd, F_GETFL, 0);
-                fcntl(clientFd, F_SETFL, clientFlags | O_NONBLOCK);
+                if (!setNonBlocking(clientFd)) {
+                    close(clientFd);
+                    continue;
+                }
                 
                 LOG_INFO("Client connected on fd: ", clientFd);
                 
                 // Limit the number of concurrent client connections
                 {
                     std::lock_guard<std::mutex> lock(m_clientsMutex);
-                    if (m_activeClients.size() >= 20) {
+                    if (m_activeClients.size() >= MAX_CLIENT_CONNECTIONS) {
                         LOG_WARNING("Too many client connections, rejecting new client");
                         close(clientFd);
                         continue;
@@ -338,6 +364,47 @@ void SocketServer::closeClient(int clientFd) {
     }
 }
 
+// Process and send a response to the client
+bool SocketServer::processAndSendResponse(int clientFd, const Message& cmd) {
+    // Process command
+    Message response = m_cmdHandler ? m_cmdHandler(cmd) : Message(MessageType::RESP_ERROR);
+    
+    // Pack response
+    std::vector<uint8_t> responseData = Protocol::packMessage(response);
+    size_t totalSent = 0;
+    
+    // Setup polling for writing
+    struct pollfd sendPfd;
+    sendPfd.fd = clientFd;
+    sendPfd.events = POLLOUT;
+    
+    // Send the response with timeout
+    while (totalSent < responseData.size()) {
+        int pollResult = poll(&sendPfd, 1, SEND_POLL_TIMEOUT_MS);
+        
+        if (pollResult <= 0 || !(sendPfd.revents & POLLOUT)) {
+            LOG_ERROR("Timeout/error waiting to send response");
+            return false;
+        }
+        
+        ssize_t sent = send(clientFd, 
+                           responseData.data() + totalSent, 
+                           responseData.size() - totalSent, 
+                           MSG_NOSIGNAL);
+        
+        if (sent > 0) {
+            totalSent += sent;
+        } else if (sent < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR("Error sending response: ", strerror(errno));
+                return false;
+            }
+        }
+    }
+    
+    return true;
+}
+
 void SocketServer::handleClient(int clientFd) {
     try {
         // Set socket options for reliability
@@ -346,7 +413,7 @@ void SocketServer::handleClient(int clientFd) {
         
         // Set receive timeout
         struct timeval tv;
-        tv.tv_sec = 2;
+        tv.tv_sec = CLIENT_RECV_TIMEOUT_SEC;
         tv.tv_usec = 0;
         setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         
@@ -356,27 +423,26 @@ void SocketServer::handleClient(int clientFd) {
         pfd.events = POLLIN;
         
         // Get buffers from pool
-        auto& bufferPool = BufferPoolManager::getInstance().getPool(4096);
+        auto& bufferPool = BufferPoolManager::getInstance().getPool(CLIENT_BUFFER_SIZE);
         auto recvBuffer = bufferPool.acquireBuffer();
         
-        auto& dataBufferPool = BufferPoolManager::getInstance().getPool(8192);
+        auto& dataBufferPool = BufferPoolManager::getInstance().getPool(DATA_BUFFER_SIZE);
         auto receivedData = dataBufferPool.acquireBuffer();
-        receivedData->reserve(8192);
+        receivedData->reserve(DATA_BUFFER_SIZE);
         
         bool connectionActive = true;
         int consecutiveErrors = 0;
-        const int MAX_CONSECUTIVE_ERRORS = 3;
         
         while (connectionActive && m_running) {
             try {
                 // Wait for data with a short timeout
-                int pollResult = poll(&pfd, 1, 50);
+                int pollResult = poll(&pfd, 1, CLIENT_POLL_TIMEOUT_MS);
                 
                 if (pollResult < 0) {
                     if (errno != EINTR) {
                         LOG_ERROR("Poll error for client fd ", clientFd, ": ", strerror(errno));
                         consecutiveErrors++;
-                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                        if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
                             connectionActive = false;
                         }
                     }
@@ -401,7 +467,7 @@ void SocketServer::handleClient(int clientFd) {
                 
                 // Data is available to read
                 if (pfd.revents & POLLIN) {
-                    recvBuffer->resize(4096);
+                    recvBuffer->resize(CLIENT_BUFFER_SIZE);
                     
                     ssize_t bytesRead = recv(clientFd, recvBuffer->data(), recvBuffer->size(), 0);
                     
@@ -415,56 +481,27 @@ void SocketServer::handleClient(int clientFd) {
                                 // Extract and process message
                                 Message cmd = Protocol::unpackMessage(*receivedData);
                                 
-                                // Process command
-                                Message response = m_cmdHandler ? m_cmdHandler(cmd) : Message(MessageType::RESP_ERROR);
-                                
-                                // Send response
-                                std::vector<uint8_t> responseData = Protocol::packMessage(response);
-                                size_t totalSent = 0;
-                                
-                                // Setup polling for writing
-                                struct pollfd sendPfd;
-                                sendPfd.fd = clientFd;
-                                sendPfd.events = POLLOUT;
-                                
-                                while (totalSent < responseData.size()) {
-                                    if (poll(&sendPfd, 1, 500) > 0 && (sendPfd.revents & POLLOUT)) {
-                                        ssize_t sent = send(clientFd, 
-                                                          responseData.data() + totalSent, 
-                                                          responseData.size() - totalSent, 
-                                                          MSG_NOSIGNAL);
-                                        
-                                        if (sent > 0) {
-                                            totalSent += sent;
-                                        } else if (sent < 0) {
-                                            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                                                LOG_ERROR("Error sending response: ", strerror(errno));
-                                                connectionActive = false;
-                                                break;
-                                            }
-                                        }
-                                    } else {
-                                        LOG_ERROR("Timeout/error waiting to send response");
-                                        connectionActive = false;
-                                        break;
-                                    }
+                                // Process and send response
+                                if (!processAndSendResponse(clientFd, cmd)) {
+                                    connectionActive = false;
+                                    break;
                                 }
-                                
-                                if (!connectionActive) break;
                                 
                                 // Remove processed message
                                 if (receivedData->size() >= 5) {
                                     uint16_t size = static_cast<uint16_t>((*receivedData)[3]) | 
-                                                   (static_cast<uint16_t>((*receivedData)[4]) << 8);
-                                    size_t msgSize = size + 7;
+                                                  (static_cast<uint16_t>((*receivedData)[4]) << 8);
+                                    size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
                                     
                                     if (receivedData->size() < msgSize) {
+                                        // Incomplete message, clear buffer
                                         receivedData->clear();
                                         break;
                                     }
                                     
                                     receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
                                 } else {
+                                    // Not enough data for a valid header
                                     break;
                                 }
                             }
@@ -492,7 +529,7 @@ void SocketServer::handleClient(int clientFd) {
             catch (const std::exception& e) {
                 LOG_ERROR("Exception in client handler: ", e.what());
                 consecutiveErrors++;
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                if (consecutiveErrors >= MAX_CLIENT_CONSECUTIVE_ERRORS) {
                     connectionActive = false;
                 }
             }
@@ -509,7 +546,7 @@ void SocketServer::handleClient(int clientFd) {
         LOG_ERROR("Unknown exception in client handler");
     }
     
-    LOG_INFO("Client disconnected from fd ", clientFd);
+    LOG_DEBUG("Client disconnected from fd ", clientFd);
     closeClient(clientFd);
 }
 

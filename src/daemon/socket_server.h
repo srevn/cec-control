@@ -80,6 +80,14 @@ private:
     
     // Close a client connection
     void closeClient(int clientFd);
+    
+    /**
+     * Process a command message and send the response back to the client
+     * @param clientFd File descriptor for the client connection
+     * @param cmd The message/command to process
+     * @return true if successful, false otherwise
+     */
+    bool processAndSendResponse(int clientFd, const Message& cmd);
 };
 
 } // namespace cec_control
