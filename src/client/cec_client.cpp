@@ -1,5 +1,5 @@
 #include "cec_client.h"
-#include "command_builder.h"
+#include "command_mapper.h"
 #include "../common/logger.h"
 #include "../common/system_paths.h"
 
@@ -57,28 +57,28 @@ bool CECClient::parseArgs(int argc, char* argv[]) {
 
     if (command == "volume") {
         if (!checkArgCount(4, command)) return false;
-        m_command = CommandBuilder::buildVolumeCommand(argv[2], argv[3]);
+        m_command = CommandMapper::mapVolumeCommand(argv[2], argv[3]);
     }
     else if (command == "power") {
         if (!checkArgCount(4, command)) return false;
-        m_command = CommandBuilder::buildPowerCommand(argv[2], argv[3]);
+        m_command = CommandMapper::mapPowerCommand(argv[2], argv[3]);
     }
     else if (command == "source") {
         if (!checkArgCount(4, command)) return false;
-        m_command = CommandBuilder::buildSourceCommand(argv[2], argv[3]);
+        m_command = CommandMapper::mapSourceCommand(argv[2], argv[3]);
     }
     else if (command == "auto-standby") {
         if (!checkArgCount(3, command)) return false;
-        m_command = CommandBuilder::buildAutoStandbyCommand(argv[2]);
+        m_command = CommandMapper::mapAutoStandbyCommand(argv[2]);
     }
     else if (command == "restart") {
-        m_command = CommandBuilder::buildRestartCommand();
+        m_command = CommandMapper::mapRestartCommand();
     }
     else if (command == "suspend") {
-        m_command = CommandBuilder::buildSuspendCommand();
+        m_command = CommandMapper::mapSuspendCommand();
     }
     else if (command == "resume") {
-        m_command = CommandBuilder::buildResumeCommand();
+        m_command = CommandMapper::mapResumeCommand();
     }
     else {
         std::cerr << "Error: Unknown command: " << command << std::endl;

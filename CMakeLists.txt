@@ -63,7 +63,7 @@ set(DAEMON_SOURCES
 
 set(CLIENT_SOURCES
     src/client/cec_client.cpp
-    src/client/command_builder.cpp
+    src/client/command_mapper.cpp
     src/client/socket_client.cpp
     src/client/main.cpp
     ${COMMON_SOURCES}

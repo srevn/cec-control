@@ -1,11 +1,11 @@
-#include "command_builder.h"
+#include "command_mapper.h"
 
 #include <iostream>
 #include <stdexcept>
 
 namespace cec_control {
 
-std::optional<Message> CommandBuilder::buildVolumeCommand(const std::string& action, const std::string& deviceId) {
+std::optional<Message> CommandMapper::mapVolumeCommand(const std::string& action, const std::string& deviceId) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
@@ -28,7 +28,7 @@ std::optional<Message> CommandBuilder::buildVolumeCommand(const std::string& act
     return cmd;
 }
 
-std::optional<Message> CommandBuilder::buildPowerCommand(const std::string& action, const std::string& deviceId) {
+std::optional<Message> CommandMapper::mapPowerCommand(const std::string& action, const std::string& deviceId) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
@@ -49,7 +49,7 @@ std::optional<Message> CommandBuilder::buildPowerCommand(const std::string& acti
     return cmd;
 }
 
-std::optional<Message> CommandBuilder::buildSourceCommand(const std::string& deviceId, const std::string& source) {
+std::optional<Message> CommandMapper::mapSourceCommand(const std::string& deviceId, const std::string& source) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
@@ -76,7 +76,7 @@ std::optional<Message> CommandBuilder::buildSourceCommand(const std::string& dev
     return cmd;
 }
 
-std::optional<Message> CommandBuilder::buildAutoStandbyCommand(const std::string& enabled) {
+std::optional<Message> CommandMapper::mapAutoStandbyCommand(const std::string& enabled) {
     Message cmd;
     cmd.type = MessageType::CMD_AUTO_STANDBY;
     cmd.deviceId = 0;
@@ -93,28 +93,28 @@ std::optional<Message> CommandBuilder::buildAutoStandbyCommand(const std::string
     return cmd;
 }
 
-Message CommandBuilder::buildRestartCommand() {
+Message CommandMapper::mapRestartCommand() {
     Message cmd;
     cmd.type = MessageType::CMD_RESTART_ADAPTER;
     cmd.deviceId = 0;  // Device ID is not relevant for restart
     return cmd;
 }
 
-Message CommandBuilder::buildSuspendCommand() {
+Message CommandMapper::mapSuspendCommand() {
     Message cmd;
     cmd.type = MessageType::CMD_SUSPEND;
     cmd.deviceId = 0;  // Device ID is not relevant for system commands
     return cmd;
 }
 
-Message CommandBuilder::buildResumeCommand() {
+Message CommandMapper::mapResumeCommand() {
     Message cmd;
     cmd.type = MessageType::CMD_RESUME;
     cmd.deviceId = 0;  // Device ID is not relevant for system commands
     return cmd;
 }
 
-bool CommandBuilder::parseDeviceId(const std::string& deviceId, uint8_t& result) {
+bool CommandMapper::parseDeviceId(const std::string& deviceId, uint8_t& result) {
     try {
         int val = std::stoi(deviceId);
         if (val < 0 || val > 15) {  // CEC logical addresses are 0-15
