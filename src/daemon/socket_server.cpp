@@ -340,13 +340,7 @@ void SocketServer::serverLoop() {
             poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
         }
     }
-    catch (const std::exception& e) {
-        LOG_ERROR("Unhandled exception in server loop: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception in server loop");
-    }
-    
+   
     LOG_INFO("Server loop exiting");
 }
 

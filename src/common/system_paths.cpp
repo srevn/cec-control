@@ -3,16 +3,11 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <cerrno>
-#include <cstdio>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <string>
 #include <filesystem>
-#include <fstream>
-
-namespace fs = std::filesystem;
 
 namespace cec_control {
 
@@ -34,7 +29,7 @@ std::string SystemPaths::getParentDir(const std::string& path) {
     }
     
     try {
-        return fs::path(path).parent_path().string();
+        return std::filesystem::path(path).parent_path().string();
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to get parent directory for path: ", path, " - ", e.what());
         // Fallback to find_last_of approach if filesystem throws
@@ -53,7 +48,7 @@ std::string SystemPaths::joinPath(const std::string& base, const std::string& co
     
     try {
         // Use filesystem path for proper path joining with separators
-        return (fs::path(base) / component).string();
+        return (std::filesystem::path(base) / component).string();
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to join paths: ", base, " and ", component, " - ", e.what());
         // Fallback to simple concatenation
@@ -71,7 +66,7 @@ bool SystemPaths::pathExists(const std::string& path) {
     }
     
     try {
-        return fs::exists(path);
+        return std::filesystem::exists(path);
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to check if path exists: ", path, " - ", e.what());
         return false;
@@ -107,8 +102,8 @@ bool SystemPaths::createDirectories(const std::string& path, mode_t mode) {
     }
     
     try {
-        if (!fs::exists(path)) {
-            bool result = fs::create_directories(path);
+        if (!std::filesystem::exists(path)) {
+            bool result = std::filesystem::create_directories(path);
             
             // Set permissions on the created directory
             if (result && chmod(path.c_str(), mode) != 0) {

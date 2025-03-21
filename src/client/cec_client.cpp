@@ -5,7 +5,6 @@
 
 #include <iostream>
 #include <cstdlib>
-#include <getopt.h>
 
 namespace cec_control {
 
