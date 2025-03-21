@@ -22,8 +22,8 @@ public:
         uint32_t maxRetryAttempts;    // Maximum retry attempts
         
         Options()
-            : baseIntervalMs(200),
-              maxIntervalMs(1000),
+            : baseIntervalMs(100),
+              maxIntervalMs(400),
               maxRetryAttempts(3) {}
     };
     
