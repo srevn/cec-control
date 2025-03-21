@@ -417,7 +417,6 @@ void SocketServer::handleClient(int clientFd) {
                 
                 // Check for socket errors
                 if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                    LOG_ERROR("Socket error detected in client handler for fd: ", clientFd);
                     if (pfd.revents & POLLERR) LOG_WARNING("POLLERR set on client socket fd: ", clientFd);
                     if (pfd.revents & POLLHUP) LOG_DEBUG("POLLHUP set on client socket fd: ", clientFd, " (client disconnected normally)");
                     if (pfd.revents & POLLNVAL) LOG_WARNING("POLLNVAL set on client socket fd: ", clientFd, " (socket invalid, possibly already closed)");
