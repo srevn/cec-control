@@ -79,9 +79,7 @@ bool DeviceOperations::setSource(uint8_t logicalAddress, uint8_t source) {
     
     std::lock_guard<std::mutex> lock(m_sourceMutex);
     
-    return m_throttler->executeWithThrottle([this, logicalAddress, source]() {
-        // Convert to CEC types
-        CEC::cec_logical_address cecAddress = static_cast<CEC::cec_logical_address>(logicalAddress);
+    return m_throttler->executeWithThrottle([this, source]() {
         
         // We need to get the physical address of the destination device
         uint16_t physicalAddress = 0;
