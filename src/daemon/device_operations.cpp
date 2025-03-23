@@ -83,39 +83,32 @@ bool DeviceOperations::setSource(uint8_t logicalAddress, uint8_t source) {
         // Convert to CEC types
         CEC::cec_logical_address cecAddress = static_cast<CEC::cec_logical_address>(logicalAddress);
         
-        // Select the appropriate input based on source value
-        // Source values map to CEC user control codes for input selection
-        CEC::cec_user_control_code inputCode;
+        // We need to get the physical address of the destination device
+        uint16_t physicalAddress = 0;
         
-        // Map source to appropriate CEC input selection code
+        // If source is 0-5, map to standard HDMI physical addresses
         switch (source) {
-            case 0: inputCode = CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION; break;
-            case 1: inputCode = CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION; break;
-            case 2: inputCode = CEC::CEC_USER_CONTROL_CODE_F1_BLUE; break; // Can be mapped to HDMI 1
-            case 3: inputCode = CEC::CEC_USER_CONTROL_CODE_F2_RED; break;  // Can be mapped to HDMI 2
-            case 4: inputCode = CEC::CEC_USER_CONTROL_CODE_F3_GREEN; break; // Can be mapped to HDMI 3
-            case 5: inputCode = CEC::CEC_USER_CONTROL_CODE_F4_YELLOW; break; // Can be mapped to HDMI 4
-            default: 
+            case 0: physicalAddress = 0x1000; break; // Generic input (HDMI 1)
+            case 1: physicalAddress = 0x2000; break; // Audio input (HDMI 2)
+            case 2: physicalAddress = 0x1000; break; // HDMI 1
+            case 3: physicalAddress = 0x2000; break; // HDMI 2
+            case 4: physicalAddress = 0x3000; break; // HDMI 3
+            case 5: physicalAddress = 0x4000; break; // HDMI 4
+            default:
                 LOG_WARNING("Invalid source value: ", source);
                 return false;
         }
         
-        // Send the user control code (press)
-        if (!m_adapter->sendKeypress(cecAddress, inputCode, false)) {
-            LOG_ERROR("Failed to send input selection keypress");
+        // Get a reference to the TV (which must send the SetStreamPath command)
+        CEC::ICECAdapter* rawAdapter = m_adapter->getRawAdapter();
+        if (!rawAdapter) {
+            LOG_ERROR("Failed to get raw adapter reference");
             return false;
         }
         
-        // Small delay between press and release
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        
-        // Send the release command
-        if (!m_adapter->sendKeypress(cecAddress, inputCode, true)) {
-            LOG_ERROR("Failed to send input selection key release");
-            return false;
-        }
-        
-        return true;
+        // Call SetStreamPath to change the input
+        LOG_INFO("Setting stream path to physical address: ", std::hex, physicalAddress);
+        return rawAdapter->SetStreamPath(physicalAddress);
     });
 }
 
