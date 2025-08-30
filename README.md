@@ -54,8 +54,8 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 After installation, you can enable the CEC daemon service:
 
 ```bash
-sudo systemctl enable cec-daemon.service
-sudo systemctl start cec-daemon.service
+sudo systemctl enable cec-control.service
+sudo systemctl start cec-control.service
 ```
 
 ## Usage
@@ -64,34 +64,34 @@ sudo systemctl start cec-daemon.service
 
 ```bash
 # Power on the TV (logical address 0)
-cec-client power on 0
+cec-control power on 0
 
 # Power off the AV Receiver (logical address 5)
-cec-client power off 5
+cec-control power off 5
 
 # Turn up the volume
-cec-client volume up 5
+cec-control volume up 5
 
 # Mute the audio
-cec-client volume mute 5
+cec-control volume mute 5
 
 # Change input source to HDMI 1
-cec-client source 0 2
+cec-control source 0 2
 
 # Restart the CEC adapter
-cec-client restart
+cec-control restart
 
 # Prepare for system sleep
-cec-client suspend
+cec-control suspend
 
 # Resume from sleep
-cec-client resume
+cec-control resume
 ```
 
 ### Command Reference
 
 ```
-Usage: cec-client COMMAND [ARGS...] [OPTIONS]
+Usage: cec-control COMMAND [ARGS...] [OPTIONS]
 
 Commands:
   volume (up|down|mute) DEVICE_ID   Control volume

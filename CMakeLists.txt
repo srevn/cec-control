@@ -45,6 +45,9 @@ set(COMMON_SOURCES
     src/common/config_manager.cpp
     src/common/system_paths.cpp
     src/common/event_poller.cpp
+    src/common/application_mode.cpp
+    src/common/argument_parser.cpp
+    src/common/help_printer.cpp
 )
 
 set(DAEMON_SOURCES
@@ -58,24 +61,28 @@ set(DAEMON_SOURCES
     src/daemon/cec_operation.cpp
     src/daemon/thread_pool.cpp
     src/daemon/dbus_monitor.cpp
-    src/daemon/main.cpp
-    ${COMMON_SOURCES}
+    src/daemon/daemon_bootstrap.cpp
 )
 
 set(CLIENT_SOURCES
     src/client/cec_client.cpp
     src/client/command_mapper.cpp
     src/client/socket_client.cpp
-    src/client/main.cpp
-    ${COMMON_SOURCES}
 )
 
-# Create executables
-add_executable(cec-daemon ${DAEMON_SOURCES})
-add_executable(cec-client ${CLIENT_SOURCES})
+# Unified source list for the single binary
+set(UNIFIED_SOURCES
+    src/main.cpp
+    ${COMMON_SOURCES}
+    ${DAEMON_SOURCES}
+    ${CLIENT_SOURCES}
+)
 
-# Link libraries for cec-daemon
-target_link_libraries(cec-daemon
+# Create unified executable
+add_executable(cec-control ${UNIFIED_SOURCES})
+
+# Link all necessary libraries for the unified binary
+target_link_libraries(cec-control
     PRIVATE
         pthread
         stdc++fs
@@ -84,18 +91,8 @@ target_link_libraries(cec-daemon
         ${DBUS_LIBRARIES}
 )
 
-# Link libraries for cec-client
-target_link_libraries(cec-client
-    PRIVATE
-        pthread
-        stdc++fs
-    PUBLIC
-        ${LIBCEC_LIBRARIES}
-)
-
-# Install targets
-install(TARGETS cec-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(TARGETS cec-daemon RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# Install unified binary
+install(TARGETS cec-control RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Install documentation
 install(FILES
@@ -160,20 +157,20 @@ if(PKG_CONFIG_FOUND)
     set(INSTALL_GROUP "wheel")
 
     configure_file(
-      ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-daemon.service
-      ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
+      ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.service
+      ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
       @ONLY
     )
 
     # Install systemd service file
     install(
-      FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-daemon.service
+      FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
       DESTINATION ${SYSTEMD_UNIT_DIR}
       PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
     )
     
     # Create message about enabling the service
-    install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-daemon.service\")")
+    install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-control.service\")")
     install(CODE "message(STATUS \"Note: The service is configured to run as root for hardware access\")")
   else()
     message(STATUS "systemd not found, skipping service installation")
@@ -197,3 +194,4 @@ message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Config directory: ${CONFIG_DIR}")
 message(STATUS "Log directory: ${LOG_DIR}")
 message(STATUS "Runtime directory: ${RUNTIME_DIR}")
+message(STATUS "Building binary: cec-control")

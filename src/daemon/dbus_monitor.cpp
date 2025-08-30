@@ -154,7 +154,7 @@ bool DBusMonitor::takeInhibitLock() {
     
     // Add arguments for the Inhibit call
     const char* what = "sleep";
-    const char* who = "cec-daemon";
+    const char* who = "cec-control";
     const char* why = "Preparing CEC adapter for sleep";
     const char* mode = "delay";
     

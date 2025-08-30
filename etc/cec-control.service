@@ -7,7 +7,7 @@ Wants=dbus.service
 Type=simple
 User=@INSTALL_USER@
 Group=@INSTALL_GROUP@
-ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-daemon
+ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-control --daemon
 Restart=on-failure
 RestartSec=5
 

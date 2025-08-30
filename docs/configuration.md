@@ -7,19 +7,19 @@ CEC Control uses an INI-style configuration file for customizing its behavior. T
 ### For the daemon:
 
 ```bash
-cec-daemon -c /path/to/custom/config.conf
+cec-control --daemon -c /path/to/custom/config.conf
 ```
 
 or 
 
 ```bash
-cec-daemon --config /path/to/custom/config.conf
+cec-control --daemon --config /path/to/custom/config.conf
 ```
 
 ### For the client:
 
 ```bash
-cec-client --config=/path/to/custom/config.conf power on 0
+cec-control --config=/path/to/custom/config.conf power on 0
 ```
 
 ## Available Configuration Options
