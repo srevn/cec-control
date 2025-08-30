@@ -2,8 +2,7 @@
 
 #include <string>
 #include <memory>
-#include <vector>
-#include <optional>
+#include <utility>
 
 #include "socket_client.h"
 #include "../common/messages.h"
@@ -17,8 +16,9 @@ class CECClient {
 public:
     /**
      * Create a new CEC client
+     * @param socketPath Path to the daemon socket
      */
-    CECClient();
+    explicit CECClient(std::string socketPath);
     
     /**
      * Destructor
@@ -26,33 +26,15 @@ public:
     ~CECClient();
     
     /**
-     * Process command line arguments
-     * @param argc Argument count
-     * @param argv Argument values
-     * @return true if arguments were successfully processed
-     */
-    bool processArgs(int argc, char* argv[]);
-    
-    /**
-     * Connect to daemon and execute command
+     * Connect to daemon and execute a command
+     * @param command The command to execute
      * @return Exit code (0 for success, non-zero for failure)
      */
-    int execute();
-    
-    /**
-     * Check if help was requested
-     * @return true if help was requested
-     */
-    bool isHelpRequested() const { return m_printHelp; }
+    int execute(const Message& command);
 
 private:
     std::unique_ptr<SocketClient> m_socketClient;
-    std::optional<Message> m_command;
-    bool m_printHelp;
     std::string m_socketPath;
-    
-    // Parse command line arguments
-    bool parseArgs(int argc, char* argv[]);
     
     // Connect to the daemon socket
     bool connect();
