@@ -8,9 +8,6 @@
 
 namespace cec_control {
 
-// Mutex for synchronizing adapter operations across all instances
-static std::mutex g_adapterMutex;
-
 CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
     : m_options(options), m_threadPool(threadPool) {
 
@@ -86,7 +83,7 @@ CECManager::~CECManager() {
 }
 
 bool CECManager::initialize() {
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Initializing CEC manager");
 
     // Initialize the adapter
@@ -115,7 +112,7 @@ bool CECManager::initialize() {
 }
 
 void CECManager::shutdown() {
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Shutting down CEC manager");
 
     // Stop the command queue to prevent new operations
@@ -131,7 +128,7 @@ void CECManager::shutdown() {
 
 bool CECManager::reconnect() {
     // Global adapter mutex
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
 
     LOG_INFO("Attempting to reconnect to CEC adapter");
 
@@ -224,7 +221,7 @@ std::shared_ptr<CECOperation> CECManager::processCommandAsync(const Message& com
 
 Message CECManager::handleCommand(const Message& command) {
     // Take a read lock on the adapter mutex to check validity
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid() && command.type != MessageType::CMD_RESTART_ADAPTER) {
         LOG_ERROR("Cannot process command: CEC adapter not connected");
@@ -269,7 +266,7 @@ Message CECManager::handleCommand(const Message& command) {
                 LOG_INFO("Performing asynchronous adapter restart");
 
                 // Acquire the adapter mutex so no other operations can interfere
-                std::lock_guard<std::mutex> lock(g_adapterMutex);
+                std::lock_guard<std::mutex> lock(m_managerMutex);
 
                 // First shut down the adapter
                 this->m_adapter->shutdown();
@@ -278,7 +275,7 @@ Message CECManager::handleCommand(const Message& command) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
 
                 // Now reinitialize - don't use reconnect() here to avoid deadlock
-                // with the g_adapterMutex we're already holding
+                // with the m_managerMutex we're already holding
                 bool success = this->m_adapter->initialize();
 
                 if (success) {
@@ -313,7 +310,7 @@ Message CECManager::handleCommand(const Message& command) {
 
 bool CECManager::standbyDevices() {
     // Take the global adapter mutex to ensure thread safety
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid()) {
         LOG_ERROR("Cannot standby devices - CEC adapter not initialized or not connected");
@@ -331,7 +328,7 @@ bool CECManager::standbyDevices() {
 
 bool CECManager::powerOnDevices() {
     // Take the global adapter mutex to ensure thread safety
-    std::lock_guard<std::mutex> lock(g_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid()) {
         LOG_ERROR("Cannot power on devices - CEC adapter not initialized or not connected");

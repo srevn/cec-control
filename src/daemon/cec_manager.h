@@ -121,6 +121,9 @@ private:
     // Thread pool for background operations (may be shared with daemon)
     std::shared_ptr<ThreadPool> m_threadPool;
 
+    // Mutex for synchronizing high-level manager operations
+    mutable std::mutex m_managerMutex;
+
     /**
      * @brief Internal command handler for the command queue
      * @param command Command message to handle
