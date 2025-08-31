@@ -20,8 +20,8 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCEC REQUIRED libcec>=5.0.0)
 
-# Find D-Bus
-pkg_check_modules(DBUS REQUIRED dbus-1>=1.6)
+# Find libsystemd for sd-bus D-Bus API
+pkg_check_modules(LIBSYSTEMD REQUIRED libsystemd>=239)
 
 # Define installation paths
 include(GNUInstallDirs)
@@ -34,7 +34,7 @@ set(RUNTIME_DIR "/run/cec-control")
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${LIBCEC_INCLUDE_DIR})
-include_directories(${DBUS_INCLUDE_DIRS})
+include_directories(${LIBSYSTEMD_INCLUDE_DIRS})
 
 # Define source files
 set(COMMON_SOURCES
@@ -88,7 +88,7 @@ target_link_libraries(cec-control
         stdc++fs
     PUBLIC
         ${LIBCEC_LIBRARIES}
-        ${DBUS_LIBRARIES}
+        ${LIBSYSTEMD_LIBRARIES}
 )
 
 # Install unified binary
@@ -189,7 +189,7 @@ add_custom_target(uninstall
 # Print configuration summary
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "libcec version: ${LIBCEC_VERSION}")
-message(STATUS "dbus version: ${DBUS_VERSION}")
+message(STATUS "libsystemd version: ${LIBSYSTEMD_VERSION}")
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Config directory: ${CONFIG_DIR}")
 message(STATUS "Log directory: ${LOG_DIR}")

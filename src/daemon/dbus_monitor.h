@@ -3,17 +3,13 @@
 #include <thread>
 #include <atomic>
 #include <functional>
-#include <vector>
-#include <unordered_map>
-#include <mutex>
-
-#include <dbus/dbus.h>
+#include <systemd/sd-bus.h>
 
 namespace cec_control {
 
 /**
- * Class to monitor power management events via D-Bus.
- * Uses asynchronous D-Bus API with proper event-driven approach.
+ * Class to monitor power management events via D-Bus using sd-bus.
+ * Simplified implementation with robust error handling and connection management.
  */
 class DBusMonitor {
 public:
@@ -55,11 +51,9 @@ public:
     /**
      * @brief Start monitoring for power state changes
      * 
-     * Initializes epoll and starts the monitoring thread to watch for
-     * power management signals.
+     * Starts the monitoring thread to watch for power management signals.
      * 
      * @param callback Function to call when power state changes occur
-     * @return true if monitoring started successfully, false otherwise
      */
     void start(PowerStateCallback callback);
     
@@ -91,75 +85,37 @@ public:
     bool releaseInhibitLock();
 
 private:
-    DBusConnection* m_connection;  // D-Bus connection
+    sd_bus* m_bus;                     // sd-bus connection
+    sd_bus_slot* m_signalSlot;         // Signal subscription slot
+    int m_inhibitFd;                   // File descriptor for inhibit lock
     
-    std::thread m_thread;          // Monitoring thread
-    std::atomic<bool> m_running;   // Thread running flag
-    int m_shutdownFd[2];           // Pipe for shutdown signaling
-    PowerStateCallback m_callback; // Power state callback
-    int m_inhibitFd;               // File descriptor for inhibit lock
+    std::thread m_thread;              // Monitoring thread
+    std::atomic<bool> m_running;       // Thread running flag
+    int m_shutdownPipe[2];             // Pipe for shutdown signaling
+    PowerStateCallback m_callback;     // Power state callback
     
     /**
-     * @brief Information about a D-Bus watch
+     * @brief Main monitoring loop - handles sd-bus event processing
      */
-    struct WatchInfo {
-        DBusWatch* watch;    // D-Bus watch object
-        int fd;              // File descriptor to monitor
-        unsigned int flags;  // Watch flags (readable, writable, etc.)
-        bool enabled;        // Whether this watch is currently enabled
-    };
-    
-    std::mutex m_watchMutex;
-    std::vector<WatchInfo> m_watches;
-    std::unordered_map<int, uint32_t> m_fdToPoller;
-    
-    // D-Bus timeout management
-    struct TimeoutInfo {
-        DBusTimeout* timeout;
-        int interval;
-        bool enabled;
-        int64_t expiry;
-    };
-    
-    std::mutex m_timeoutMutex;
-    std::vector<TimeoutInfo> m_timeouts;
+    void eventLoop();
     
     /**
-     * @brief Main monitoring loop - handles epoll events and D-Bus dispatching
-     */
-    void monitorLoop();
-    
-    /**
-     * @brief Process a D-Bus message and trigger appropriate callbacks
-     * @param msg D-Bus message to process
-     */
-    void processMessage(DBusMessage* msg);
-    
-    /**
-     * @brief Update timeout expiry timestamp
-     * @param info Timeout info to update
-     */
-    void updateTimeoutExpiry(TimeoutInfo& info);
-    
-    // Static callbacks for D-Bus watch functions
-    static dbus_bool_t addWatchCallback(DBusWatch* watch, void* data);
-    static void removeWatchCallback(DBusWatch* watch, void* data);
-    static void toggleWatchCallback(DBusWatch* watch, void* data);
-    
-    // Static callbacks for D-Bus timeout functions
-    static dbus_bool_t addTimeoutCallback(DBusTimeout* timeout, void* data);
-    static void removeTimeoutCallback(DBusTimeout* timeout, void* data);
-    static void toggleTimeoutCallback(DBusTimeout* timeout, void* data);
-    
-    /**
-     * @brief Static message filter callback for D-Bus
+     * @brief Static callback for PrepareForSleep signal
      * 
-     * This function is called by D-Bus for each incoming message that
-     * matches our registered filters.
+     * @param msg D-Bus message containing the signal
+     * @param userdata User data pointer (this object)
+     * @param ret_error Error return parameter
+     * @return Signal processing result
      */
-    static DBusHandlerResult messageFilterCallback(DBusConnection *connection, 
-                                                  DBusMessage *message, 
-                                                  void *user_data);
+    static int onPrepareForSleep(sd_bus_message* msg, void* userdata, sd_bus_error* ret_error);
+    
+    /**
+     * @brief Helper to format sd-bus error messages
+     * 
+     * @param error sd-bus error code
+     * @return Human-readable error string
+     */
+    const char* busErrorToString(int error);
 };
 
 } // namespace cec_control
