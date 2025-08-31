@@ -32,8 +32,7 @@ std::vector<uint8_t> Protocol::packMessage(const Message& msg) {
     (*buffer)[4] = (dataSize >> 8) & 0xff;
     
     // Create a vector from the payload only for the checksum calculation
-    std::vector<uint8_t> payloadForChecksum(buffer->data() + 5, buffer->data() + buffer->size());
-    uint16_t checksum = calculateChecksum(payloadForChecksum);
+    uint16_t checksum = calculateChecksum(buffer->data() + 5, dataSize);
     buffer->push_back(checksum & 0xff);
     buffer->push_back((checksum >> 8) & 0xff);
     
@@ -47,76 +46,64 @@ std::vector<uint8_t> Protocol::packMessage(const Message& msg) {
 }
 
 Message Protocol::unpackMessage(const std::vector<uint8_t>& data) {
+    return unpackMessage(data.data(), data.size());
+}
+
+Message Protocol::unpackMessage(const uint8_t* data, size_t len) {
     // Verify packet integrity
-    if (data.size() < 8 || data[0] != 'C' || data[1] != 'E' || data[2] != 'C') {
-        // Invalid packet format
+    if (!validateMessage(data, len)) {
         return Message();
     }
     
     // Extract payload size
     uint16_t size = static_cast<uint16_t>(data[3]) | (static_cast<uint16_t>(data[4]) << 8);
     
-    // Check if we have enough data - Fix: Cast size+7 to size_t to match data.size() type
-    if (data.size() < static_cast<size_t>(size) + 7) {
-        // Incomplete packet
-        return Message();
-    }
-    
     // Extract the payload
-    std::vector<uint8_t> payload(data.begin() + 5, data.begin() + 5 + size);
-    
-    // Verify checksum
-    uint16_t expected_checksum = calculateChecksum(payload);
-    uint16_t received_checksum = static_cast<uint16_t>(data[5 + size]) | 
-                                (static_cast<uint16_t>(data[6 + size]) << 8);
-    
-    if (expected_checksum != received_checksum) {
-        // Checksum mismatch
-        return Message();
-    }
+    std::vector<uint8_t> payload(data + 5, data + 5 + size);
     
     // Deserialize the message
     return Message::deserialize(payload);
 }
 
 uint16_t Protocol::calculateChecksum(const std::vector<uint8_t>& data) {
+    return calculateChecksum(data.data(), data.size());
+}
+
+uint16_t Protocol::calculateChecksum(const uint8_t* data, size_t len) {
     uint16_t checksum = 0;
-    for (uint8_t byte : data) {
-        checksum = (checksum + byte) & 0xFFFF;
+    for (size_t i = 0; i < len; ++i) {
+        checksum = (checksum + data[i]) & 0xFFFF;
     }
     return checksum;
 }
 
 bool Protocol::validateMessage(const std::vector<uint8_t>& data) {
+    return validateMessage(data.data(), data.size());
+}
+
+bool Protocol::validateMessage(const uint8_t* data, size_t len) {
     // Basic size and header check
-    if (data.size() < 8 || data[0] != 'C' || data[1] != 'E' || data[2] != 'C') {
+    if (len < 7) { // 5 header + 2 checksum
+        return false;
+    }
+    if (data[0] != 'C' || data[1] != 'E' || data[2] != 'C') {
         return false;
     }
     
     // Extract payload size
     uint16_t size = static_cast<uint16_t>(data[3]) | (static_cast<uint16_t>(data[4]) << 8);
     
-    // Check if we have enough data - Fix: Cast size+7 to size_t to match data.size() type
-    if (data.size() < static_cast<size_t>(size) + 7) {
+    // Check if the length matches the size in the header
+    if (len != static_cast<size_t>(size) + 7) {
         return false;
     }
     
-    // Extract the payload - use buffer pool for the temporary payload
-    auto& pool = BufferPoolManager::getInstance().getPool(size);
-    auto payload = pool.acquireBuffer();
-    payload->assign(data.begin() + 5, data.begin() + 5 + size);
-    
     // Verify checksum
-    uint16_t expected_checksum = calculateChecksum(*payload);
+    uint16_t expected_checksum = calculateChecksum(data + 5, size);
     uint16_t received_checksum = static_cast<uint16_t>(data[5 + size]) | 
                                 (static_cast<uint16_t>(data[6 + size]) << 8);
     
-    bool result = expected_checksum == received_checksum;
-    
-    // Return buffer to pool
-    pool.releaseBuffer(std::move(payload));
-    
-    return result;
+    return expected_checksum == received_checksum;
 }
 
 // Implementation of Message serialization/deserialization

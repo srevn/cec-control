@@ -10,6 +10,8 @@
 #include <cstring>
 #include <cerrno>
 #include <filesystem>
+#include <chrono>
+#include <algorithm>
 
 namespace cec_control {
 
@@ -127,58 +129,92 @@ Message SocketClient::sendCommand(const Message& command) {
 }
 
 Message SocketClient::receiveResponse() {
-    std::vector<uint8_t> buffer(1024);
-    
-    // Set timeout for response using EventPoller
+    const long long totalTimeoutMs = 10000;
+    auto startTime = std::chrono::steady_clock::now();
+
     EventPoller poller;
     if (!poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ))) {
         LOG_ERROR("Failed to add socket to event poller");
         return Message(MessageType::RESP_ERROR);
     }
-    
-    // Wait for up to 10 seconds for a response
-    const auto events = poller.wait(10000);
-    
-    if (events.empty()) {
-        LOG_ERROR("Timeout waiting for response from server");
-        return Message(MessageType::RESP_ERROR);
-    }
-    
-    // Check if we have readable data
-    for (const auto& event : events) {
-        if (event.fd == m_socketFd) {
-            if (event.events & EventPoller::ERROR_EVENTS) {
-                LOG_ERROR("Socket error during response receive");
-                return Message(MessageType::RESP_ERROR);
-            }
-            
-            if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                // Read response
-                ssize_t bytesRead = recv(m_socketFd, buffer.data(), buffer.size(), 0);
 
-                if (bytesRead <= 0) {
-                    LOG_ERROR(bytesRead == 0 ? 
-                        "Server closed connection while receiving response" : 
-                        "Failed to receive response from server: " + std::string(strerror(errno)));
-                    return Message(MessageType::RESP_ERROR);
+    auto timeRemaining = [&]() {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+        return std::max(0LL, totalTimeoutMs - elapsed);
+    };
+
+    auto waitForRead = [&](long long timeoutMs) -> bool {
+        const auto events = poller.wait(timeoutMs);
+        if (events.empty()) {
+            LOG_ERROR("Timeout waiting for response from server");
+            return false;
+        }
+        for (const auto& event : events) {
+            if (event.fd == m_socketFd) {
+                if (event.events & EventPoller::ERROR_EVENTS) {
+                    LOG_ERROR("Socket error during response receive");
+                    return false;
                 }
-
-                // Resize buffer to actual received data size
-                buffer.resize(bytesRead);
-
-                // Validate and process the received data
-                if (Protocol::validateMessage(buffer)) {
-                    return Protocol::unpackMessage(buffer);
-                } else {
-                    LOG_ERROR("Invalid response received from server");
-                    return Message(MessageType::RESP_ERROR);
+                if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                    return true;
                 }
             }
         }
+        LOG_ERROR("No read event received for socket");
+        return false;
+    };
+
+    std::vector<uint8_t> buffer;
+    buffer.reserve(1024); // Pre-allocate some space
+
+    // 1. Read header
+    const size_t headerSize = 5;
+    while (buffer.size() < headerSize) {
+        if (!waitForRead(timeRemaining())) return Message(MessageType::RESP_ERROR);
+        
+        size_t oldSize = buffer.size();
+        buffer.resize(headerSize);
+        ssize_t bytesRead = recv(m_socketFd, buffer.data() + oldSize, headerSize - oldSize, 0);
+
+        if (bytesRead <= 0) {
+            LOG_ERROR(bytesRead == 0 ? "Server closed connection" : "Failed to receive response header: " + std::string(strerror(errno)));
+            return Message(MessageType::RESP_ERROR);
+        }
+        buffer.resize(oldSize + bytesRead);
     }
 
-    LOG_ERROR("No read event received for socket");
-    return Message(MessageType::RESP_ERROR);
+    // 2. Validate header and get full message size
+    if (buffer[0] != 'C' || buffer[1] != 'E' || buffer[2] != 'C') {
+        LOG_ERROR("Invalid magic bytes in response");
+        return Message(MessageType::RESP_ERROR);
+    }
+    uint16_t payloadSize = static_cast<uint16_t>(buffer[3]) | (static_cast<uint16_t>(buffer[4]) << 8);
+    const size_t totalMessageSize = headerSize + payloadSize + 2; // header + payload + checksum
+
+    // 3. Read rest of the message
+    buffer.reserve(totalMessageSize);
+    while (buffer.size() < totalMessageSize) {
+        if (!waitForRead(timeRemaining())) return Message(MessageType::RESP_ERROR);
+
+        size_t oldSize = buffer.size();
+        buffer.resize(totalMessageSize);
+        ssize_t bytesRead = recv(m_socketFd, buffer.data() + oldSize, totalMessageSize - oldSize, 0);
+
+        if (bytesRead <= 0) {
+            LOG_ERROR(bytesRead == 0 ? "Server closed connection" : "Failed to receive response body: " + std::string(strerror(errno)));
+            return Message(MessageType::RESP_ERROR);
+        }
+        buffer.resize(oldSize + bytesRead);
+    }
+
+    // 4. Validate and unpack
+    if (Protocol::validateMessage(buffer)) {
+        return Protocol::unpackMessage(buffer);
+    } else {
+        LOG_ERROR("Invalid response received from server");
+        return Message(MessageType::RESP_ERROR);
+    }
 }
 
 bool SocketClient::isConnected() const {

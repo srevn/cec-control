@@ -31,7 +31,7 @@ public:
      * Create socket server with default system socket path
      * @param threadPool Optional external thread pool to use
      */
-    SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr) 
+    SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr)
         : SocketServer(SystemPaths::getSocketPath(), threadPool) {}
     
     /**
@@ -69,6 +69,7 @@ public:
 private:
     std::string m_socketPath;
     int m_socketFd;
+    int m_shutdownFd[2];
     std::atomic<bool> m_running;
     std::thread m_serverThread;
     ClientHandler m_cmdHandler;

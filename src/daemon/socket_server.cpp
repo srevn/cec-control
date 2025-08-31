@@ -20,7 +20,6 @@ namespace cec_control {
 constexpr int DEFAULT_THREAD_COUNT = 4;
 constexpr int MAX_THREADS = 8;
 constexpr int MAX_CLIENT_CONNECTIONS = 10;
-constexpr int SERVER_POLL_TIMEOUT_MS = 100;
 constexpr int CLIENT_POLL_TIMEOUT_MS = 100;
 constexpr int SEND_POLL_TIMEOUT_MS = 500;
 constexpr int THREAD_JOIN_TIMEOUT_SEC = 3;
@@ -36,6 +35,8 @@ SocketServer::SocketServer(const std::string& socketPath, std::shared_ptr<Thread
       m_socketFd(-1),
       m_running(false),
       m_threadPool(threadPool) {
+    m_shutdownFd[0] = -1;
+    m_shutdownFd[1] = -1;
 }
 
 SocketServer::~SocketServer() {
@@ -72,17 +73,25 @@ bool SocketServer::start() {
 }
 
 void SocketServer::stop() {
-    if (!m_running) {
+    if (!m_running.exchange(false)) {
         LOG_INFO("Socket server already stopped");
         return;
     }
     
     LOG_INFO("Stopping socket server");
-    m_running = false;
+
+    // Signal server loop to exit
+    if (m_shutdownFd[1] >= 0) {
+        char buf = 0;
+        if (write(m_shutdownFd[1], &buf, 1) < 0) {
+            LOG_WARNING("Failed to write to shutdown pipe: ", strerror(errno));
+        }
+    }
     
-    // Close socket to interrupt accept() in server loop
+    // Close socket to interrupt accept() in server loop as a fallback
     if (m_socketFd >= 0) {
         LOG_INFO("Closing server socket");
+        shutdown(m_socketFd, SHUT_RDWR);
         close(m_socketFd);
         m_socketFd = -1;
     }
@@ -92,6 +101,16 @@ void SocketServer::stop() {
         LOG_INFO("Waiting for server thread to exit");
         m_serverThread.join();
         LOG_INFO("Server thread joined successfully");
+    }
+
+    // Close pipe fds
+    if (m_shutdownFd[0] >= 0) {
+        close(m_shutdownFd[0]);
+        m_shutdownFd[0] = -1;
+    }
+    if (m_shutdownFd[1] >= 0) {
+        close(m_shutdownFd[1]);
+        m_shutdownFd[1] = -1;
     }
     
     // Close all client connections
@@ -140,6 +159,23 @@ bool SocketServer::setupSocket() {
     if (!setNonBlocking(m_socketFd)) {
         close(m_socketFd);
         m_socketFd = -1;
+        return false;
+    }
+
+    // Create shutdown pipe
+    if (pipe(m_shutdownFd) < 0) {
+        LOG_ERROR("Failed to create shutdown pipe: ", strerror(errno));
+        close(m_socketFd);
+        m_socketFd = -1;
+        return false;
+    }
+    if (!setNonBlocking(m_shutdownFd[0])) {
+        close(m_socketFd);
+        m_socketFd = -1;
+        close(m_shutdownFd[0]);
+        close(m_shutdownFd[1]);
+        m_shutdownFd[0] = -1;
+        m_shutdownFd[1] = -1;
         return false;
     }
     
@@ -204,33 +240,41 @@ void SocketServer::cleanupSocket() {
 void SocketServer::serverLoop() {
     EventPoller poller;
     
-    // Add server socket to the poller
+    // Add server socket and shutdown pipe to the poller
     poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+    poller.add(m_shutdownFd[0], static_cast<uint32_t>(EventPoller::Event::READ));
     
     int consecutiveErrors = 0;
     
     while (m_running) {
-        // Wait for events with a short timeout
-        auto events = poller.wait(SERVER_POLL_TIMEOUT_MS);
+        // Wait for events indefinitely
+        auto events = poller.wait(-1);
         
         if (events.empty()) {
-            // Timeout - reset error counter and continue
-            consecutiveErrors = 0;
+            // Should not happen with infinite timeout, but good practice
             continue;
         }
         
         for (const auto& event : events) {
+            // Check for shutdown event
+            if (event.fd == m_shutdownFd[0]) {
+                LOG_DEBUG("Shutdown signal received, exiting server loop.");
+                m_running = false;
+                break;
+            }
+
             if (event.fd == m_socketFd) {
                 // Check for socket errors
                 if (event.events & EventPoller::ERROR_EVENTS) {
                     LOG_ERROR("Server socket error detected, trying to recover");
                     
                     // Try to recreate the socket
-                    close(m_socketFd);
                     poller.remove(m_socketFd);
+                    close(m_socketFd);
                     
                     if (!setupSocket()) {
                         LOG_ERROR("Failed to restore server socket, exiting server loop");
+                        m_running = false;
                         break;
                     }
                     
@@ -306,15 +350,20 @@ void SocketServer::serverLoop() {
             consecutiveErrors = 0;
             
             // Try to recreate the socket
-            close(m_socketFd);
             poller.remove(m_socketFd);
+            close(m_socketFd);
             
             if (!setupSocket()) {
                 LOG_ERROR("Failed to restore server socket, exiting server loop");
+                m_running = false;
                 break;
             }
             
             poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::READ));
+        }
+
+        if (!m_running) {
+            break;
         }
     }
    
@@ -365,9 +414,9 @@ bool SocketServer::sendDataToClient(int clientFd, const Message& cmd) {
             return false;
         }
         
-        ssize_t sent = send(clientFd, 
-                           responseData.data() + totalSent, 
-                           responseData.size() - totalSent, 
+        ssize_t sent = send(clientFd,
+                           responseData.data() + totalSent,
+                           responseData.size() - totalSent,
                            MSG_NOSIGNAL);
         
         if (sent > 0) {
@@ -451,41 +500,49 @@ void SocketServer::handleClient(int clientFd) {
                             // Append data to received buffer
                             receivedData->insert(receivedData->end(), recvBuffer->begin(), recvBuffer->begin() + bytesRead);
                             
-                            // Process complete messages
-                            while (!receivedData->empty() && Protocol::validateMessage(*receivedData)) {
-                                try {
-                                    // Extract and process message
-                                    Message cmd = Protocol::unpackMessage(*receivedData);
-                                    
-                                    // Process and send response
-                                    if (!sendDataToClient(clientFd, cmd)) {
-                                        connectionActive = false;
-                                        break;
-                                    }
-                                    
-                                    // Remove processed message
-                                    if (receivedData->size() >= 5) {
-                                        uint16_t size = static_cast<uint16_t>((*receivedData)[3]) |
-                                                      (static_cast<uint16_t>((*receivedData)[4]) << 8);
-                                        size_t msgSize = size + 7; // header (5) + payload (size) + checksum (2)
-                                        
-                                        if (receivedData->size() < msgSize) {
-                                            // Incomplete message, clear buffer
-                                            receivedData->clear();
-                                            break;
-                                        }
-                                        
-                                        receivedData->erase(receivedData->begin(), receivedData->begin() + msgSize);
-                                    } else {
-                                        // Not enough data for a valid header
-                                        break;
-                                    }
-                                }
-                                catch (const std::exception& e) {
-                                    LOG_ERROR("Exception processing message: ", e.what());
-                                    receivedData->clear();
+                            // Process all complete messages in the buffer
+                            size_t offset = 0;
+                            while (connectionActive) {
+                                const size_t remainingSize = receivedData->size() - offset;
+                                if (remainingSize < 7) { // Minimum message size (5 header + 2 checksum)
                                     break;
                                 }
+
+                                const uint8_t* currentData = receivedData->data() + offset;
+                                const uint16_t payloadSize = static_cast<uint16_t>(currentData[3]) | (static_cast<uint16_t>(currentData[4]) << 8);
+                                const size_t msgSize = 5 + payloadSize + 2;
+
+                                if (remainingSize < msgSize) { // Incomplete message
+                                    break;
+                                }
+
+                                // We have a full message, validate and process it
+                                if (!Protocol::validateMessage(currentData, msgSize)) {
+                                    LOG_ERROR("Invalid message from client fd ", clientFd, ", disconnecting.");
+                                    connectionActive = false;
+                                    receivedData->clear(); // Clear buffer to avoid reprocessing bad data
+                                    offset = 0;
+                                    break;
+                                }
+
+                                try {
+                                    Message cmd = Protocol::unpackMessage(currentData, msgSize);
+                                    if (!sendDataToClient(clientFd, cmd)) {
+                                        connectionActive = false;
+                                    }
+                                } catch (const std::exception& e) {
+                                    LOG_ERROR("Exception processing message: ", e.what());
+                                    connectionActive = false;
+                                }
+                                
+                                if (connectionActive) {
+                                    offset += msgSize;
+                                }
+                            }
+
+                            // Remove processed data in one go
+                            if (offset > 0) {
+                                receivedData->erase(receivedData->begin(), receivedData->begin() + offset);
                             }
                         }
                         else if (bytesRead == 0) {

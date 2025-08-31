@@ -97,26 +97,6 @@ std::vector<EventPoller::EventData> EventPoller::wait(int timeoutMs) {
     return result;
 }
 
-uint32_t EventPoller::pollToEvents(short pollEvents) {
-    uint32_t events = 0;
-    if (pollEvents & POLLIN) events |= static_cast<uint32_t>(Event::READ);
-    if (pollEvents & POLLOUT) events |= static_cast<uint32_t>(Event::WRITE);
-    if (pollEvents & POLLERR) events |= static_cast<uint32_t>(Event::ERROR);
-    if (pollEvents & POLLHUP) events |= static_cast<uint32_t>(Event::HANGUP);
-    if (pollEvents & POLLNVAL) events |= static_cast<uint32_t>(Event::INVALID);
-    return events;
-}
-
-short EventPoller::eventsToPoll(uint32_t events) {
-    short pollEvents = 0;
-    if (events & static_cast<uint32_t>(Event::READ)) pollEvents |= POLLIN;
-    if (events & static_cast<uint32_t>(Event::WRITE)) pollEvents |= POLLOUT;
-    if (events & static_cast<uint32_t>(Event::ERROR)) pollEvents |= POLLERR;
-    if (events & static_cast<uint32_t>(Event::HANGUP)) pollEvents |= POLLHUP;
-    if (events & static_cast<uint32_t>(Event::INVALID)) pollEvents |= POLLNVAL;
-    return pollEvents;
-}
-
 uint32_t EventPoller::epollToEvents(uint32_t epollEvents) {
     uint32_t events = 0;
     if (epollEvents & EPOLLIN) events |= static_cast<uint32_t>(Event::READ);

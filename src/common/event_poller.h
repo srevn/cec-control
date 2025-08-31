@@ -73,20 +73,6 @@ public:
     std::vector<EventData> wait(int timeoutMs = -1);
     
     /**
-     * Convert poll events to EventPoller events
-     * @param pollEvents Events from poll()
-     * @return Equivalent EventPoller events
-     */
-    static uint32_t pollToEvents(short pollEvents);
-    
-    /**
-     * Convert EventPoller events to poll events
-     * @param events EventPoller events
-     * @return Equivalent poll events
-     */
-    static short eventsToPoll(uint32_t events);
-    
-    /**
      * Convert epoll events to EventPoller events
      * @param epollEvents Events from epoll_wait()
      * @return Equivalent EventPoller events
