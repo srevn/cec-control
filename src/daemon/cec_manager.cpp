@@ -68,6 +68,27 @@ CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
     m_throttler = std::make_shared<CommandThrottler>(throttlerOptions);
     m_deviceOps = std::make_shared<DeviceOperations>(m_adapter, m_throttler);
 
+    // Set up the callback for TV standby events
+    m_adapter->setOnTvStandbyCallback([this]() {
+        LOG_INFO("TV standby callback triggered. Initiating system suspend.");
+        auto suspendTask = []() {
+            LOG_INFO("Executing suspend command via D-Bus");
+            int result = system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
+                                "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+            if (result == 0) {
+                LOG_INFO("Suspend command executed successfully via D-Bus");
+            } else {
+                LOG_ERROR("Failed to execute suspend command via D-Bus. Result code: ", result);
+            }
+        };
+
+        if (m_threadPool) {
+            m_threadPool->submit(suspendTask);
+        } else {
+            std::thread(suspendTask).detach();
+        }
+    });
+
     // Create command queue
     m_commandQueue = std::make_unique<CommandQueue>();
     m_commandQueue->setOperationHandler([this](const Message& cmd) { return this->handleCommand(cmd); });

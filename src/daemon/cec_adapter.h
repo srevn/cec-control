@@ -4,6 +4,7 @@
 #include <mutex>
 #include <atomic>
 #include <string>
+#include <functional>
 
 #include <libcec/cec.h>
 #include "../common/logger.h"
@@ -167,6 +168,12 @@ public:
     void setAutoStandby(bool enabled);
 
     /**
+     * @brief Set a callback to be invoked when the TV signals standby
+     * @param callback The function to call
+     */
+    void setOnTvStandbyCallback(std::function<void()> callback);
+
+    /**
      * Send standby commands to configured devices
      * @param address The logical address to put in standby (CECDEVICE_BROADCAST uses powerOffDevices list)
      * @return True on success, false otherwise
@@ -191,6 +198,9 @@ private:
     
     // Thread safety
     mutable std::mutex m_adapterMutex;
+
+    // Callbacks
+    std::function<void()> m_tvStandbyCallback;
     
     // Set up CEC callbacks
     void setupCallbacks();

@@ -337,21 +337,10 @@ void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* comma
         
         // Check if auto-standby is enabled in config
         if (adapter->m_config.bPowerOffOnStandby) {
-            LOG_INFO("TV powered off and auto-standby is enabled. Initiating system suspend...");
-            
-            // Use D-Bus to initiate system suspend
-            std::thread([]{
-                LOG_INFO("Executing suspend command via D-Bus");
-                
-                // Execute the D-Bus command to suspend the system
-                int result = system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
-                                    "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
-                if (result == 0) {
-                    LOG_INFO("Suspend command executed successfully via D-Bus");
-                } else {
-                    LOG_ERROR("Failed to execute suspend command via D-Bus. Result code: ", result);
-                }
-            }).detach();
+            LOG_INFO("TV powered off and auto-standby is enabled. Invoking callback.");
+            if (adapter->m_tvStandbyCallback) {
+                adapter->m_tvStandbyCallback();
+            }
         }
     }
 }
@@ -383,6 +372,10 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
 void CECAdapter::setAutoStandby(bool enabled) {
     m_config.bPowerOffOnStandby = enabled ? 1 : 0;
     LOG_INFO("Auto-standby feature ", enabled ? "enabled" : "disabled");
+}
+
+void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {
+    m_tvStandbyCallback = std::move(callback);
 }
 
 bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
