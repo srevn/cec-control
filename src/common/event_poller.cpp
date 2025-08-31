@@ -116,8 +116,6 @@ uint32_t EventPoller::eventsToEpoll(uint32_t events) {
     if (events & static_cast<uint32_t>(Event::HANGUP)) epollEvents |= EPOLLHUP;
     // EPOLLRDHUP is useful to detect remote end disconnection without reading
     if (events & static_cast<uint32_t>(Event::READ)) epollEvents |= EPOLLRDHUP;
-    // Set edge-triggered mode for better performance
-    epollEvents |= EPOLLET;
     return epollEvents;
 }
 
