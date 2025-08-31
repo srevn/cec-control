@@ -508,6 +508,14 @@ void SocketServer::handleClient(int clientFd) {
 
                                 const uint8_t* currentData = receivedData->data() + offset;
                                 const uint16_t payloadSize = static_cast<uint16_t>(currentData[3]) | (static_cast<uint16_t>(currentData[4]) << 8);
+
+                                // Sanity check on payload size to prevent memory exhaustion
+                                if (payloadSize > 4096) {
+                                    LOG_ERROR("Client fd ", clientFd, " sent oversized payload: ", payloadSize, ". Disconnecting.");
+                                    connectionActive = false;
+                                    break;
+                                }
+
                                 const size_t msgSize = 5 + payloadSize + 2;
 
                                 if (remainingSize < msgSize) { // Incomplete message
