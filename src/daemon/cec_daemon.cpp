@@ -204,7 +204,7 @@ void CECDaemon::run() {
         }
         
         // Use timed wait instead of sleep to allow immediate exit
-        loopCondition.wait_for(loopLock, std::chrono::seconds(1), [this] {
+        loopCondition.wait_for(loopLock, std::chrono::seconds(5), [this] {
             return !m_running;  // Check running state periodically
         });
     }

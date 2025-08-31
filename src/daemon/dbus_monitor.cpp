@@ -14,7 +14,7 @@
 
 namespace cec_control {
 
-DBusMonitor::DBusMonitor() 
+DBusMonitor::DBusMonitor()
     : m_connection(nullptr),
       m_running(false),
       m_inhibitFd(-1) {
@@ -44,8 +44,8 @@ bool DBusMonitor::initialize() {
     }
     
     // Add match rule for PrepareForSleep signal
-    dbus_bus_add_match(m_connection, 
-        "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'", 
+    dbus_bus_add_match(m_connection,
+        "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'",
         &error);
         
     if (dbus_error_is_set(&error)) {
@@ -63,7 +63,7 @@ bool DBusMonitor::initialize() {
     // Set up watch and timeout functions
     if (!dbus_connection_set_watch_functions(
             m_connection,
-            addWatchCallback, 
+            addWatchCallback,
             removeWatchCallback,
             toggleWatchCallback,
             this,  // user data
@@ -199,7 +199,7 @@ bool DBusMonitor::takeInhibitLock() {
     if (!dbus_message_get_args(reply, &extractError,
                              DBUS_TYPE_UNIX_FD, &fd,
                              DBUS_TYPE_INVALID)) {
-        LOG_ERROR("Failed to extract fd from Inhibit reply: ", 
+        LOG_ERROR("Failed to extract fd from Inhibit reply: ",
                  extractError.message);
         dbus_error_free(&extractError);
         dbus_message_unref(reply);
@@ -299,8 +299,8 @@ void DBusMonitor::monitorLoop() {
             }
         }
         
-        // Calculate timeout - default to 100ms if no timeouts
-        int maxTimeout = 100;
+        // Calculate timeout - default to -1 if no timeouts are scheduled
+        int maxTimeout = -1;
         
         {
             std::lock_guard<std::mutex> lock(m_timeoutMutex);
@@ -392,8 +392,8 @@ void DBusMonitor::processMessage(DBusMessage* msg) {
         dbus_error_init(&error);
         
         dbus_bool_t sleeping = FALSE;
-        if (!dbus_message_get_args(msg, &error, 
-                                 DBUS_TYPE_BOOLEAN, &sleeping, 
+        if (!dbus_message_get_args(msg, &error,
+                                 DBUS_TYPE_BOOLEAN, &sleeping,
                                  DBUS_TYPE_INVALID)) {
             LOG_ERROR("Failed to parse PrepareForSleep args: ", error.message);
             dbus_error_free(&error);

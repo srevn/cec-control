@@ -20,7 +20,6 @@ namespace cec_control {
 constexpr int DEFAULT_THREAD_COUNT = 4;
 constexpr int MAX_THREADS = 8;
 constexpr int MAX_CLIENT_CONNECTIONS = 10;
-constexpr int CLIENT_POLL_TIMEOUT_MS = 100;
 constexpr int SEND_POLL_TIMEOUT_MS = 500;
 constexpr int THREAD_JOIN_TIMEOUT_SEC = 3;
 constexpr int MAX_SERVER_CONSECUTIVE_ERRORS = 5;
@@ -463,12 +462,11 @@ void SocketServer::handleClient(int clientFd) {
     }
     
     while (connectionActive && m_running) {
-        // Wait for data with a short timeout
-        auto events = poller.wait(CLIENT_POLL_TIMEOUT_MS);
-        
+        // Wait for data indefinitely
+        auto events = poller.wait(-1);
+
         if (events.empty()) {
-            // Timeout - reset error counter
-            consecutiveErrors = 0;
+            // Interrupted by a signal, just continue waiting
             continue;
         }
         
