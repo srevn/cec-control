@@ -24,7 +24,7 @@ constexpr int SEND_POLL_TIMEOUT_MS = 500;
 constexpr int THREAD_JOIN_TIMEOUT_SEC = 3;
 constexpr int MAX_SERVER_CONSECUTIVE_ERRORS = 5;
 constexpr int MAX_CLIENT_CONSECUTIVE_ERRORS = 3;
-constexpr int CLIENT_RECV_TIMEOUT_SEC = 2;
+constexpr int CLIENT_IDLE_TIMEOUT_SEC = 60;
 constexpr mode_t SOCKET_FILE_PERMISSIONS = 0660;
 constexpr int CLIENT_BUFFER_SIZE = 4096;
 constexpr int DATA_BUFFER_SIZE = 8192;
@@ -453,20 +453,14 @@ void SocketServer::handleClient(int clientFd) {
         LOG_WARNING("Failed to set SO_KEEPALIVE: ", strerror(errno));
     }
     
-    // Set receive timeout
-    struct timeval tv;
-    tv.tv_sec = CLIENT_RECV_TIMEOUT_SEC;
-    tv.tv_usec = 0;
-    if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        LOG_WARNING("Failed to set SO_RCVTIMEO: ", strerror(errno));
-    }
-    
     while (connectionActive && m_running) {
-        // Wait for data indefinitely
-        auto events = poller.wait(-1);
+        // Wait for data with an idle timeout
+        auto events = poller.wait(CLIENT_IDLE_TIMEOUT_SEC * 1000);
 
         if (events.empty()) {
-            // Interrupted by a signal, just continue waiting
+            // Timeout occurred, client has been idle
+            LOG_INFO("Client fd ", clientFd, " has been idle for too long, disconnecting.");
+            connectionActive = false;
             continue;
         }
         
