@@ -95,6 +95,7 @@ private:
     
     std::thread m_thread;          // Monitoring thread
     std::atomic<bool> m_running;   // Thread running flag
+    int m_shutdownFd[2];           // Pipe for shutdown signaling
     PowerStateCallback m_callback; // Power state callback
     int m_inhibitFd;               // File descriptor for inhibit lock
     

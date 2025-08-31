@@ -18,12 +18,17 @@ DBusMonitor::DBusMonitor()
     : m_connection(nullptr),
       m_running(false),
       m_inhibitFd(-1) {
+    m_shutdownFd[0] = -1;
+    m_shutdownFd[1] = -1;
 }
 
 DBusMonitor::~DBusMonitor() {
     stop();
     releaseInhibitLock();
     
+    if (m_shutdownFd[0] >= 0) close(m_shutdownFd[0]);
+    if (m_shutdownFd[1] >= 0) close(m_shutdownFd[1]);
+
     if (m_connection) {
         dbus_connection_unref(m_connection);
         m_connection = nullptr;
@@ -86,6 +91,14 @@ bool DBusMonitor::initialize() {
     // Flush the connection to make sure match rules are applied
     dbus_connection_flush(m_connection);
     
+    // Create shutdown pipe
+    if (pipe(m_shutdownFd) < 0) {
+        LOG_ERROR("Failed to create D-Bus monitor shutdown pipe: ", strerror(errno));
+        dbus_connection_unref(m_connection);
+        m_connection = nullptr;
+        return false;
+    }
+
     // Take an inhibitor lock to ensure we can delay sleep
     if (!takeInhibitLock()) {
         LOG_WARNING("Failed to take inhibitor lock - sleep delays may not work properly");
@@ -111,12 +124,19 @@ void DBusMonitor::start(PowerStateCallback callback) {
 }
 
 void DBusMonitor::stop() {
-    if (!m_running) {
+    if (!m_running.exchange(false)) {
         return;
     }
     
     LOG_INFO("Stopping D-Bus monitor");
-    m_running = false;
+
+    // Signal monitor loop to exit
+    if (m_shutdownFd[1] >= 0) {
+        char buf = 0;
+        if (write(m_shutdownFd[1], &buf, 1) < 0) {
+            LOG_WARNING("Failed to write to D-Bus monitor shutdown pipe: ", strerror(errno));
+        }
+    }
     
     // Wait for thread to exit
     if (m_thread.joinable()) {
@@ -242,6 +262,9 @@ void DBusMonitor::monitorLoop() {
     
     // Create event poller
     EventPoller poller;
+    if (m_shutdownFd[0] >= 0) {
+        poller.add(m_shutdownFd[0], static_cast<uint32_t>(EventPoller::Event::READ));
+    }
     
     while (m_running) {
         // Update watches
@@ -329,31 +352,39 @@ void DBusMonitor::monitorLoop() {
         
         // Wait for events with the calculated timeout
         auto events = poller.wait(maxTimeout);
-        
-        // Handle watches that have activity
-        if (!events.empty()) {
+
+        // Handle events
+        for (const auto& event : events) {
+            if (event.fd == m_shutdownFd[0]) {
+                m_running = false;
+                break;
+            }
+
+            // Handle D-Bus watch activity
             std::lock_guard<std::mutex> lock(m_watchMutex);
-            for (const auto& event : events) {
-                for (const auto& watchInfo : m_watches) {
-                    if (watchInfo.enabled && watchInfo.fd == event.fd) {
-                        unsigned int flags = 0;
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
-                            flags |= DBUS_WATCH_READABLE;
-                        }
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
-                            flags |= DBUS_WATCH_WRITABLE;
-                        }
-                        if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) {
-                            flags |= DBUS_WATCH_ERROR;
-                        }
-                        
-                        if (flags != 0) {
-                            dbus_watch_handle(watchInfo.watch, flags);
-                        }
-                        break;
+            for (const auto& watchInfo : m_watches) {
+                if (watchInfo.enabled && watchInfo.fd == event.fd) {
+                    unsigned int flags = 0;
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::READ)) {
+                        flags |= DBUS_WATCH_READABLE;
                     }
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
+                        flags |= DBUS_WATCH_WRITABLE;
+                    }
+                    if (event.events & static_cast<uint32_t>(EventPoller::Event::ERROR)) {
+                        flags |= DBUS_WATCH_ERROR;
+                    }
+                    
+                    if (flags != 0) {
+                        dbus_watch_handle(watchInfo.watch, flags);
+                    }
+                    break;
                 }
             }
+        }
+
+        if (!m_running) {
+            break;
         }
         
         // Handle timeouts that have expired

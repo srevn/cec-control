@@ -111,6 +111,8 @@ private:
     
     // Synchronization
     std::mutex m_suspendMutex;
+    std::mutex m_runMutex;
+    std::condition_variable m_runCv;
     
     // Configuration
     Options m_options;

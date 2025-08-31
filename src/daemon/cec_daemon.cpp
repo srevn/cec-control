@@ -184,12 +184,9 @@ void CECDaemon::stop() {
 
 void CECDaemon::run() {
     LOG_INFO("Entering main daemon loop");
-    
-    std::mutex loopMutex;
-    std::unique_lock<std::mutex> loopLock(loopMutex);
-    std::condition_variable loopCondition;
-    
-    while (m_running) {
+
+    std::unique_lock<std::mutex> lock(m_runMutex);
+    while (m_running.load()) {
         // Only check connection if not suspended
         if (!m_suspended.load(std::memory_order_acquire) && 
             m_cecManager && !m_cecManager->isAdapterValid()) {
@@ -203,9 +200,9 @@ void CECDaemon::run() {
             }
         }
         
-        // Use timed wait instead of sleep to allow immediate exit
-        loopCondition.wait_for(loopLock, std::chrono::seconds(5), [this] {
-            return !m_running;  // Check running state periodically
+        // Wait for shutdown signal or timeout for periodic checks.
+        m_runCv.wait_for(lock, std::chrono::seconds(5), [this] {
+            return !m_running.load();
         });
     }
 }
@@ -441,85 +438,26 @@ void CECDaemon::setupSignalHandlers() {
 }
 
 void CECDaemon::signalHandler(int signal) {
-    // Signal handlers should be minimal to reduce race conditions
-    static std::atomic<bool> shutdownInitiated{false};
-    
-    try {
-        LOG_INFO("Received signal ", signal);
-        
-        // Get the singleton instance
-        CECDaemon* instance = CECDaemon::getInstance();
-        if (!instance) {
-            _exit(1);
-            return;
-        }
-        
-        // Set running to false to break the main loop
-        instance->m_running = false;
-        
-        // For termination signals (SIGTERM, SIGINT)
-        if (signal == SIGTERM || signal == SIGINT) {
-            int count = ++s_termSignalCount;
-            
-            // First signal: initiate graceful shutdown
-            if (count == 1 && !shutdownInitiated.exchange(true)) {
-                LOG_INFO("Initiating graceful shutdown sequence");
-                
-                // Use thread pool for shutdown
-                if (instance->m_threadPool) {
-                    instance->m_threadPool->submit([instance]() {
-                        LOG_INFO("Shutdown thread started");
-                        
-                        try {
-                            // Stop all daemon components in order
-                            instance->stop();
-                            LOG_INFO("Shutdown completed successfully");
-                        } 
-                        catch (const std::exception& e) {
-                            LOG_ERROR("Exception during shutdown: ", e.what());
-                        }
-                        
-                        // Exit after shutdown thread completes
-                        _exit(0);
-                    });
-                } else {
-                    // Fallback if thread pool is unavailable
-                    std::thread([instance]() {
-                        LOG_INFO("Shutdown thread started (fallback mode)");
-                        try {
-                            instance->stop();
-                            LOG_INFO("Shutdown completed successfully");
-                        } catch (...) {
-                            LOG_ERROR("Exception during shutdown");
-                        }
-                        _exit(0);
-                    }).detach();
-                }
-                
-                return;
-            } 
-            // Multiple signals: force immediate exit
-            else if (count > 1) {
-                LOG_INFO("Exiting immediately due to multiple signals (", count, ")");
-                _exit(0);
-                return;
-            }
-        } 
-        // Other signals like SIGHUP
-        else {
-            // For other signals, initiate normal shutdown
-            LOG_INFO("Starting normal shutdown for signal ", signal);
-            instance->stop();
-        }
+    // This handler should be as simple as possible to be async-signal-safe.
+    // It just notifies the main loop to terminate by setting the running flag
+    // and notifying the condition variable.
+    CECDaemon* instance = CECDaemon::getInstance();
+    if (!instance) {
+        _exit(EXIT_FAILURE);
+        return;
     }
-    catch (const std::exception& e) {
-        try {
-            LOG_ERROR("Exception in signal handler: ", e.what());
-        } catch (...) {}
-        _exit(1);
+
+    if (instance->m_running.exchange(false)) {
+        // This log is not strictly async-signal-safe but is useful for debugging.
+        LOG_INFO("Shutdown initiated by signal ", signal);
+        instance->m_runCv.notify_one();
     }
-    catch (...) {
-        _exit(1);
+
+    // Handle multiple signals for forced exit
+    static std::atomic<int> s_termSignalCount{0};
+    if (++s_termSignalCount > 2) {
+        LOG_FATAL("Forcing exit after multiple signals.");
+        _exit(EXIT_FAILURE);
     }
 }
 
