@@ -135,16 +135,69 @@ Message SocketClient::sendCommand(const Message& command) {
         LOG_ERROR("Not connected to server");
         return Message(MessageType::RESP_ERROR);
     }
-    
-    // Serialize and send command
+
+    // Serialize command
     std::vector<uint8_t> data = Protocol::packMessage(command);
-    
-    ssize_t bytesSent = send(m_socketFd, data.data(), data.size(), 0);
-    if (bytesSent < 0 || static_cast<size_t>(bytesSent) != data.size()) {
-        LOG_ERROR("Failed to send command to server: ", strerror(errno));
+    size_t totalSent = 0;
+    const long long totalTimeoutMs = 5000; // 5 second timeout for sending
+    auto startTime = std::chrono::steady_clock::now();
+
+    EventPoller poller;
+    if (!poller.add(m_socketFd, static_cast<uint32_t>(EventPoller::Event::WRITE))) {
+        LOG_ERROR("Failed to add socket to event poller for sending");
         return Message(MessageType::RESP_ERROR);
     }
-    
+
+    auto timeRemaining = [&]() {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+        return std::max(0LL, totalTimeoutMs - elapsed);
+    };
+
+    // Send the command with timeout
+    while (totalSent < data.size()) {
+        auto events = poller.wait(timeRemaining());
+
+        if (events.empty()) {
+            LOG_ERROR("Timeout waiting to send command");
+            return Message(MessageType::RESP_ERROR);
+        }
+
+        bool canWrite = false;
+        for (const auto& event : events) {
+            if (event.fd == m_socketFd) {
+                if (event.events & EventPoller::ERROR_EVENTS) {
+                    LOG_ERROR("Socket error during command send");
+                    return Message(MessageType::RESP_ERROR);
+                }
+                if (event.events & static_cast<uint32_t>(EventPoller::Event::WRITE)) {
+                    canWrite = true;
+                    break;
+                }
+            }
+        }
+
+        if (!canWrite) {
+            LOG_ERROR("Error waiting to send command");
+            return Message(MessageType::RESP_ERROR);
+        }
+
+        ssize_t sent = send(m_socketFd,
+                           data.data() + totalSent,
+                           data.size() - totalSent,
+                           MSG_NOSIGNAL); // MSG_NOSIGNAL is good practice
+
+        if (sent > 0) {
+            totalSent += sent;
+        } else if (sent < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR("Error sending command: ", strerror(errno));
+                return Message(MessageType::RESP_ERROR);
+            }
+            // If EAGAIN, we just loop and wait on the poller again
+        }
+    }
+
     // Wait for response
     return receiveResponse();
 }
