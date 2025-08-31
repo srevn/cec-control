@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
+#include <thread>
 
 namespace cec_control {
 
@@ -27,76 +28,96 @@ SocketClient::~SocketClient() {
 }
 
 bool SocketClient::connect() {
-    // Create socket
-    m_socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (m_socketFd < 0) {
-        LOG_ERROR("Failed to create socket: ", strerror(errno));
-        return false;
-    }
+    const int maxRetries = 4;
+    const auto retryDelay = std::chrono::milliseconds(250);
 
-    // Set up the address structure for the primary socket path
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, m_socketPath.c_str(), sizeof(addr.sun_path) - 1);
-
-    LOG_DEBUG("Attempting to connect to socket at: ", m_socketPath);
-
-    // Try primary socket path
-    if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-        LOG_DEBUG("Connected to socket successfully at: ", m_socketPath);
-        m_connected = true;
-        return true;
-    }
-
-    // Primary connection attempt failed
-    int originalErrno = errno;
-    LOG_DEBUG("Failed to connect to primary socket: ", m_socketPath, " error: ", strerror(originalErrno));
-
-    std::string systemSocket = SystemPaths::getSocketPath(false);
-    if ((originalErrno == ENOENT || originalErrno == EACCES || originalErrno == EPERM) &&
-        m_socketPath != systemSocket && 
-        !getenv("CEC_CONTROL_SOCKET")) {
-
-        // Close original socket
-        close(m_socketFd);
-
-        // Try again with system socket
-        LOG_INFO("Trying system socket at ", systemSocket);
-
-        // Create new socket
+    for (int attempt = 0; attempt < maxRetries; ++attempt) {
+        // Create socket
         m_socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (m_socketFd < 0) {
-            LOG_ERROR("Failed to create socket for fallback: ", strerror(errno));
+            LOG_ERROR("Failed to create socket: ", strerror(errno));
+            if (attempt < maxRetries - 1) {
+                std::this_thread::sleep_for(retryDelay);
+                continue;
+            }
             return false;
         }
 
-        // Connect to system socket
+        // Set up the address structure for the primary socket path
+        struct sockaddr_un addr;
         memset(&addr, 0, sizeof(addr));
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, systemSocket.c_str(), sizeof(addr.sun_path) - 1);
+        strncpy(addr.sun_path, m_socketPath.c_str(), sizeof(addr.sun_path) - 1);
 
-        if (::connect(m_socketFd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-            // Update the socket path we're using
-            m_socketPath = systemSocket;
+        LOG_DEBUG("Attempting to connect to socket at: ", m_socketPath, " (Attempt ", attempt + 1, "/", maxRetries, ")");
+
+        // Try primary socket path
+        if (::connect(m_socketFd, (struct sockaddr *) &addr, sizeof(addr)) == 0) {
+            LOG_DEBUG("Connected to socket successfully at: ", m_socketPath);
+            if (!setNonBlocking(m_socketFd)) {
+                disconnect();
+                return false; // Don't retry on this internal error
+            }
             m_connected = true;
-            LOG_INFO("Connected to system socket successfully at: ", m_socketPath);
             return true;
         }
 
-        LOG_DEBUG("Failed to connect to system socket: ", systemSocket, " error: ", strerror(errno));
+        // Primary connection attempt failed
+        int originalErrno = errno;
+        LOG_DEBUG("Failed to connect to primary socket: ", m_socketPath, " error: ", strerror(originalErrno));
+        close(m_socketFd); // Close the failed socket fd
+
+        // Fallback to system socket if appropriate
+        std::string systemSocket = SystemPaths::getSocketPath(false);
+        if ((originalErrno == ENOENT || originalErrno == EACCES || originalErrno == EPERM) &&
+            m_socketPath != systemSocket &&
+            !getenv("CEC_CONTROL_SOCKET")) {
+
+            LOG_INFO("Trying system socket at ", systemSocket);
+            m_socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (m_socketFd < 0) {
+                LOG_ERROR("Failed to create socket for fallback: ", strerror(errno));
+                if (attempt < maxRetries - 1) {
+                    std::this_thread::sleep_for(retryDelay);
+                    continue;
+                }
+                return false;
+            }
+
+            memset(&addr, 0, sizeof(addr));
+            addr.sun_family = AF_UNIX;
+            strncpy(addr.sun_path, systemSocket.c_str(), sizeof(addr.sun_path) - 1);
+
+            if (::connect(m_socketFd, (struct sockaddr *) &addr, sizeof(addr)) == 0) {
+                m_socketPath = systemSocket;
+                LOG_INFO("Connected to system socket successfully at: ", m_socketPath);
+                if (!setNonBlocking(m_socketFd)) {
+                    disconnect();
+                    return false; // Don't retry on this internal error
+                }
+                m_connected = true;
+                return true;
+            }
+            LOG_DEBUG("Failed to connect to system socket: ", systemSocket, " error: ", strerror(errno));
+            close(m_socketFd); // Close the failed socket fd
+        }
+
+        // If we've reached here, the connection failed. Log, delay, and retry.
+        if (attempt < maxRetries - 1) {
+            LOG_INFO("Connection failed. Retrying in ", retryDelay.count(), "ms...");
+            std::this_thread::sleep_for(retryDelay);
+        } else {
+            // This was the last attempt, log final error message
+            if (originalErrno == EACCES || originalErrno == EPERM || errno == EACCES || errno == EPERM) {
+                LOG_ERROR("Permission denied connecting to socket: ", m_socketPath);
+            } else if (originalErrno == ENOENT || errno == ENOENT) {
+                LOG_ERROR("Socket file does not exist or daemon is not running at: ", m_socketPath);
+            } else {
+                LOG_ERROR("Failed to connect to server at: ", m_socketPath, " error: ", strerror(errno));
+            }
+        }
     }
 
-    // Handle connection failure with good error messages
-    if (originalErrno == EACCES || originalErrno == EPERM || errno == EACCES || errno == EPERM) {
-        LOG_ERROR("Permission denied connecting to socket: ", m_socketPath);
-    } else if (originalErrno == ENOENT || errno == ENOENT) {
-        LOG_ERROR("Socket file does not exist or daemon is not running at: ", m_socketPath);
-    } else {
-        LOG_ERROR("Failed to connect to server at: ", m_socketPath, " error: ", strerror(errno));
-    }
-
-    close(m_socketFd);
     m_socketFd = -1;
     return false;
 }
@@ -177,11 +198,19 @@ Message SocketClient::receiveResponse() {
         buffer.resize(headerSize);
         ssize_t bytesRead = recv(m_socketFd, buffer.data() + oldSize, headerSize - oldSize, 0);
 
-        if (bytesRead <= 0) {
-            LOG_ERROR(bytesRead == 0 ? "Server closed connection" : "Failed to receive response header: " + std::string(strerror(errno)));
+        if (bytesRead > 0) {
+            buffer.resize(oldSize + bytesRead);
+        } else if (bytesRead == 0) {
+            LOG_ERROR("Server closed connection");
+            return Message(MessageType::RESP_ERROR);
+        } else { // bytesRead < 0
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                buffer.resize(oldSize); // Revert the resize
+                continue; // Loop to wait on poller again
+            }
+            LOG_ERROR("Failed to receive response header: " + std::string(strerror(errno)));
             return Message(MessageType::RESP_ERROR);
         }
-        buffer.resize(oldSize + bytesRead);
     }
 
     // 2. Validate header and get full message size
@@ -201,11 +230,19 @@ Message SocketClient::receiveResponse() {
         buffer.resize(totalMessageSize);
         ssize_t bytesRead = recv(m_socketFd, buffer.data() + oldSize, totalMessageSize - oldSize, 0);
 
-        if (bytesRead <= 0) {
-            LOG_ERROR(bytesRead == 0 ? "Server closed connection" : "Failed to receive response body: " + std::string(strerror(errno)));
+        if (bytesRead > 0) {
+            buffer.resize(oldSize + bytesRead);
+        } else if (bytesRead == 0) {
+            LOG_ERROR("Server closed connection");
+            return Message(MessageType::RESP_ERROR);
+        } else { // bytesRead < 0
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                buffer.resize(oldSize); // Revert the resize
+                continue; // Loop to wait on poller again
+            }
+            LOG_ERROR("Failed to receive response body: " + std::string(strerror(errno)));
             return Message(MessageType::RESP_ERROR);
         }
-        buffer.resize(oldSize + bytesRead);
     }
 
     // 4. Validate and unpack
@@ -219,6 +256,21 @@ Message SocketClient::receiveResponse() {
 
 bool SocketClient::isConnected() const {
     return m_connected;
+}
+
+bool SocketClient::setNonBlocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        LOG_ERROR("Failed to get socket flags: ", strerror(errno));
+        return false;
+    }
+
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        LOG_ERROR("Failed to set socket non-blocking: ", strerror(errno));
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace cec_control

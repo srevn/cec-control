@@ -55,6 +55,13 @@ private:
     
     // Receive response message from server
     Message receiveResponse();
+
+    /**
+     * Set a socket to non-blocking mode
+     * @param fd Socket file descriptor
+     * @return True if successful
+     */
+    bool setNonBlocking(int fd);
 };
 
 } // namespace cec_control
