@@ -353,6 +353,9 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
         case CEC::CEC_ALERT_CONNECTION_LOST:
             LOG_ERROR("CEC connection lost");
             adapter->m_connected = false;
+            if (adapter->m_connectionLostCallback) {
+                adapter->m_connectionLostCallback();
+            }
             break;
             
         case CEC::CEC_ALERT_PERMISSION_ERROR:
@@ -376,6 +379,10 @@ void CECAdapter::setAutoStandby(bool enabled) {
 
 void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {
     m_tvStandbyCallback = std::move(callback);
+}
+
+void CECAdapter::setConnectionLostCallback(std::function<void()> callback) {
+    m_connectionLostCallback = std::move(callback);
 }
 
 bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {

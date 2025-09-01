@@ -174,6 +174,12 @@ public:
     void setOnTvStandbyCallback(std::function<void()> callback);
 
     /**
+     * @brief Set a callback to be invoked when the CEC connection is lost
+     * @param callback The function to call
+     */
+    void setConnectionLostCallback(std::function<void()> callback);
+
+    /**
      * Send standby commands to configured devices
      * @param address The logical address to put in standby (CECDEVICE_BROADCAST uses powerOffDevices list)
      * @return True on success, false otherwise
@@ -201,6 +207,7 @@ private:
 
     // Callbacks
     std::function<void()> m_tvStandbyCallback;
+    std::function<void()> m_connectionLostCallback;
     
     // Set up CEC callbacks
     void setupCallbacks();

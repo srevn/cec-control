@@ -55,6 +55,7 @@ bool CECDaemon::start() {
         cecOptions.scanDevicesAtStartup = m_options.scanDevicesAtStartup;
         
         m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
+        m_cecManager->setConnectionLostCallback([this]() { this->onConnectionLost(); });
         
         // Initialize CEC manager
         if (!m_cecManager->initialize()) {
@@ -187,24 +188,36 @@ void CECDaemon::run() {
 
     std::unique_lock<std::mutex> lock(m_runMutex);
     while (m_running.load()) {
-        // Only check connection if not suspended
-        if (!m_suspended.load(std::memory_order_acquire) && 
-            m_cecManager && !m_cecManager->isAdapterValid()) {
-            
-            LOG_WARNING("CEC connection lost, attempting to reconnect");
-            
-            if (m_cecManager->reconnect()) {
-                LOG_INFO("Successfully reconnected to CEC adapter");
-            } else {
-                LOG_ERROR("Failed to reconnect to CEC adapter - will retry");
+        // Wait for a signal to shutdown, or for a connection loss event
+        m_runCv.wait(lock, [this] {
+            return !m_running.load() || m_connectionLost.load();
+        });
+
+        // If we woke up due to shutdown, exit the loop
+        if (!m_running.load()) {
+            break;
+        }
+
+        // If we woke up due to connection loss, try to reconnect
+        if (m_connectionLost.load()) {
+            m_connectionLost = false; // Reset the flag
+
+            if (!m_suspended.load(std::memory_order_acquire) && m_cecManager) {
+                LOG_WARNING("CEC connection lost, attempting to reconnect");
+                if (m_cecManager->reconnect()) {
+                    LOG_INFO("Successfully reconnected to CEC adapter");
+                } else {
+                    LOG_ERROR("Failed to reconnect to CEC adapter - will retry on next event");
+                }
             }
         }
-        
-        // Wait for shutdown signal or timeout for periodic checks.
-        m_runCv.wait_for(lock, std::chrono::seconds(5), [this] {
-            return !m_running.load();
-        });
     }
+}
+
+void CECDaemon::onConnectionLost() {
+    LOG_INFO("CEC connection lost event received.");
+    m_connectionLost = true;
+    m_runCv.notify_one();
 }
 
 void CECDaemon::onSuspend() {

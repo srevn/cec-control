@@ -200,9 +200,8 @@ void DBusMonitor::eventLoop() {
         FD_SET(m_shutdownPipe[0], &readfds);
         int max_fd = (bus_fd > m_shutdownPipe[0]) ? bus_fd : m_shutdownPipe[0];
         
-        // Wait for events
-        struct timeval timeout = {1, 0};  // 1 second timeout
-        int select_result = select(max_fd + 1, &readfds, nullptr, nullptr, &timeout);
+        // Wait for events indefinitely until a signal is received
+        int select_result = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
         
         if (select_result < 0) {
             if (errno == EINTR) continue;

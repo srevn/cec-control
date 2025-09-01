@@ -70,6 +70,12 @@ public:
     bool reconnect();
     
     /**
+     * @brief Set a callback to be invoked when the CEC connection is lost
+     * @param callback The function to call
+     */
+    void setConnectionLostCallback(std::function<void()> callback);
+
+    /**
      * @brief Process client command synchronously
      * @param command Command message to process
      * @return Response message

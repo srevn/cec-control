@@ -103,6 +103,12 @@ CECManager::~CECManager() {
     shutdown();
 }
 
+void CECManager::setConnectionLostCallback(std::function<void()> callback) {
+    if (m_adapter) {
+        m_adapter->setConnectionLostCallback(std::move(callback));
+    }
+}
+
 bool CECManager::initialize() {
     std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Initializing CEC manager");

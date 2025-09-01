@@ -99,6 +99,11 @@ public:
     void processResumeCommand();
 
 private:
+    /**
+     * @brief Callback for CEC adapter connection loss
+     */
+    void onConnectionLost();
+
     // Core components
     std::unique_ptr<CECManager> m_cecManager;
     std::unique_ptr<SocketServer> m_socketServer;
@@ -108,6 +113,7 @@ private:
     // State flags
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_suspended{false};
+    std::atomic<bool> m_connectionLost{false};
     
     // Synchronization
     std::mutex m_suspendMutex;
