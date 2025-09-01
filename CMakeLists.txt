@@ -70,8 +70,7 @@ set(CLIENT_SOURCES
     src/client/socket_client.cpp
 )
 
-# Unified source list for the single binary
-set(UNIFIED_SOURCES
+set(BINARY_SOURCES
     src/main.cpp
     ${COMMON_SOURCES}
     ${DAEMON_SOURCES}
@@ -79,7 +78,7 @@ set(UNIFIED_SOURCES
 )
 
 # Create unified executable
-add_executable(cec-control ${UNIFIED_SOURCES})
+add_executable(cec-control ${BINARY_SOURCES})
 
 # Link all necessary libraries for the unified binary
 target_link_libraries(cec-control
