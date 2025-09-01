@@ -208,12 +208,8 @@ void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResul
 }
 
 ConfigManager& DaemonBootstrap::setupConfiguration(const ArgumentParser::ParseResult& parseResult) {
-    ConfigManager& configManager = ConfigManager::getInstance();
-    
-    // Set custom config path if provided
-    if (!parseResult.configFile.empty()) {
-        configManager = ConfigManager(parseResult.configFile);
-    }
+    // First call to getInstance will initialize it with the provided config path.
+    ConfigManager& configManager = ConfigManager::getInstance(parseResult.configFile);
     
     // Load the configuration
     if (!configManager.load()) {

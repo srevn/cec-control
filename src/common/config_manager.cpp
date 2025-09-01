@@ -7,14 +7,15 @@
 #include <cctype>
 #include <sstream>
 #include <filesystem>
+#include <mutex>
 
 namespace cec_control {
 
-std::unique_ptr<ConfigManager> ConfigManager::s_instance;
-
-ConfigManager::ConfigManager() 
-    : m_configPath(SystemPaths::getConfigPath()) {
-    LOG_INFO("Using default configuration path: ", m_configPath);
+void ConfigManager::trim(std::string& s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(),
+        [](unsigned char ch) { return !std::isspace(ch); }));
+    s.erase(std::find_if(s.rbegin(), s.rend(),
+        [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
 }
 
 ConfigManager::ConfigManager(const std::string& configPath)
@@ -39,8 +40,7 @@ bool ConfigManager::load() {
     
     while (std::getline(file, line)) {
         // Trim whitespace from the beginning
-        line.erase(line.begin(), std::find_if(line.begin(), line.end(),
-            [](unsigned char ch) { return !std::isspace(ch); }));
+        trim(line);
         
         // Skip empty lines and comments
         if (line.empty() || line[0] == '#' || line[0] == ';') {
@@ -59,16 +59,8 @@ bool ConfigManager::load() {
             std::string key = line.substr(0, equalPos);
             std::string value = line.substr(equalPos + 1);
             
-            // Trim whitespace from key and value
-            key.erase(key.begin(), std::find_if(key.begin(), key.end(),
-                [](unsigned char ch) { return !std::isspace(ch); }));
-            key.erase(std::find_if(key.rbegin(), key.rend(),
-                [](unsigned char ch) { return !std::isspace(ch); }).base(), key.end());
-                
-            value.erase(value.begin(), std::find_if(value.begin(), value.end(),
-                [](unsigned char ch) { return !std::isspace(ch); }));
-            value.erase(std::find_if(value.rbegin(), value.rend(),
-                [](unsigned char ch) { return !std::isspace(ch); }).base(), value.end());
+            trim(key);
+            trim(value);
             
             // Store key-value in the current section
             m_config[currentSection][key] = value;
@@ -79,8 +71,7 @@ bool ConfigManager::load() {
     return true;
 }
 
-std::string ConfigManager::getString(const std::string& section, 
-                                    const std::string& key,
+std::string ConfigManager::getString(const std::string& section, const std::string& key,
                                     const std::string& defaultValue) const {
     auto sectionIt = m_config.find(section);
     if (sectionIt == m_config.end()) {
@@ -95,8 +86,7 @@ std::string ConfigManager::getString(const std::string& section,
     return keyIt->second;
 }
 
-bool ConfigManager::getBool(const std::string& section,
-                           const std::string& key,
+bool ConfigManager::getBool(const std::string& section, const std::string& key,
                            bool defaultValue) const {
     std::string value = getString(section, key, defaultValue ? "true" : "false");
     
@@ -107,8 +97,7 @@ bool ConfigManager::getBool(const std::string& section,
     return value == "true" || value == "yes" || value == "1" || value == "on";
 }
 
-int ConfigManager::getInt(const std::string& section,
-                         const std::string& key,
+int ConfigManager::getInt(const std::string& section, const std::string& key,
                          int defaultValue) const {
     std::string value = getString(section, key, "");
     
@@ -124,10 +113,14 @@ int ConfigManager::getInt(const std::string& section,
     }
 }
 
-ConfigManager& ConfigManager::getInstance() {
-    if (!s_instance) {
-        s_instance = std::unique_ptr<ConfigManager>(new ConfigManager());
-    }
+ConfigManager& ConfigManager::getInstance(const std::string& configPath) {
+    static std::unique_ptr<ConfigManager> s_instance;
+    static std::once_flag s_onceFlag;
+
+    std::call_once(s_onceFlag, [&]{
+        s_instance.reset(new ConfigManager(configPath));
+    });
+
     return *s_instance;
 }
 

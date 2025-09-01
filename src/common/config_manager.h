@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <memory>
+#include <mutex>
 
 namespace cec_control {
 
@@ -11,17 +12,12 @@ namespace cec_control {
  */
 class ConfigManager {
 public:
-    /**
-     * Create a new config manager using default system path
-     */
-    ConfigManager();
-    
-    /**
-     * Create a new config manager with specified config file path
-     * @param configPath Path to the configuration file
-     */
-    explicit ConfigManager(const std::string& configPath);
-    
+    ConfigManager(const ConfigManager&) = delete;
+    ConfigManager& operator=(const ConfigManager&) = delete;
+    ConfigManager(ConfigManager&&) = delete;
+    ConfigManager& operator=(ConfigManager&&) = delete;
+    ~ConfigManager() = default;
+
     /**
      * Load configuration from file
      * @return true if successful, false otherwise
@@ -62,10 +58,11 @@ public:
               int defaultValue = 0) const;
 
     /**
-     * Get singleton instance
+     * Get singleton instance. First call initializes with configPath.
+     * @param configPath Path to the configuration file (used only on first call)
      * @return The singleton instance
      */
-    static ConfigManager& getInstance();
+    static ConfigManager& getInstance(const std::string& configPath = "");
     
     /**
      * Get the path to the configuration file being used
@@ -74,10 +71,12 @@ public:
     std::string getConfigPath() const { return m_configPath; }
     
 private:
+    explicit ConfigManager(const std::string& configPath);
+
     std::string m_configPath;
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_config;
-    
-    static std::unique_ptr<ConfigManager> s_instance;
+
+    static void trim(std::string& s);
 };
 
 } // namespace cec_control
