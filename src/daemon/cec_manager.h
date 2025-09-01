@@ -130,6 +130,9 @@ private:
     // Mutex for synchronizing high-level manager operations
     mutable std::mutex m_managerMutex;
 
+    // Reconnection failure counter
+    int m_reconnectFailures = 0;
+
     /**
      * @brief Internal command handler for the command queue
      * @param command Command message to handle

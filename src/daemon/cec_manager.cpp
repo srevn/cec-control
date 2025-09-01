@@ -159,13 +159,10 @@ bool CECManager::reconnect() {
 
     LOG_INFO("Attempting to reconnect to CEC adapter");
 
-    // Track reconnect failures with a static counter
-    static int reconnectFailures = 0;
-
     // Check if adapter is already connected - quick exit
     if (isAdapterValid()) {
         LOG_INFO("Adapter already connected, no need to reconnect");
-        reconnectFailures = 0;
+        m_reconnectFailures = 0;
         return true;
     }
 
@@ -184,10 +181,10 @@ bool CECManager::reconnect() {
     // Try to initialize the adapter
     if (!m_adapter->initialize()) {
         LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
-        reconnectFailures++;
+        m_reconnectFailures++;
 
-        if (reconnectFailures >= 3) {
-            LOG_ERROR("Multiple reconnect failures (", reconnectFailures, ") - daemon will exit");
+        if (m_reconnectFailures >= 3) {
+            LOG_ERROR("Multiple reconnect failures (", m_reconnectFailures, ") - daemon will exit");
 
             // If running as a systemd service, schedule exit
             if (getenv("NOTIFY_SOCKET") != nullptr) {
@@ -212,7 +209,7 @@ bool CECManager::reconnect() {
     }
 
     // Reset failure counter on successful adapter initialization
-    reconnectFailures = 0;
+    m_reconnectFailures = 0;
 
     // Start the command queue if needed
     if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
