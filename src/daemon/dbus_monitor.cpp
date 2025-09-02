@@ -301,13 +301,6 @@ bool DBusMonitor::suspendSystem() {
     
     LOG_INFO("Initiating system suspend via D-Bus");
     
-    // Temporarily release inhibitor lock to allow suspend
-    bool hadInhibitorLock = (m_inhibitFd >= 0);
-    if (hadInhibitorLock) {
-        LOG_DEBUG("Temporarily releasing inhibitor lock for suspend");
-        releaseInhibitLock();
-    }
-    
     sd_bus_message* reply = nullptr;
     int r = sd_bus_call_method(m_bus,
         "org.freedesktop.login1",           // destination
@@ -321,12 +314,6 @@ bool DBusMonitor::suspendSystem() {
     
     if (r < 0) {
         LOG_ERROR("Failed to call Suspend method: ", busErrorToString(r));
-        
-        // Restore inhibitor lock if we had one
-        if (hadInhibitorLock) {
-            LOG_DEBUG("Restoring inhibitor lock after failed suspend");
-            takeInhibitLock();
-        }
         return false;
     }
     
