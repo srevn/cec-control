@@ -154,11 +154,20 @@ bool DBusMonitor::takeInhibitLock() {
     }
     
     // Extract file descriptor from reply
-    r = sd_bus_message_read(reply, "h", &m_inhibitFd);
-    sd_bus_message_unref(reply);
-    
+    int temp_fd;
+    r = sd_bus_message_read(reply, "h", &temp_fd);
     if (r < 0) {
         LOG_ERROR("Failed to read inhibitor file descriptor: ", busErrorToString(r));
+        sd_bus_message_unref(reply);
+        return false;
+    }
+    
+    // Duplicate the file descriptor to keep it alive after message cleanup
+    m_inhibitFd = dup(temp_fd);
+    sd_bus_message_unref(reply);
+    
+    if (m_inhibitFd < 0) {
+        LOG_ERROR("Failed to duplicate inhibitor file descriptor: ", strerror(errno));
         return false;
     }
     
