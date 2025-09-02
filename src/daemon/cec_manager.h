@@ -74,6 +74,12 @@ public:
      * @param callback The function to call
      */
     void setConnectionLostCallback(std::function<void()> callback);
+    
+    /**
+     * @brief Set a callback to be invoked when system suspend is requested
+     * @param callback The function to call, should return true if suspend was successful
+     */
+    void setSuspendCallback(std::function<bool()> callback);
 
     /**
      * @brief Process client command synchronously
@@ -132,6 +138,9 @@ private:
 
     // Reconnection failure counter
     int m_reconnectFailures = 0;
+    
+    // Suspend callback
+    std::function<bool()> m_suspendCallback;
 
     /**
      * @brief Internal command handler for the command queue

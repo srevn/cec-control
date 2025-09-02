@@ -56,6 +56,9 @@ bool CECDaemon::start() {
         
         m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
         m_cecManager->setConnectionLostCallback([this]() { this->onConnectionLost(); });
+        m_cecManager->setSuspendCallback([this]() -> bool {
+            return m_dbusMonitor ? m_dbusMonitor->suspendSystem() : false;
+        });
         
         // Initialize CEC manager
         if (!m_cecManager->initialize()) {

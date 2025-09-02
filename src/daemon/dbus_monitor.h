@@ -83,6 +83,16 @@ public:
      * @return true if successfully released
      */
     bool releaseInhibitLock();
+    
+    /**
+     * @brief Suspend the system via D-Bus
+     * 
+     * Calls the systemd logind Suspend method to initiate system suspend.
+     * This uses the same D-Bus connection as the inhibitor locks.
+     * 
+     * @return true if suspend was successfully initiated
+     */
+    bool suspendSystem();
 
 private:
     sd_bus* m_bus;                     // sd-bus connection

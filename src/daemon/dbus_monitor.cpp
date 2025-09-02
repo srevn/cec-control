@@ -293,6 +293,54 @@ int DBusMonitor::onPrepareForSleep(sd_bus_message* msg, void* userdata, sd_bus_e
     return 0;
 }
 
+bool DBusMonitor::suspendSystem() {
+    if (!m_bus) {
+        LOG_ERROR("D-Bus connection not initialized");
+        return false;
+    }
+    
+    LOG_INFO("Initiating system suspend via D-Bus");
+    
+    // Temporarily release inhibitor lock to allow suspend
+    bool hadInhibitorLock = (m_inhibitFd >= 0);
+    if (hadInhibitorLock) {
+        LOG_DEBUG("Temporarily releasing inhibitor lock for suspend");
+        releaseInhibitLock();
+    }
+    
+    sd_bus_message* reply = nullptr;
+    int r = sd_bus_call_method(m_bus,
+        "org.freedesktop.login1",           // destination
+        "/org/freedesktop/login1",          // path
+        "org.freedesktop.login1.Manager",   // interface
+        "Suspend",                          // method
+        nullptr,                            // error
+        &reply,                             // reply
+        "b",                                // signature
+        1);                                 // interactive=true
+    
+    if (r < 0) {
+        LOG_ERROR("Failed to call Suspend method: ", busErrorToString(r));
+        
+        // Restore inhibitor lock if we had one
+        if (hadInhibitorLock) {
+            LOG_DEBUG("Restoring inhibitor lock after failed suspend");
+            takeInhibitLock();
+        }
+        return false;
+    }
+    
+    if (reply) {
+        sd_bus_message_unref(reply);
+    }
+    
+    LOG_INFO("System suspend initiated successfully via D-Bus");
+    
+    // Note: Don't restore the inhibitor lock here as the system will suspend
+    // The lock will be re-established on resume through the normal power state callback
+    return true;
+}
+
 const char* DBusMonitor::busErrorToString(int error) {
     return strerror(-error);
 }

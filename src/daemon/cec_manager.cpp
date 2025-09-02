@@ -71,14 +71,17 @@ CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
     // Set up the callback for TV standby events
     m_adapter->setOnTvStandbyCallback([this]() {
         LOG_INFO("TV standby callback triggered. Initiating system suspend.");
-        auto suspendTask = []() {
-            LOG_INFO("Executing suspend command via D-Bus");
-            int result = system("dbus-send --system --print-reply --dest=org.freedesktop.login1 "
-                                "/org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
-            if (result == 0) {
-                LOG_INFO("Suspend command executed successfully via D-Bus");
+        auto suspendTask = [this]() {
+            if (m_suspendCallback) {
+                LOG_INFO("Executing suspend command via callback");
+                bool success = m_suspendCallback();
+                if (success) {
+                    LOG_INFO("Suspend command executed successfully");
+                } else {
+                    LOG_ERROR("Failed to execute suspend command via callback");
+                }
             } else {
-                LOG_ERROR("Failed to execute suspend command via D-Bus. Result code: ", result);
+                LOG_WARNING("No suspend callback configured, cannot suspend system");
             }
         };
 
@@ -107,6 +110,10 @@ void CECManager::setConnectionLostCallback(std::function<void()> callback) {
     if (m_adapter) {
         m_adapter->setConnectionLostCallback(std::move(callback));
     }
+}
+
+void CECManager::setSuspendCallback(std::function<bool()> callback) {
+    m_suspendCallback = std::move(callback);
 }
 
 bool CECManager::initialize() {
