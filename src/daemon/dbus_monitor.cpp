@@ -27,6 +27,7 @@ DBusMonitor::~DBusMonitor() {
     if (m_shutdownPipe[1] >= 0) close(m_shutdownPipe[1]);
     
     // Clean up D-Bus resources
+    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
     if (m_signalSlot) {
         sd_bus_slot_unref(m_signalSlot);
         m_signalSlot = nullptr;
@@ -41,6 +42,8 @@ DBusMonitor::~DBusMonitor() {
 bool DBusMonitor::initialize() {
     LOG_INFO("Initializing sd-bus D-Bus monitor");
     
+    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+
     // Connect to system bus
     int r = sd_bus_default_system(&m_bus);
     if (r < 0) {
@@ -58,12 +61,16 @@ bool DBusMonitor::initialize() {
     
     if (r < 0) {
         LOG_ERROR("Failed to add D-Bus signal match: ", busErrorToString(r));
+        sd_bus_unref(m_bus);
+        m_bus = nullptr;
         return false;
     }
     
     // Create shutdown pipe for thread communication
     if (pipe(m_shutdownPipe) < 0) {
         LOG_ERROR("Failed to create shutdown pipe: ", strerror(errno));
+        sd_bus_unref(m_bus);
+        m_bus = nullptr;
         return false;
     }
     
@@ -121,6 +128,8 @@ void DBusMonitor::stop() {
 }
 
 bool DBusMonitor::takeInhibitLock() {
+    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+
     if (!m_bus) {
         LOG_ERROR("D-Bus connection not initialized");
         return false;
@@ -135,12 +144,13 @@ bool DBusMonitor::takeInhibitLock() {
     LOG_INFO("Taking systemd inhibitor lock");
     
     sd_bus_message* reply = nullptr;
+    sd_bus_error error = SD_BUS_ERROR_NULL;
     int r = sd_bus_call_method(m_bus,
         "org.freedesktop.login1",           // destination
         "/org/freedesktop/login1",          // path
         "org.freedesktop.login1.Manager",   // interface
         "Inhibit",                          // method
-        nullptr,                            // error
+        &error,                             // error
         &reply,                             // reply
         "ssss",                             // signature
         "sleep",                            // what
@@ -149,7 +159,8 @@ bool DBusMonitor::takeInhibitLock() {
         "delay");                           // mode
     
     if (r < 0) {
-        LOG_ERROR("Failed to call Inhibit method: ", busErrorToString(r));
+        LOG_ERROR("Failed to call Inhibit method: ", error.message);
+        sd_bus_error_free(&error);
         return false;
     }
     
@@ -195,16 +206,19 @@ void DBusMonitor::eventLoop() {
     LOG_INFO("sd-bus D-Bus monitor thread started");
     
     while (m_running) {
-        // Check for shutdown signal
+        int bus_fd;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+            if (!m_bus) break;
+            bus_fd = sd_bus_get_fd(m_bus);
+            if (bus_fd < 0) {
+                LOG_ERROR("Failed to get bus file descriptor: ", busErrorToString(bus_fd));
+                break;
+            }
+        }
+
         fd_set readfds;
         FD_ZERO(&readfds);
-        
-        int bus_fd = sd_bus_get_fd(m_bus);
-        if (bus_fd < 0) {
-            LOG_ERROR("Failed to get bus file descriptor: ", busErrorToString(bus_fd));
-            break;
-        }
-        
         FD_SET(bus_fd, &readfds);
         FD_SET(m_shutdownPipe[0], &readfds);
         int max_fd = (bus_fd > m_shutdownPipe[0]) ? bus_fd : m_shutdownPipe[0];
@@ -225,7 +239,10 @@ void DBusMonitor::eventLoop() {
         }
         
         // Process D-Bus events if ready
-        if (select_result > 0 && FD_ISSET(bus_fd, &readfds)) {
+        if (m_running && FD_ISSET(bus_fd, &readfds)) {
+            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+            if (!m_bus) break;
+
             int r;
             do {
                 r = sd_bus_process(m_bus, nullptr);
@@ -238,6 +255,9 @@ void DBusMonitor::eventLoop() {
         
         // Handle any pending D-Bus operations
         if (m_running) {
+            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+            if (!m_bus) break;
+            
             int r = sd_bus_flush(m_bus);
             if (r < 0 && r != -ENOTCONN) {
                 LOG_WARNING("Failed to flush D-Bus connection: ", busErrorToString(r));
@@ -294,6 +314,8 @@ int DBusMonitor::onPrepareForSleep(sd_bus_message* msg, void* userdata, sd_bus_e
 }
 
 bool DBusMonitor::suspendSystem() {
+    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
+
     if (!m_bus) {
         LOG_ERROR("D-Bus connection not initialized");
         return false;
@@ -302,18 +324,20 @@ bool DBusMonitor::suspendSystem() {
     LOG_INFO("Initiating system suspend via D-Bus");
     
     sd_bus_message* reply = nullptr;
+    sd_bus_error error = SD_BUS_ERROR_NULL;
     int r = sd_bus_call_method(m_bus,
         "org.freedesktop.login1",           // destination
         "/org/freedesktop/login1",          // path
         "org.freedesktop.login1.Manager",   // interface
         "Suspend",                          // method
-        nullptr,                            // error
+        &error,                             // error
         &reply,                             // reply
         "b",                                // signature
         1);                                 // interactive=true
     
     if (r < 0) {
-        LOG_ERROR("Failed to call Suspend method: ", busErrorToString(r));
+        LOG_ERROR("Failed to call Suspend method: ", error.message);
+        sd_bus_error_free(&error);
         return false;
     }
     
@@ -322,9 +346,6 @@ bool DBusMonitor::suspendSystem() {
     }
     
     LOG_INFO("System suspend initiated successfully via D-Bus");
-    
-    // Note: Don't restore the inhibitor lock here as the system will suspend
-    // The lock will be re-established on resume through the normal power state callback
     return true;
 }
 

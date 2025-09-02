@@ -3,6 +3,7 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <systemd/sd-bus.h>
 
 namespace cec_control {
@@ -33,76 +34,78 @@ public:
     
     /**
      * @brief Destructor - ensures proper cleanup of D-Bus resources
-     * 
+     *
      * Releases inhibitor locks and cleans up D-Bus connection
      */
     ~DBusMonitor();
     
     /**
      * @brief Initialize the D-Bus connection
-     * 
+     *
      * Sets up the connection to the system bus, registers signal handlers,
      * and takes an initial inhibitor lock.
-     * 
+     *
      * @return true if successfully initialized, false otherwise
      */
     bool initialize();
     
     /**
      * @brief Start monitoring for power state changes
-     * 
+     *
      * Starts the monitoring thread to watch for power management signals.
-     * 
+     *
      * @param callback Function to call when power state changes occur
      */
     void start(PowerStateCallback callback);
     
     /**
      * @brief Stop monitoring
-     * 
+     *
      * Terminates the monitoring thread and cleans up resources
      */
     void stop();
     
     /**
      * @brief Take an inhibitor lock to delay system sleep
-     * 
+     *
      * This requests a delay-type inhibitor lock from systemd's logind,
      * which allows the application to perform cleanup before sleep.
-     * 
+     *
      * @return true if the lock was successfully taken
      */
     bool takeInhibitLock();
     
     /**
      * @brief Release the inhibitor lock to allow system sleep
-     * 
+     *
      * This should be called after completing sleep preparation to
      * allow the system to continue with the sleep process.
-     * 
+     *
      * @return true if successfully released
      */
     bool releaseInhibitLock();
     
     /**
      * @brief Suspend the system via D-Bus
-     * 
+     *
      * Calls the systemd logind Suspend method to initiate system suspend.
      * This uses the same D-Bus connection as the inhibitor locks.
-     * 
+     *
      * @return true if suspend was successfully initiated
      */
     bool suspendSystem();
 
 private:
-    sd_bus* m_bus;                     // sd-bus connection
-    sd_bus_slot* m_signalSlot;         // Signal subscription slot
-    int m_inhibitFd;                   // File descriptor for inhibit lock
+    sd_bus* m_bus;                           // sd-bus connection
+    sd_bus_slot* m_signalSlot;               // Signal subscription slot
+    int m_inhibitFd;                         // File descriptor for inhibit lock
     
-    std::thread m_thread;              // Monitoring thread
-    std::atomic<bool> m_running;       // Thread running flag
-    int m_shutdownPipe[2];             // Pipe for shutdown signaling
-    PowerStateCallback m_callback;     // Power state callback
+    std::thread m_thread;                    // Monitoring thread
+    std::atomic<bool> m_running;             // Thread running flag
+    int m_shutdownPipe[2];                   // Pipe for shutdown signaling
+    PowerStateCallback m_callback;           // Power state callback
+
+    mutable std::recursive_mutex m_busMutex; // For thread-safe access to sd-bus
     
     /**
      * @brief Main monitoring loop - handles sd-bus event processing
@@ -111,7 +114,7 @@ private:
     
     /**
      * @brief Static callback for PrepareForSleep signal
-     * 
+     *
      * @param msg D-Bus message containing the signal
      * @param userdata User data pointer (this object)
      * @param ret_error Error return parameter
@@ -121,7 +124,7 @@ private:
     
     /**
      * @brief Helper to format sd-bus error messages
-     * 
+     *
      * @param error sd-bus error code
      * @return Human-readable error string
      */
