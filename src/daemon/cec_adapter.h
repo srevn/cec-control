@@ -188,10 +188,10 @@ public:
     
     /**
      * Power on configured devices
-     * @param address The logical address to power on (CECDEVICE_TV uses wakeDevices list)
+     * @param address The logical address to power on (CECDEVICE_BROADCAST uses wakeDevices list)
      * @return True on success, false otherwise
      */
-    bool powerOnDevices(CEC::cec_logical_address address = CEC::CECDEVICE_TV);
+    bool powerOnDevices(CEC::cec_logical_address address = CEC::CECDEVICE_BROADCAST);
 
 private:
     // Configuration

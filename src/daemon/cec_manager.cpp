@@ -368,7 +368,7 @@ bool CECManager::powerOnDevices() {
 
     try {
         LOG_INFO("Sending power on commands to configured devices");
-        return m_adapter->powerOnDevices(CEC::CECDEVICE_TV);
+        return m_adapter->powerOnDevices(CEC::CECDEVICE_BROADCAST);
     } catch (const std::exception& e) {
         LOG_ERROR("Exception sending power on commands: ", e.what());
         return false;

@@ -389,6 +389,7 @@ bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
+    // libCEC automatically uses powerOffDevices list when CECDEVICE_BROADCAST is used
     return m_adapter->StandbyDevices(address);
 }
 
@@ -396,6 +397,7 @@ bool CECAdapter::powerOnDevices(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
+    // libCEC automatically uses wakeDevices list when CECDEVICE_BROADCAST is used  
     return m_adapter->PowerOnDevices(address);
 }
 
