@@ -232,13 +232,16 @@ void CECDaemon::onSuspend() {
     LOG_INFO("System suspending, preparing CEC adapter");
     m_suspended = true;
     
+    auto suspendCompletePromise = std::make_shared<std::promise<void>>();
+    std::shared_future<void> suspendCompleteFuture = suspendCompletePromise->get_future();
+
     // Safety timeout using thread pool
-    m_threadPool->submit([this]() {
-        std::this_thread::sleep_for(std::chrono::seconds(10));
-        
-        if (m_suspended.load(std::memory_order_acquire) && m_dbusMonitor) {
-            LOG_WARNING("Safety timeout reached - releasing inhibitor lock forcibly");
-            m_dbusMonitor->releaseInhibitLock();
+    m_threadPool->submit([this, suspendCompleteFuture]() {
+        if (suspendCompleteFuture.wait_for(std::chrono::seconds(10)) == std::future_status::timeout) {
+            if (m_suspended.load(std::memory_order_acquire) && m_dbusMonitor) {
+                LOG_WARNING("Safety timeout reached - releasing inhibitor lock forcibly");
+                m_dbusMonitor->releaseInhibitLock();
+            }
         }
     });
     
@@ -274,6 +277,8 @@ void CECDaemon::onSuspend() {
             m_dbusMonitor->releaseInhibitLock();
         }
     }
+
+    suspendCompletePromise->set_value();
 }
 
 void CECDaemon::onResume() {
