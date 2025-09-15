@@ -203,7 +203,7 @@ private:
     std::atomic<bool> m_connected;
     
     // Thread safety
-    mutable std::mutex m_adapterMutex;
+    mutable std::recursive_mutex m_adapterMutex;
 
     // Callbacks
     std::function<void()> m_tvStandbyCallback;
