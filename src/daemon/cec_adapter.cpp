@@ -125,6 +125,14 @@ void CECAdapter::load() {
     LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
     m_portName = devices[0].strComName;
     LOG_INFO("Will use adapter: ", m_portName);
+
+    // Apply configuration once after libCEC initialization
+    LOG_INFO("Applying CEC adapter configuration");
+    if (!m_adapter->SetConfiguration(&m_config)) {
+        LOG_ERROR("Failed to apply configuration to CEC adapter");
+        m_adapter.reset();
+        return;
+    }
 }
 
 bool CECAdapter::openConnection() {
@@ -147,13 +155,6 @@ bool CECAdapter::openConnection() {
     }
 
     try {
-        // Apply configuration BEFORE opening the adapter to avoid deadlocks
-        LOG_INFO("Applying CEC adapter configuration");
-        if (!m_adapter->SetConfiguration(&m_config)) {
-            LOG_ERROR("Failed to apply configuration to CEC adapter - connection may not work properly");
-            return false;
-        }
-
         // Open the adapter using the port detected during load
         LOG_INFO("Opening CEC adapter: ", m_portName);
         if (!m_adapter->Open(m_portName.c_str())) {
