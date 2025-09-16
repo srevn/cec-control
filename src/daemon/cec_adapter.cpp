@@ -115,6 +115,11 @@ bool CECAdapter::initialize() {
         LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
         LOG_INFO("Using adapter: ", devices[0].strComName);
         
+        // Ensure configuration is properly applied to hardware before opening
+        if (!m_adapter->SetConfiguration(&m_config)) {
+            LOG_WARNING("Failed to apply configuration to CEC adapter, some features may not work correctly");
+        }
+        
         // Open the adapter
         LOG_INFO("Opening CEC adapter...");
         if (!m_adapter->Open(devices[0].strComName)) {
@@ -124,11 +129,11 @@ bool CECAdapter::initialize() {
         }
         
         m_connected = true;
-        
+
         // Configure system audio mode
         if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
-            LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", 
-                        " system audio mode");
+            LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", " system audio mode");
+            
         } else {
             LOG_INFO("System audio mode ", m_options.systemAudioMode ? "enabled" : "disabled");
         }
