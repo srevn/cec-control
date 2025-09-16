@@ -52,15 +52,21 @@ public:
     ~CECAdapter();
     
     /**
-     * Initialize the adapter
+     * Open a connection to the adapter
      * @return true if successful, false otherwise
      */
-    bool initialize();
-    
+    bool openConnection();
+
     /**
-     * Shutdown the adapter
+     * Close the connection to the adapter
      */
-    void shutdown();
+    void closeConnection();
+
+    /**
+     * Reopen the connection to the adapter
+     * @return true if successful, false otherwise
+     */
+    bool reopenConnection();
     
     /**
      * Check if the adapter is connected
@@ -196,6 +202,7 @@ public:
 private:
     // Configuration
     Options m_options;
+    std::string m_portName;
     
     // libCEC adapter
     std::unique_ptr<CEC::ICECAdapter> m_adapter;
@@ -209,6 +216,9 @@ private:
     std::function<void()> m_tvStandbyCallback;
     std::function<void()> m_connectionLostCallback;
     
+    // Load the libCEC library
+    void load();
+
     // Set up CEC callbacks
     void setupCallbacks();
     

@@ -121,7 +121,7 @@ bool CECManager::initialize() {
     LOG_INFO("Initializing CEC manager");
 
     // Initialize the adapter
-    if (!m_adapter->initialize()) {
+    if (!m_adapter->openConnection()) {
         LOG_ERROR("Failed to initialize CEC adapter");
         return false;
     }
@@ -156,7 +156,7 @@ void CECManager::shutdown() {
 
     // Shutdown the adapter
     if (m_adapter) {
-        m_adapter->shutdown();
+        m_adapter->closeConnection();
     }
 }
 
@@ -173,60 +173,43 @@ bool CECManager::reconnect() {
         return true;
     }
 
-    // Check if we need to shut down first - only if adapter is initialized but not connected
-    bool needsShutdown = m_adapter && m_adapter->hasAdapter() && !m_adapter->isConnected();
+    if (m_adapter && m_adapter->reopenConnection()) {
+        m_reconnectFailures = 0;
+        LOG_INFO("CEC adapter reconnected successfully");
 
-    if (needsShutdown) {
-        LOG_DEBUG("Shutting down adapter before reconnection attempt");
-        m_adapter->shutdown();
-
-        // Wait before reconnecting when we had to shut down first
-        LOG_DEBUG("Brief pause before reinitializing CEC adapter");
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-
-    // Try to initialize the adapter
-    if (!m_adapter->initialize()) {
-        LOG_ERROR("Failed to initialize CEC adapter during reconnect attempt");
-        m_reconnectFailures++;
-
-        if (m_reconnectFailures >= 3) {
-            LOG_ERROR("Multiple reconnect failures (", m_reconnectFailures, ") - daemon will exit");
-
-            // If running as a systemd service, schedule exit
-            if (getenv("NOTIFY_SOCKET") != nullptr) {
-                LOG_INFO("Notifying systemd of persistent adapter failure");
-                
-                auto exitFunc = []() {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                    LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                    exit(EXIT_FAILURE);
-                };
-
-                // Use thread pool if available, otherwise fall back to detached thread
-                if (m_threadPool) {
-                    m_threadPool->submit(exitFunc);
-                } else {
-                    std::thread(exitFunc).detach();
-                }
-            }
+        // Start the command queue if needed
+        if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
+            LOG_ERROR("Failed to start command queue during reconnect");
+            m_adapter->closeConnection();
             return false;
         }
-        return false;
+
+        return true;
     }
 
-    // Reset failure counter on successful adapter initialization
-    m_reconnectFailures = 0;
+    m_reconnectFailures++;
+    LOG_ERROR("Failed to reconnect CEC adapter (attempt ", m_reconnectFailures, ")");
+    if (m_reconnectFailures >= 3) {
+        LOG_ERROR("Multiple reconnect failures, daemon will exit");
+        // If running as a systemd service, schedule exit
+        if (getenv("NOTIFY_SOCKET") != nullptr) {
+            LOG_INFO("Notifying systemd of persistent adapter failure");
 
-    // Start the command queue if needed
-    if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
-        LOG_ERROR("Failed to start command queue during reconnect");
-        m_adapter->shutdown();
-        return false;
+            auto exitFunc = []() {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                LOG_FATAL("Exiting due to persistent CEC adapter failure");
+                exit(EXIT_FAILURE);
+            };
+
+            // Use thread pool if available, otherwise fall back to detached thread
+            if (m_threadPool) {
+                m_threadPool->submit(exitFunc);
+            } else {
+                std::thread(exitFunc).detach();
+            }
+        }
     }
-
-    LOG_INFO("CEC adapter reconnected successfully");
-    return true;
+    return false;
 }
 
 bool CECManager::isAdapterValid() const {
@@ -299,15 +282,7 @@ Message CECManager::handleCommand(const Message& command) {
                 // Acquire the adapter mutex so no other operations can interfere
                 std::lock_guard<std::mutex> lock(m_managerMutex);
 
-                // First shut down the adapter
-                this->m_adapter->shutdown();
-
-                // A brief pause to let everything settle
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-
-                // Now reinitialize - don't use reconnect() here to avoid deadlock
-                // with the m_managerMutex we're already holding
-                bool success = this->m_adapter->initialize();
+                bool success = this->m_adapter->reopenConnection();
 
                 if (success) {
                     // Start command queue if needed

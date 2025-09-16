@@ -50,11 +50,23 @@ CECAdapter::CECAdapter(Options options)
     
     // Set up our callbacks
     setupCallbacks();
+
+    // Load the CEC library
+    load();
 }
 
 CECAdapter::~CECAdapter() {
-    shutdown();
-    
+    closeConnection();
+
+    // Now reset the adapter pointer with lock
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+        if (m_adapter) {
+            LOG_INFO("Releasing CEC adapter resources");
+            m_adapter.reset();
+        }
+    }
+
     // Clean up callbacks if we allocated them
     if (m_config.callbacks) {
         delete m_config.callbacks;
@@ -84,36 +96,50 @@ void CECAdapter::setupCallbacks() {
     }
 }
 
-bool CECAdapter::initialize() {
-    LOG_INFO("Initializing CEC adapter");
-    
+void CECAdapter::load() {
+    LOG_INFO("Loading libCEC");
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    
+    if (m_adapter) {
+        LOG_WARNING("libCEC already loaded");
+        return;
+    }
+    m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
+    if (!m_adapter) {
+        LOG_ERROR("Failed to load libCEC - CECInitialise returned null");
+    } else {
+        LOG_INFO("libCEC loaded, version ", m_adapter->VersionToString(m_config.clientVersion));
+    }
+}
+
+bool CECAdapter::openConnection() {
+    LOG_INFO("Opening CEC adapter connection");
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+
+    if (!m_adapter) {
+        LOG_ERROR("Cannot open connection, libCEC not loaded");
+        return false;
+    }
+
+    if (m_connected) {
+        LOG_INFO("Connection already open");
+        return true;
+    }
+
     try {
-        // Create libcec interface
-        LOG_INFO("Calling CECInitialise...");
-        m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
-        
-        if (!m_adapter) {
-            LOG_ERROR("Failed to initialize libCEC - CECInitialise returned null");
-            return false;
-        }
-        
-        LOG_INFO("libCEC initialized, version ", m_adapter->VersionToString(m_config.clientVersion));
-        
         // Detect adapters
         LOG_INFO("Detecting CEC adapters...");
         CEC::cec_adapter_descriptor devices[10];
         int8_t numDevices = m_adapter->DetectAdapters(devices, 10, nullptr, true);
-        
+
         if (numDevices <= 0) {
             LOG_ERROR("No CEC adapters found");
-            m_adapter.reset();
             return false;
         }
-        
+
         LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
-        LOG_INFO("Using adapter: ", devices[0].strComName);
+        
+        m_portName = devices[0].strComName;
+        LOG_INFO("Using adapter: ", m_portName);
         
         // Ensure configuration is properly applied to hardware before opening
         if (!m_adapter->SetConfiguration(&m_config)) {
@@ -122,47 +148,47 @@ bool CECAdapter::initialize() {
         
         // Open the adapter
         LOG_INFO("Opening CEC adapter...");
-        if (!m_adapter->Open(devices[0].strComName)) {
+        if (!m_adapter->Open(m_portName.c_str())) {
             LOG_ERROR("Failed to open CEC adapter");
-            m_adapter.reset();
             return false;
         }
-        
+
         m_connected = true;
 
         // Configure system audio mode
         if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
             LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", " system audio mode");
-            
+
         } else {
             LOG_INFO("System audio mode ", m_options.systemAudioMode ? "enabled" : "disabled");
         }
-        
-        LOG_INFO("CEC adapter initialized successfully");
+
+        LOG_INFO("CEC adapter connection opened successfully");
+
         return true;
     }
     catch (const std::exception& e) {
-        LOG_ERROR("Exception during CEC initialization: ", e.what());
-        m_adapter.reset();
+        LOG_ERROR("Exception during CEC connection opening: ", e.what());
         return false;
     }
     catch (...) {
-        LOG_ERROR("Unknown exception during CEC initialization");
-        m_adapter.reset();
+        LOG_ERROR("Unknown exception during CEC connection opening");
         return false;
     }
 }
 
-void CECAdapter::shutdown() {
-    LOG_INFO("Shutting down CEC adapter");
-    
+void CECAdapter::closeConnection() {
+    if (!m_connected) {
+        return;
+    }
+
     // Set connected to false first to prevent new operations
     m_connected = false;
-    
+
     // Use a timeout to prevent hanging on adapter close
     auto closeWithTimeout = [this]() -> bool {
         std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-        
+
         if (m_adapter) {
             try {
                 LOG_INFO("Closing CEC adapter connection");
@@ -180,23 +206,22 @@ void CECAdapter::shutdown() {
         }
         return true;
     };
-    
+
     // Execute close with timeout
     auto closeFuture = std::async(std::launch::async, closeWithTimeout);
-    if (closeFuture.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
+    if (closeFuture.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
         LOG_WARNING("CEC adapter close operation timed out");
     }
-    
-    // Now reset the adapter pointer with lock
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-        if (m_adapter) {
-            LOG_INFO("Releasing CEC adapter resources");
-            m_adapter.reset();
-        }
-    }
-    
-    LOG_INFO("CEC adapter shutdown complete");
+
+    LOG_INFO("CEC adapter connection closed");
+}
+
+bool CECAdapter::reopenConnection() {
+    LOG_INFO("Reopening CEC adapter connection");
+    closeConnection();
+    // A brief pause to let things settle
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    return openConnection();
 }
 
 bool CECAdapter::isConnected() const {
