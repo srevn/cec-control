@@ -87,13 +87,6 @@ public:
      */
     bool hasAdapter() const;
 
-    /**
-     * Configure the adapter with the given options.
-     * Updates internal config and applies it to the adapter hardware.
-     * @param options The configuration options to apply.
-     * @return true if configuration was applied successfully, false otherwise.
-     */
-    bool configureAdapter(const Options& options);
 
     /**
      * Get a reference to the raw libCEC adapter

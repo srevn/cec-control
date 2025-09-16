@@ -78,25 +78,6 @@ void CECAdapter::populateConfigFromOptions(const Options& options) {
     m_config.powerOffDevices = m_options.powerOffDevices;
 }
 
-bool CECAdapter::configureAdapter(const Options& options) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    if (!m_adapter) {
-        LOG_ERROR("Cannot configure adapter, not initialized");
-        return false;
-    }
-
-    LOG_INFO("Configuring CEC adapter");
-    populateConfigFromOptions(options);
-
-    if (!m_adapter->SetConfiguration(&m_config)) {
-        LOG_ERROR("Failed to apply configuration to CEC adapter");
-        return false;
-    }
-
-    LOG_INFO("CEC adapter configured successfully");
-    return true;
-}
-
 void CECAdapter::setupCallbacks() {
     if (!m_config.callbacks) {
         LOG_ERROR("Cannot set up callbacks: callback structure is null");
@@ -187,15 +168,6 @@ bool CECAdapter::openConnection() {
         }
 
         m_connected = true;
-
-        // Apply configuration to ensure settings persist across connection cycles
-        LOG_INFO("Applying CEC adapter configuration");
-        if (!m_adapter->SetConfiguration(&m_config)) {
-            LOG_ERROR("Failed to apply configuration after opening connection");
-            m_adapter->Close();
-            m_connected = false;
-            return false;
-        }
 
         // Configure system audio mode
         if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
@@ -463,14 +435,6 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
 void CECAdapter::setAutoStandby(bool enabled) {
     m_config.bPowerOffOnStandby = enabled ? 1 : 0;
     LOG_INFO("Auto-standby feature ", enabled ? "enabled" : "disabled");
-
-    // Also apply this change to the adapter
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    if (m_adapter) {
-        if (!m_adapter->SetConfiguration(&m_config)) {
-            LOG_WARNING("Failed to apply auto-standby setting to CEC adapter");
-        }
-    }
 }
 
 void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {

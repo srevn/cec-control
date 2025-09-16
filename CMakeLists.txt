@@ -20,7 +20,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCEC REQUIRED libcec>=5.0.0)
 
-# Find libsystemd for sd-bus D-Bus API
+# Find libsystemd for sd-bus
 pkg_check_modules(LIBSYSTEMD REQUIRED libsystemd>=239)
 
 # Define installation paths
@@ -140,40 +140,35 @@ install(CODE "
   execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}/config.conf.sample\")
 ")
 
-# Install systemd service file if systemd is available
+# Install systemd service file
 if(PKG_CONFIG_FOUND)
-  pkg_check_modules(SYSTEMD systemd)
-  if(SYSTEMD_FOUND)
-    # Get systemd unit dir
-    execute_process(
-      COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=systemdsystemunitdir systemd
-      OUTPUT_VARIABLE SYSTEMD_UNIT_DIR
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
+  # Get systemd unit dir
+  execute_process(
+    COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=systemdsystemunitdir systemd
+    OUTPUT_VARIABLE SYSTEMD_UNIT_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
 
-    # Set the user and group for the service file to root
-    set(INSTALL_USER "root")
-    set(INSTALL_GROUP "wheel")
+  # Set the user and group for the service file to root
+  set(INSTALL_USER "root")
+  set(INSTALL_GROUP "wheel")
 
-    configure_file(
-      ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.service
-      ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
-      @ONLY
-    )
+  configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.service
+    ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
+    @ONLY
+  )
 
-    # Install systemd service file
-    install(
-      FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
-      DESTINATION ${SYSTEMD_UNIT_DIR}
-      PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-    )
-    
-    # Create message about enabling the service
-    install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-control.service\")")
-    install(CODE "message(STATUS \"Note: The service is configured to run as root for hardware access\")")
-  else()
-    message(STATUS "systemd not found, skipping service installation")
-  endif()
+  # Install systemd service file
+  install(
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/cec-control.service
+    DESTINATION ${SYSTEMD_UNIT_DIR}
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+  )
+
+  # Create message about enabling the service
+  install(CODE "message(STATUS \"To enable the service, run: sudo systemctl enable --now cec-control.service\")")
+  install(CODE "message(STATUS \"Note: The service is configured to run as root for hardware access\")")
 endif()
 
 # Create uninstall target

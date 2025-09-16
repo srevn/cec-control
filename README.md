@@ -16,7 +16,7 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 
 - Linux-based operating system
 - libcec 5.0.0 or newer
-- D-Bus 1.6 or newer
+- libsystemd 239 or newer
 - CMake 3.10 or newer
 - C++ 17 compatible compiler
 
@@ -27,13 +27,13 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 1. Install the dependencies:
    ```bash
    # Ubuntu/Debian
-   sudo apt install build-essential cmake libcec-dev libdbus-1-dev
-   
+   sudo apt install build-essential cmake libcec-dev libsystemd-dev
+
    # Fedora
-   sudo dnf install cmake libcec-devel dbus-devel
-   
+   sudo dnf install cmake libcec-devel systemd-devel
+
    # Arch Linux
-   sudo pacman -S cmake libcec dbus
+   sudo pacman -S cmake libcec systemd
    ```
 
 2. Clone the repository:
@@ -147,7 +147,7 @@ PowerOffDevices = 4
 ScanDevicesAtStartup = false
 # Whether to queue commands during suspend
 QueueCommandsDuringSuspend = true
-# Whether to enable D-Bus power state monitoring for automatic suspend/resume handling
+# Whether to enable power state monitoring via sd-bus for suspend/resume handling
 EnablePowerMonitor = true
 
 [Throttler]

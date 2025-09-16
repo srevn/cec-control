@@ -1,7 +1,6 @@
 [Unit]
 Description=CEC Control Daemon
 After=network.target
-Wants=dbus.service
 
 [Service]
 Type=simple
