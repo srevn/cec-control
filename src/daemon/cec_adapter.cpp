@@ -106,9 +106,25 @@ void CECAdapter::load() {
     m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
     if (!m_adapter) {
         LOG_ERROR("Failed to load libCEC - CECInitialise returned null");
-    } else {
-        LOG_INFO("libCEC loaded, version ", m_adapter->VersionToString(m_config.clientVersion));
+        return;
     }
+
+    LOG_INFO("libCEC loaded, version ", m_adapter->VersionToString(m_config.clientVersion));
+
+    // Detect adapters once during load and store the port name
+    LOG_INFO("Detecting CEC adapters...");
+    CEC::cec_adapter_descriptor devices[10];
+    int8_t numDevices = m_adapter->DetectAdapters(devices, 10, nullptr, true);
+
+    if (numDevices <= 0) {
+        LOG_ERROR("No CEC adapters found");
+        m_adapter.reset();
+        return;
+    }
+
+    LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
+    m_portName = devices[0].strComName;
+    LOG_INFO("Will use adapter: ", m_portName);
 }
 
 bool CECAdapter::openConnection() {
@@ -125,29 +141,21 @@ bool CECAdapter::openConnection() {
         return true;
     }
 
-    try {
-        // Detect adapters
-        LOG_INFO("Detecting CEC adapters...");
-        CEC::cec_adapter_descriptor devices[10];
-        int8_t numDevices = m_adapter->DetectAdapters(devices, 10, nullptr, true);
+    if (m_portName.empty()) {
+        LOG_ERROR("No adapter port available - detection may have failed during load");
+        return false;
+    }
 
-        if (numDevices <= 0) {
-            LOG_ERROR("No CEC adapters found");
+    try {
+        // Apply configuration BEFORE opening the adapter to avoid deadlocks
+        LOG_INFO("Applying CEC adapter configuration");
+        if (!m_adapter->SetConfiguration(&m_config)) {
+            LOG_ERROR("Failed to apply configuration to CEC adapter - connection may not work properly");
             return false;
         }
 
-        LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
-        
-        m_portName = devices[0].strComName;
-        LOG_INFO("Using adapter: ", m_portName);
-        
-        // Ensure configuration is properly applied to hardware before opening
-        if (!m_adapter->SetConfiguration(&m_config)) {
-            LOG_WARNING("Failed to apply configuration to CEC adapter, some features may not work correctly");
-        }
-        
-        // Open the adapter
-        LOG_INFO("Opening CEC adapter...");
+        // Open the adapter using the port detected during load
+        LOG_INFO("Opening CEC adapter: ", m_portName);
         if (!m_adapter->Open(m_portName.c_str())) {
             LOG_ERROR("Failed to open CEC adapter");
             return false;
@@ -169,10 +177,12 @@ bool CECAdapter::openConnection() {
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception during CEC connection opening: ", e.what());
+        m_connected = false;
         return false;
     }
     catch (...) {
         LOG_ERROR("Unknown exception during CEC connection opening");
+        m_connected = false;
         return false;
     }
 }
@@ -218,6 +228,20 @@ void CECAdapter::closeConnection() {
 
 bool CECAdapter::reopenConnection() {
     LOG_INFO("Reopening CEC adapter connection");
+
+    // Validate that adapter is loaded and we have port info
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+        if (!m_adapter) {
+            LOG_ERROR("Cannot reopen connection - libCEC not loaded");
+            return false;
+        }
+        if (m_portName.empty()) {
+            LOG_ERROR("Cannot reopen connection - no adapter port information available");
+            return false;
+        }
+    }
+
     closeConnection();
     // A brief pause to let things settle
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
