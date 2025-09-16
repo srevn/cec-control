@@ -70,7 +70,7 @@ bool CECDaemon::start() {
                 return false;
             } else {
                 LOG_INFO("Exiting daemon due to no CEC adapters found");
-                exit(EXIT_FAILURE);
+                exit(EXIT_SUCCESS);
             }
         }
         
