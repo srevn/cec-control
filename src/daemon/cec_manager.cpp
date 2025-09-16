@@ -120,9 +120,15 @@ bool CECManager::initialize() {
     std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Initializing CEC manager");
 
-    // Initialize the adapter
+    // Initialize the adapter library and detect hardware
+    if (!m_adapter->initialize()) {
+        LOG_ERROR("Failed to initialize CEC adapter library");
+        return false;
+    }
+
+    // Open a connection to the adapter
     if (!m_adapter->openConnection()) {
-        LOG_ERROR("Failed to initialize CEC adapter");
+        LOG_ERROR("Failed to open CEC adapter connection");
         return false;
     }
 

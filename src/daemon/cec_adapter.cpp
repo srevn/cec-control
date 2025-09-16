@@ -9,30 +9,18 @@
 
 namespace cec_control {
 
-CECAdapter::CECAdapter(Options options) 
+CECAdapter::CECAdapter(Options options)
     : m_options(options), m_connected(false) {
-    
+
     // Initialize libcec configuration
     m_config.Clear();
-    
-    // Set up device name
-    snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
     m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
     m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
-    
-    // Set up auto power on and wake AVR
-    m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
-    m_config.bAutoPowerOn = m_options.autoPowerOn ? 1 : 0;
-    
-    // Set up source activation and power off on standby
-    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
-    m_config.bPowerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
-    
-    // Set up wake devices and power off devices
-    m_config.wakeDevices = m_options.wakeDevices;
-    m_config.powerOffDevices = m_options.powerOffDevices;
-    
-    // Ensure callbacks structure is allocated properly using smart pointer
+
+    // Populate config from options
+    populateConfigFromOptions(m_options);
+
+    // Ensure callbacks structure is allocated properly
     if (!m_config.callbacks) {
         LOG_INFO("Allocating CEC callbacks structure");
         m_config.callbacks = new CEC::ICECCallbacks;
@@ -41,18 +29,15 @@ CECAdapter::CECAdapter(Options options)
             return;
         }
     }
-    
+
     // Initialize callbacks to null
     m_config.callbacks->logMessage = nullptr;
     m_config.callbacks->commandReceived = nullptr;
     m_config.callbacks->alert = nullptr;
     m_config.callbacks->sourceActivated = nullptr;
-    
+
     // Set up our callbacks
     setupCallbacks();
-
-    // Load the CEC library
-    load();
 }
 
 CECAdapter::~CECAdapter() {
@@ -74,12 +59,50 @@ CECAdapter::~CECAdapter() {
     }
 }
 
+void CECAdapter::populateConfigFromOptions(const Options& options) {
+    m_options = options;
+
+    // Set up device name
+    snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
+
+    // Set up auto power on and wake AVR
+    m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
+    m_config.bAutoPowerOn = m_options.autoPowerOn ? 1 : 0;
+
+    // Set up source activation and power off on standby
+    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
+    m_config.bPowerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
+
+    // Set up wake devices and power off devices
+    m_config.wakeDevices = m_options.wakeDevices;
+    m_config.powerOffDevices = m_options.powerOffDevices;
+}
+
+bool CECAdapter::configureAdapter(const Options& options) {
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (!m_adapter) {
+        LOG_ERROR("Cannot configure adapter, not initialized");
+        return false;
+    }
+
+    LOG_INFO("Configuring CEC adapter");
+    populateConfigFromOptions(options);
+
+    if (!m_adapter->SetConfiguration(&m_config)) {
+        LOG_ERROR("Failed to apply configuration to CEC adapter");
+        return false;
+    }
+
+    LOG_INFO("CEC adapter configured successfully");
+    return true;
+}
+
 void CECAdapter::setupCallbacks() {
     if (!m_config.callbacks) {
         LOG_ERROR("Cannot set up callbacks: callback structure is null");
         return;
     }
-    
+
     try {
         // Set up callbacks with null checks
         m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
@@ -96,43 +119,44 @@ void CECAdapter::setupCallbacks() {
     }
 }
 
-void CECAdapter::load() {
-    LOG_INFO("Loading libCEC");
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    if (m_adapter) {
-        LOG_WARNING("libCEC already loaded");
-        return;
-    }
-    m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
-    if (!m_adapter) {
-        LOG_ERROR("Failed to load libCEC - CECInitialise returned null");
-        return;
-    }
-
-    LOG_INFO("libCEC loaded, version ", m_adapter->VersionToString(m_config.clientVersion));
-
-    // Detect adapters once during load and store the port name
+bool CECAdapter::detectAdapter() {
     LOG_INFO("Detecting CEC adapters...");
     CEC::cec_adapter_descriptor devices[10];
     int8_t numDevices = m_adapter->DetectAdapters(devices, 10, nullptr, true);
 
     if (numDevices <= 0) {
         LOG_ERROR("No CEC adapters found");
-        m_adapter.reset();
-        return;
+        return false;
     }
 
     LOG_INFO("Found ", static_cast<int>(numDevices), " CEC adapter(s)");
     m_portName = devices[0].strComName;
     LOG_INFO("Will use adapter: ", m_portName);
+    return true;
+}
 
-    // Apply configuration once after libCEC initialization
-    LOG_INFO("Applying CEC adapter configuration");
-    if (!m_adapter->SetConfiguration(&m_config)) {
-        LOG_ERROR("Failed to apply configuration to CEC adapter");
-        m_adapter.reset();
-        return;
+bool CECAdapter::initialize() {
+    LOG_INFO("Initializing libCEC");
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (m_adapter) {
+        LOG_WARNING("libCEC already initialized");
+        return true;
     }
+
+    m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
+    if (!m_adapter) {
+        LOG_ERROR("Failed to initialize libCEC - CECInitialise returned null");
+        return false;
+    }
+
+    LOG_INFO("libCEC initialized, version ", m_adapter->VersionToString(m_config.clientVersion));
+
+    if (!detectAdapter()) {
+        m_adapter.reset();
+        return false;
+    }
+
+    return true;
 }
 
 bool CECAdapter::openConnection() {
@@ -140,7 +164,7 @@ bool CECAdapter::openConnection() {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
 
     if (!m_adapter) {
-        LOG_ERROR("Cannot open connection, libCEC not loaded");
+        LOG_ERROR("Cannot open connection, libCEC not initialized");
         return false;
     }
 
@@ -150,7 +174,7 @@ bool CECAdapter::openConnection() {
     }
 
     if (m_portName.empty()) {
-        LOG_ERROR("No adapter port available - detection may have failed during load");
+        LOG_ERROR("No adapter port available - detection may have failed during initialization");
         return false;
     }
 
@@ -163,6 +187,15 @@ bool CECAdapter::openConnection() {
         }
 
         m_connected = true;
+
+        // Apply configuration to ensure settings persist across connection cycles
+        LOG_INFO("Applying CEC adapter configuration");
+        if (!m_adapter->SetConfiguration(&m_config)) {
+            LOG_ERROR("Failed to apply configuration after opening connection");
+            m_adapter->Close();
+            m_connected = false;
+            return false;
+        }
 
         // Configure system audio mode
         if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
@@ -261,42 +294,42 @@ CEC::ICECAdapter* CECAdapter::getRawAdapter() const {
 bool CECAdapter::powerOnDevice(CEC::cec_logical_address address) {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->PowerOnDevices(address);
 }
 
 bool CECAdapter::standbyDevice(CEC::cec_logical_address address) {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->StandbyDevices(address);
 }
 
 bool CECAdapter::volumeUp() {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->VolumeUp();
 }
 
 bool CECAdapter::volumeDown() {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->VolumeDown();
 }
 
 bool CECAdapter::toggleMute() {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->AudioToggleMute();
 }
 
 bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release) {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     if (release) {
         return m_adapter->SendKeyRelease(address);
     } else {
@@ -307,28 +340,28 @@ bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_co
 uint16_t CECAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return 0;
-    
+
     return m_adapter->GetDevicePhysicalAddress(address);
 }
 
 bool CECAdapter::isDeviceActive(CEC::cec_logical_address address) const {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
-    
+
     return m_adapter->IsActiveDevice(address);
 }
 
 CEC::cec_power_status CECAdapter::getDevicePowerStatus(CEC::cec_logical_address address) const {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CEC_POWER_STATUS_UNKNOWN;
-    
+
     return m_adapter->GetDevicePowerStatus(address);
 }
 
 std::string CECAdapter::getDeviceOSDName(CEC::cec_logical_address address) const {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return "";
-    
+
     return m_adapter->GetDeviceOSDName(address);
 }
 
@@ -339,14 +372,14 @@ CEC::cec_logical_addresses CECAdapter::getActiveDevices() const {
         empty.Clear();
         return empty;
     }
-    
+
     return m_adapter->GetActiveDevices();
 }
 
 CEC::cec_logical_address CECAdapter::getActiveSource() const {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CECDEVICE_UNKNOWN;
-    
+
     return m_adapter->GetActiveSource();
 }
 
@@ -359,7 +392,7 @@ bool CECAdapter::hasAdapter() const {
 void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* message) {
     CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
     if (!adapter || !message) return;
-    
+
     // Map CEC log levels to our log levels
     LogLevel level;
     switch(message->level) {
@@ -370,7 +403,7 @@ void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* messa
         case CEC::CEC_LOG_DEBUG:   level = LogLevel::DEBUG; break;
         default:                   level = LogLevel::INFO; break;
     }
-    
+
     // Log the message
     Logger::getInstance().log(level, "CEC: ", message->message);
 }
@@ -378,18 +411,18 @@ void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* messa
 void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* command) {
     CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
     if (!adapter || !command) return;
-    
+
     // Log received commands
-    LOG_DEBUG("CEC command received: initiator=", static_cast<int>(command->initiator), 
+    LOG_DEBUG("CEC command received: initiator=", static_cast<int>(command->initiator),
               ", destination=", static_cast<int>(command->destination),
               ", opcode=", static_cast<int>(command->opcode));
-    
+
     // Detect TV Standby command
-    if (command->initiator == CEC::CECDEVICE_TV && 
+    if (command->initiator == CEC::CECDEVICE_TV &&
         command->opcode == CEC::CEC_OPCODE_STANDBY) {
-        
+
         LOG_INFO("TV power off command detected");
-        
+
         // Check if auto-standby is enabled in config
         if (adapter->m_config.bPowerOffOnStandby) {
             LOG_INFO("TV powered off and auto-standby is enabled. Invoking callback.");
@@ -403,7 +436,7 @@ void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* comma
 void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter) {
     CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
     if (!adapter) return;
-    
+
     switch(alert) {
         case CEC::CEC_ALERT_CONNECTION_LOST:
             LOG_ERROR("CEC connection lost");
@@ -412,15 +445,15 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
                 adapter->m_connectionLostCallback();
             }
             break;
-            
+
         case CEC::CEC_ALERT_PERMISSION_ERROR:
             LOG_ERROR("CEC permission error");
             break;
-            
+
         case CEC::CEC_ALERT_PORT_BUSY:
             LOG_ERROR("CEC port busy");
             break;
-            
+
         default:
             LOG_DEBUG("CEC alert: ", static_cast<int>(alert));
             break;
@@ -430,6 +463,14 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
 void CECAdapter::setAutoStandby(bool enabled) {
     m_config.bPowerOffOnStandby = enabled ? 1 : 0;
     LOG_INFO("Auto-standby feature ", enabled ? "enabled" : "disabled");
+
+    // Also apply this change to the adapter
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (m_adapter) {
+        if (!m_adapter->SetConfiguration(&m_config)) {
+            LOG_WARNING("Failed to apply auto-standby setting to CEC adapter");
+        }
+    }
 }
 
 void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {
@@ -452,7 +493,7 @@ bool CECAdapter::powerOnDevices(CEC::cec_logical_address address) {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
-    // libCEC automatically uses wakeDevices list when CECDEVICE_BROADCAST is used  
+    // libCEC automatically uses wakeDevices list when CECDEVICE_BROADCAST is used
     return m_adapter->PowerOnDevices(address);
 }
 
