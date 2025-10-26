@@ -71,9 +71,10 @@ public:
 
     /**
      * Reopen the connection to the adapter
+     * @param afterWake Set to true when reopening after system wake (uses longer stabilization delay)
      * @return true if successful, false otherwise
      */
-    bool reopenConnection();
+    bool reopenConnection(bool afterWake = false);
 
     /**
      * Check if the adapter is connected
@@ -245,6 +246,15 @@ private:
      * @return true if an adapter was found, false otherwise.
      */
     bool detectAdapter();
+
+    /**
+     * @brief Verify that OSD name was successfully registered with TV.
+     * This is a passive verification that only logs results - it does not
+     * attempt to fix issues. Should be called after connection opens.
+     * @param maxAttempts Maximum number of verification attempts
+     * @return true if verified, false otherwise
+     */
+    bool verifyOSDNameRegistration(int maxAttempts = 3);
 
     // CEC callback handlers
     static void cecLogCallback(void *cbParam, const CEC::cec_log_message* message);

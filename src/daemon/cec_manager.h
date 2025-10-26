@@ -65,9 +65,10 @@ public:
     
     /**
      * @brief Try to reconnect if connection is lost
+     * @param afterWake Set to true when reconnecting after system wake
      * @return true if reconnected successfully, false otherwise
      */
-    bool reconnect();
+    bool reconnect(bool afterWake = false);
     
     /**
      * @brief Set a callback to be invoked when the CEC connection is lost

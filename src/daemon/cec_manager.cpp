@@ -132,6 +132,18 @@ bool CECManager::initialize() {
         return false;
     }
 
+    // Schedule OSD name verification in background using thread pool
+    // This avoids blocking initialization and uses safe shared_ptr pattern
+    if (m_threadPool) {
+        auto adapter = m_adapter;  // Capture shared_ptr
+        m_threadPool->submit([adapter]() {
+            if (adapter && adapter->isConnected()) {
+                LOG_INFO("Starting OSD name verification in background");
+                adapter->verifyOSDNameRegistration(3);
+            }
+        });
+    }
+
     // Start the command queue
     if (!m_commandQueue->start()) {
         LOG_ERROR("Failed to start command queue");
@@ -166,11 +178,15 @@ void CECManager::shutdown() {
     }
 }
 
-bool CECManager::reconnect() {
+bool CECManager::reconnect(bool afterWake) {
     // Global adapter mutex
     std::lock_guard<std::mutex> lock(m_managerMutex);
 
-    LOG_INFO("Attempting to reconnect to CEC adapter");
+    if (afterWake) {
+        LOG_INFO("Attempting to reconnect to CEC adapter after system wake");
+    } else {
+        LOG_INFO("Attempting to reconnect to CEC adapter");
+    }
 
     // Check if adapter is already connected - quick exit
     if (isAdapterValid()) {
@@ -179,15 +195,37 @@ bool CECManager::reconnect() {
         return true;
     }
 
-    if (m_adapter && m_adapter->reopenConnection()) {
+    if (m_adapter && m_adapter->reopenConnection(afterWake)) {
         m_reconnectFailures = 0;
-        LOG_INFO("CEC adapter reconnected successfully");
+
+        if (afterWake) {
+            LOG_INFO("CEC adapter reconnected successfully after wake");
+        } else {
+            LOG_INFO("CEC adapter reconnected successfully");
+        }
 
         // Start the command queue if needed
         if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
             LOG_ERROR("Failed to start command queue during reconnect");
             m_adapter->closeConnection();
             return false;
+        }
+
+        // Schedule OSD name verification in background
+        // After wake, use more attempts to verify
+        if (m_threadPool) {
+            auto adapter = m_adapter;  // Capture shared_ptr
+            int maxAttempts = afterWake ? 5 : 3;  // More retries after wake
+            m_threadPool->submit([adapter, maxAttempts, afterWake]() {
+                if (adapter && adapter->isConnected()) {
+                    if (afterWake) {
+                        LOG_INFO("Starting wake-specific OSD name verification in background");
+                    } else {
+                        LOG_INFO("Starting OSD name verification after reconnection");
+                    }
+                    adapter->verifyOSDNameRegistration(maxAttempts);
+                }
+            });
         }
 
         return true;

@@ -288,10 +288,10 @@ void CECDaemon::onResume() {
     if (!m_suspended) return;
     
     LOG_INFO("System resuming, reinitializing CEC adapter");
-    
+
     try {
-        // When resuming, simply request the CEC manager to reconnect
-        bool reconnectSuccessful = m_cecManager && m_cecManager->reconnect();
+        // When resuming, use wake-aware reconnection with longer stabilization delays
+        bool reconnectSuccessful = m_cecManager && m_cecManager->reconnect(true);
         
         if (reconnectSuccessful) {
             LOG_INFO("CEC adapter reconnected successfully on resume");
