@@ -138,7 +138,6 @@ bool CECManager::initialize() {
         auto adapter = m_adapter;  // Capture shared_ptr
         m_threadPool->submit([adapter]() {
             if (adapter && adapter->isConnected()) {
-                LOG_INFO("Starting OSD name verification in background");
                 adapter->verifyOSDNameRegistration(3);
             }
         });
@@ -216,13 +215,8 @@ bool CECManager::reconnect(bool afterWake) {
         if (m_threadPool) {
             auto adapter = m_adapter;  // Capture shared_ptr
             int maxAttempts = afterWake ? 5 : 3;  // More retries after wake
-            m_threadPool->submit([adapter, maxAttempts, afterWake]() {
+            m_threadPool->submit([adapter, maxAttempts]() {
                 if (adapter && adapter->isConnected()) {
-                    if (afterWake) {
-                        LOG_INFO("Starting wake-specific OSD name verification in background");
-                    } else {
-                        LOG_INFO("Starting OSD name verification after reconnection");
-                    }
                     adapter->verifyOSDNameRegistration(maxAttempts);
                 }
             });

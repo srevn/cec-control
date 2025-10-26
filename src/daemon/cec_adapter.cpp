@@ -88,12 +88,10 @@ bool CECAdapter::configureAdapter(const Options& options) {
 
     if (!m_connected) {
         LOG_ERROR("Cannot configure adapter - not connected");
-        LOG_ERROR("Configuration changes require an active connection");
         return false;
     }
 
     LOG_INFO("Updating CEC adapter runtime configuration");
-    LOG_INFO("Note: This is a runtime update, not initial configuration");
 
     populateConfigFromOptions(options);
 
@@ -102,13 +100,11 @@ bool CECAdapter::configureAdapter(const Options& options) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     if (!m_adapter->SetConfiguration(&m_config)) {
-        LOG_ERROR("Failed to apply configuration to CEC adapter");
-        LOG_ERROR("This may happen if adapter is not fully initialized");
+        LOG_ERROR("Failed to apply configuration (adapter may not be fully initialized)");
         return false;
     }
 
-    LOG_INFO("CEC adapter runtime configuration updated successfully");
-    LOG_INFO("Changes will take effect immediately");
+    LOG_INFO("Configuration updated successfully");
 
     return true;
 }
@@ -166,14 +162,7 @@ bool CECAdapter::initialize() {
     }
 
     LOG_INFO("libCEC initialized, version ", m_adapter->VersionToString(m_config.clientVersion));
-    LOG_INFO("Configuration passed to libCEC:");
-    LOG_INFO("  Device name: '", m_config.strDeviceName, "'");
-    LOG_INFO("  Device type: Playback Device");
-    LOG_INFO("  Auto power on: ", m_config.bAutoPowerOn ? "enabled" : "disabled");
-    LOG_INFO("  Auto wake AVR: ", m_config.bAutoWakeAVR ? "enabled" : "disabled");
-    LOG_INFO("  Activate source: ", m_config.bActivateSource ? "enabled" : "disabled");
-    LOG_INFO("  Power off on standby: ", m_config.bPowerOffOnStandby ? "enabled" : "disabled");
-    LOG_INFO("This configuration will be applied automatically during Open() → RegisterClient()");
+    LOG_INFO("Device name: '", m_config.strDeviceName, "' (will be registered during connection)");
 
     if (!detectAdapter()) {
         m_adapter.reset();
@@ -221,21 +210,15 @@ bool CECAdapter::openConnection() {
         // the OSD name to never be transmitted to the TV.
         //
         // See WHEN_TO_SET_CONFIGURATION.md for detailed explanation.
-        LOG_INFO("Waiting for libcec client registration to complete (5-10 seconds)...");
 
         // Configure system audio mode
         if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
             LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", " system audio mode");
-
         } else {
             LOG_INFO("System audio mode ", m_options.systemAudioMode ? "enabled" : "disabled");
         }
 
-        LOG_INFO("CEC adapter connection opened successfully");
-        LOG_INFO("libcec is now performing client registration in background");
-        LOG_INFO("This includes: allocating logical addresses, setting OSD name, and");
-        LOG_INFO("transmitting device information to the CEC bus (takes 5-10 seconds)");
-        LOG_INFO("OSD name verification will run in background via thread pool");
+        LOG_INFO("CEC adapter connected - libcec registering device (takes ~5 seconds)");
 
         return true;
     }
@@ -547,13 +530,12 @@ bool CECAdapter::verifyOSDNameRegistration(int maxAttempts) {
         return false;
     }
 
-    LOG_INFO("Verifying OSD name registration: '", m_config.strDeviceName, "'");
-    LOG_INFO("Waiting for libcec RegisterClient() to complete...");
+    LOG_INFO("Verifying OSD name: '", m_config.strDeviceName, "'");
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         // First attempt waits longer - RegisterClient() takes 5-10 seconds
         // Subsequent attempts are quicker checks
-        int waitMs = (attempt == 1) ? 7000 : 2000;
+        int waitMs = (attempt == 1) ? 5000 : 2000;
         std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
 
         // Get our logical address
