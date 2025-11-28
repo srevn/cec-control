@@ -160,7 +160,12 @@ bool CECAdapter::openConnection() {
     }
 
     try {
-        // Open the adapter using the port detected during load
+        // Apply configuration to the adapter before opening
+        if (!m_adapter->SetConfiguration(&m_config)) {
+            LOG_WARNING("Failed to apply adapter configuration");
+        }
+
+        // Open the adapter using the port detected during initialization/reopen
         LOG_INFO("Opening CEC adapter: ", m_portName);
         if (!m_adapter->Open(m_portName.c_str())) {
             LOG_ERROR("Failed to open CEC adapter");
@@ -235,22 +240,24 @@ void CECAdapter::closeConnection() {
 bool CECAdapter::reopenConnection() {
     LOG_INFO("Reopening CEC adapter connection");
 
-    // Validate that adapter is loaded and we have port info
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-        if (!m_adapter) {
-            LOG_ERROR("Cannot reopen connection - libCEC not loaded");
-            return false;
-        }
-        if (m_portName.empty()) {
-            LOG_ERROR("Cannot reopen connection - no adapter port information available");
-            return false;
-        }
+    // Validate that libCEC is loaded
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (!m_adapter) {
+        LOG_ERROR("Cannot reopen connection - libCEC not loaded");
+        return false;
     }
 
     closeConnection();
-    // A brief pause to let things settle
+
+    // A brief pause to let USB bus settle after sleep/wake
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // Re-detect the adapter to handle USB rebinding after sleep/wake
+    if (!detectAdapter()) {
+        LOG_ERROR("Failed to detect adapter during reopen");
+        return false;
+    }
+
     return openConnection();
 }
 
