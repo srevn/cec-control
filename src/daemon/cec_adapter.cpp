@@ -212,6 +212,8 @@ void CECAdapter::closeConnection() {
 
         if (m_adapter) {
             try {
+                LOG_INFO("Setting inactive view before close");
+                m_adapter->SetInactiveView();
                 LOG_INFO("Closing CEC adapter connection");
                 m_adapter->Close();
                 return true;
@@ -247,7 +249,9 @@ bool CECAdapter::reopenConnection() {
         return false;
     }
 
-    closeConnection();
+    // Close existing connection (no-op if already closed)
+    m_connected = false;
+    m_adapter->Close();
 
     // A brief pause to let USB bus settle after sleep/wake
     std::this_thread::sleep_for(std::chrono::milliseconds(500));

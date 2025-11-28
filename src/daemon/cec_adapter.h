@@ -66,6 +66,7 @@ public:
 
     /**
      * Close the connection to the adapter
+     * Sends InactiveSource message before closing
      */
     void closeConnection();
 
