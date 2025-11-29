@@ -80,6 +80,11 @@ private:
     // Active client connections
     std::mutex m_clientsMutex;
     std::unordered_set<int> m_activeClients;
+
+    // Handler completion tracking for graceful shutdown
+    std::atomic<int> m_activeHandlers{0};
+    std::mutex m_handlersMutex;
+    std::condition_variable m_handlersCV;
     
     /**
      * Main server loop

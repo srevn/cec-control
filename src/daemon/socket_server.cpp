@@ -112,13 +112,50 @@ void SocketServer::stop() {
         m_shutdownFd[1] = -1;
     }
     
-    // Close all client connections
+    // Signal all active clients to wake up their handlers.
+    // We only call shutdown() here - the handlers own their FDs and will close them
+    // via closeClient() when they exit. This prevents double-close race conditions.
     {
-        LOG_INFO("Closing all client connections");
+        LOG_INFO("Signaling all client connections to close");
         std::lock_guard<std::mutex> lock(m_clientsMutex);
         for (int clientFd : m_activeClients) {
             if (clientFd >= 0) {
-                shutdown(clientFd, SHUT_RDWR);
+                shutdown(clientFd, SHUT_RDWR);  // Wakes blocking recv/poll
+            }
+        }
+        // DO NOT close() or clear() - handlers will do this via closeClient()
+    }
+
+    // Wait for all handlers to complete. This is critical for safety:
+    // returning before handlers finish would cause use-after-free when
+    // handlers access the destroyed SocketServer.
+    {
+        constexpr int HANDLER_WAIT_TIMEOUT_SEC = 10;
+        std::unique_lock<std::mutex> lock(m_handlersMutex);
+
+        bool completed = m_handlersCV.wait_for(
+            lock,
+            std::chrono::seconds(HANDLER_WAIT_TIMEOUT_SEC),
+            [this] { return m_activeHandlers.load() == 0; }
+        );
+
+        if (!completed) {
+            LOG_ERROR("Timed out waiting for ", m_activeHandlers.load(),
+                      " client handlers after ", HANDLER_WAIT_TIMEOUT_SEC,
+                      "s. Continuing wait to prevent undefined behavior...");
+            // Wait indefinitely - handlers MUST complete for safe cleanup
+            m_handlersCV.wait(lock, [this] { return m_activeHandlers.load() == 0; });
+            LOG_WARNING("All handlers finally completed after extended wait");
+        }
+    }
+
+    // Clean up any orphaned FDs. In normal operation, handlers close their own FDs
+    // via closeClient(). If any remain here, it indicates a bug (handler didn't close).
+    {
+        std::lock_guard<std::mutex> lock(m_clientsMutex);
+        for (int clientFd : m_activeClients) {
+            LOG_WARNING("Found orphaned client FD ", clientFd, " during cleanup (handler bug?)");
+            if (clientFd >= 0) {
                 close(clientFd);
             }
         }
@@ -334,10 +371,37 @@ void SocketServer::serverLoop() {
                             m_activeClients.insert(clientFd);
                         }
                         
-                        // Submit client handling task to thread pool
-                        m_threadPool->submit([this, clientFd]() {
-                            this->handleClient(clientFd);
-                        });
+                        // Track handler count for graceful shutdown. Increment BEFORE
+                        // submit to ensure stop() sees the handler even if there's
+                        // a delay between submit and lambda execution.
+                        m_activeHandlers++;
+
+                        try {
+                            m_threadPool->submit([this, clientFd]() {
+                                // RAII guard ensures decrement even if handleClient throws.
+                                // This prevents counter leak which would hang stop().
+                                struct HandlerScope {
+                                    SocketServer* server;
+                                    ~HandlerScope() {
+                                        if (--server->m_activeHandlers == 0) {
+                                            std::lock_guard<std::mutex> lock(server->m_handlersMutex);
+                                            server->m_handlersCV.notify_all();
+                                        }
+                                    }
+                                } scope{this};
+
+                                this->handleClient(clientFd);
+                            });
+                        } catch (const std::exception& e) {
+                            // Submit failed (e.g., thread pool stopped). Undo increment
+                            // and clean up the client connection ourselves.
+                            LOG_ERROR("Failed to submit client handler: ", e.what());
+                            if (--m_activeHandlers == 0) {
+                                std::lock_guard<std::mutex> lock(m_handlersMutex);
+                                m_handlersCV.notify_all();
+                            }
+                            closeClient(clientFd);
+                        }
                     }
                 }
             }
@@ -370,12 +434,24 @@ void SocketServer::serverLoop() {
 }
 
 void SocketServer::closeClient(int clientFd) {
-    if (clientFd >= 0) {
+    if (clientFd < 0) return;
+
+    // Atomically check set membership and claim ownership of the close operation.
+    // This prevents double-close: only the thread that successfully erases the FD
+    // from the set gets to close it. The set acts as a "close-once" guard.
+    bool shouldClose = false;
+    {
+        std::lock_guard<std::mutex> lock(m_clientsMutex);
+        auto it = m_activeClients.find(clientFd);
+        if (it != m_activeClients.end()) {
+            m_activeClients.erase(it);
+            shouldClose = true;
+        }
+    }
+
+    if (shouldClose) {
         shutdown(clientFd, SHUT_RDWR);
         close(clientFd);
-        
-        std::lock_guard<std::mutex> lock(m_clientsMutex);
-        m_activeClients.erase(clientFd);
     }
 }
 
@@ -540,9 +616,13 @@ void SocketServer::handleClient(int clientFd) {
                                 }
                             }
 
-                            // Remove processed data in one go
+                            // Remove processed data efficiently
                             if (offset > 0) {
-                                receivedData->erase(receivedData->begin(), receivedData->begin() + offset);
+                                if (offset >= receivedData->size()) {
+                                    receivedData->clear();  // O(1): all data consumed
+                                } else {
+                                    receivedData->erase(receivedData->begin(), receivedData->begin() + offset);
+                                }
                             }
                         }
                         else if (bytesRead == 0) {
