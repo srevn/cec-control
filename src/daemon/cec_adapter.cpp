@@ -174,12 +174,20 @@ bool CECAdapter::openConnection() {
 
         m_connected = true;
 
-        // Configure system audio mode
-        if (!m_adapter->AudioEnable(m_options.systemAudioMode)) {
-            LOG_WARNING("Failed to ", m_options.systemAudioMode ? "enable" : "disable", " system audio mode");
-
-        } else {
-            LOG_INFO("System audio mode ", m_options.systemAudioMode ? "enabled" : "disabled");
+        // Send SystemAudioModeRequest to the AVR when activating as source.
+        // libCEC's ActivateSource(500) uses a delayed path that only handles
+        // TV-side messages (ActiveSource, ImageViewOn) but skips the
+        // SystemAudioModeRequest to the AVR. We send it explicitly here so
+        // the AVR knows to switch its input to our HDMI port.
+        //
+        // Never call AudioEnable(false) — it sends a "terminate SAC" message
+        // that disrupts audio if another device already established SAC.
+        if (m_options.activateSource || m_options.systemAudioMode) {
+            if (!m_adapter->AudioEnable(true)) {
+                LOG_WARNING("Failed to send SystemAudioModeRequest to AVR");
+            } else {
+                LOG_INFO("SystemAudioModeRequest sent to AVR");
+            }
         }
 
         LOG_INFO("CEC adapter connection opened successfully");
