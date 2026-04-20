@@ -247,25 +247,43 @@ void CECAdapter::closeConnection() {
 }
 
 bool CECAdapter::reopenConnection() {
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     LOG_INFO("Reopening CEC adapter connection");
 
-    // Validate that libCEC is loaded
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter) {
         LOG_ERROR("Cannot reopen connection - libCEC not loaded");
         return false;
     }
 
-    // Close existing connection (no-op if already closed)
+    // Full teardown and re-initialisation: libcec (>= 7) binds per-client state
+    // to the ICECAdapter instance that CECInitialise returned, and a
+    // Close+Open cycle on the same instance leaves the internal processor
+    // half-initialised — Open then reports "failed to register a new CEC
+    // client: CEC processor is not initialised" followed by a crash deep
+    // inside libcec. Destroy-and-reinitialise is the pattern other libcec
+    // consumers use (kodi, cec-client, libcec's own tests) and is what
+    // recovers cleanly after `restart`, connection loss, and suspend/wake.
     m_connected = false;
-    m_adapter->Close();
+    try {
+        m_adapter->Close();
+    } catch (const std::exception& e) {
+        LOG_WARNING("Exception during adapter Close on reopen: ", e.what());
+    }
+    m_adapter.reset();  // invokes CECDestroy via the AdapterDeleter
 
-    // A brief pause to let USB bus settle after sleep/wake
+    // Let the USB subsystem settle before the fresh Initialise+Detect+Open
+    // cycle — matters after sleep/wake when ttyACM* may still be rebinding.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // Re-detect the adapter to handle USB rebinding after sleep/wake
+    m_adapter = AdapterPtr(::CECInitialise(&m_config));
+    if (!m_adapter) {
+        LOG_ERROR("Failed to re-initialise libCEC on reopen");
+        return false;
+    }
+
     if (!detectAdapter()) {
         LOG_ERROR("Failed to detect adapter during reopen");
+        m_adapter.reset();
         return false;
     }
 
