@@ -408,19 +408,14 @@ Message CommandRouter::dispatchLocked(const Message& command) {
 }
 
 void CommandRouter::scheduleRestart() {
-    auto task = [this]() {
+    m_threadPool->submit([this]() {
         std::lock_guard<std::mutex> lock(m_routerMutex);
         if (m_adapter.reopenConnection()) {
             LOG_INFO("Adapter restart completed successfully");
         } else {
             LOG_ERROR("Failed to restart adapter");
         }
-    };
-    if (m_threadPool) {
-        m_threadPool->submit(task);
-    } else {
-        std::thread(task).detach();
-    }
+    });
 }
 
 void CommandRouter::onTvStandby() {
@@ -434,7 +429,7 @@ void CommandRouter::onTvStandby() {
 
     LOG_INFO("TV standby observed with auto-standby enabled; initiating system suspend");
 
-    auto task = [this]() {
+    m_threadPool->submit([this]() {
         if (!m_suspendCallback) {
             LOG_WARNING("No suspend callback wired; cannot suspend the system");
             return;
@@ -442,12 +437,7 @@ void CommandRouter::onTvStandby() {
         if (!m_suspendCallback()) {
             LOG_ERROR("Suspend callback reported failure");
         }
-    };
-    if (m_threadPool) {
-        m_threadPool->submit(task);
-    } else {
-        std::thread(task).detach();
-    }
+    });
 }
 
 bool CommandRouter::isAdapterValid() const {

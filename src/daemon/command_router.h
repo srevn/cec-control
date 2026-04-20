@@ -47,7 +47,8 @@ public:
     /**
      * @param options     Fully-populated configuration options.
      * @param threadPool  Pool for background tasks (async adapter restart,
-     *                    TV-standby suspend dispatch). Must outlive @c this.
+     *                    TV-standby suspend dispatch). Must be non-null and
+     *                    outlive @c this; DaemonBootstrap guarantees both.
      */
     CommandRouter(Options options, std::shared_ptr<ThreadPool> threadPool);
     ~CommandRouter();
