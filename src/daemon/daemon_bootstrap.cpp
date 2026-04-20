@@ -60,7 +60,10 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     // Resolve any unset path knobs to their system defaults exactly once,
     // here at the top, so the rest of the bootstrap doesn't need to carry
     // around "empty means default" branching.
-    const std::string logFile    = action.logFile.empty()    ? SystemPaths::getLogPath()    : action.logFile;
+    const std::string logFile    = action.logFile.empty()
+                                 ? SystemPaths::getLogPath()
+                                 : action.logFile;
+
     const std::string socketPath = SystemPaths::getSocketPath();
 
     // Provision system directories the daemon will write into. Done before
@@ -218,6 +221,7 @@ void DaemonBootstrap::setupLogging(const RunDaemon& action) {
     cfg.highLevelSink = LogSink::Stderr;
     cfg.filePath      = logFile;
     cfg.minLevel      = action.verbose ? LogLevel::DEBUG : LogLevel::INFO;
+
     Logger::getInstance().configure(cfg);
 
     LOG_INFO("Logging initialised; file=", logFile,
@@ -251,6 +255,7 @@ DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
     adapter.autoWakeAVR     = cfg.getBool("Adapter", "AutoWakeAVR", false);
     adapter.activateSource  = cfg.getBool("Adapter", "ActivateSource", false);
     adapter.systemAudioMode = cfg.getBool("Adapter", "SystemAudioMode", false);
+
     adapter.wakeDevices     = parseLogicalAddressList(
         cfg.getString("Adapter", "WakeDevices", ""), "WakeDevices");
     adapter.powerOffDevices = parseLogicalAddressList(

@@ -39,7 +39,10 @@ void CECAdapter::populateConfigFromOptions(const Options& options) {
     m_options = options;
 
     // Set up device name
-    snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName), "%s", m_options.deviceName.c_str());
+    snprintf(
+        m_config.strDeviceName, sizeof(m_config.strDeviceName),
+        "%s", m_options.deviceName.c_str()
+    );
 
     // Set up auto power on and wake AVR
     m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
@@ -109,7 +112,8 @@ bool CECAdapter::initialize() {
         return false;
     }
 
-    LOG_INFO("libCEC initialized, version ", m_adapter->VersionToString(m_config.clientVersion));
+    LOG_INFO("libCEC initialized, version ",
+             m_adapter->VersionToString(m_config.clientVersion));
 
     if (!detectAdapter()) {
         m_adapter.reset();
@@ -134,7 +138,7 @@ bool CECAdapter::openConnection() {
     }
 
     if (m_portName.empty()) {
-        LOG_ERROR("No adapter port available - detection may have failed during initialization");
+        LOG_ERROR("No adapter port available");
         return false;
     }
 

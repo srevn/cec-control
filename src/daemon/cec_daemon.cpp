@@ -101,10 +101,12 @@ bool CECDaemon::start() {
 
         if (m_options.enablePowerMonitor) {
             if (!setupPowerMonitor()) {
-                LOG_WARNING("Failed to set up power monitoring. Sleep/wake events will not be handled automatically.");
+                LOG_WARNING("Failed to set up power monitoring. "
+                            "Sleep/wake events will not be handled automatically.");
             }
         } else {
-            LOG_INFO("D-Bus power monitoring disabled via configuration. Suspend/resume operations will require manual commands.");
+            LOG_INFO("D-Bus power monitoring disabled via configuration. "
+                     "Suspend/resume operations will require manual commands.");
         }
 
         // Register every fd source with the loop. Any failure here leaves
@@ -218,7 +220,7 @@ void CECDaemon::stop() {
         m_threadPool.reset();
     }
 
-    LOG_INFO("CEC daemon stopped - shutdown sequence complete");
+    LOG_INFO("Shutdown sequence complete");
 }
 
 void CECDaemon::onSignalReadable() {

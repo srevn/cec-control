@@ -63,7 +63,7 @@ SocketClient::SendResult SocketClient::sendCommand(const Message& command) {
         // or none. A short return here would indicate a kernel anomaly.
         return ClientError{ClientErrorKind::SendFailed, 0,
                            "short send (" + std::to_string(sent) + "/" +
-                               std::to_string(outBuf.size()) + ")"};
+                           std::to_string(outBuf.size()) + ")"};
     }
 
     std::array<uint8_t, MAX_MESSAGE_SIZE> buffer;

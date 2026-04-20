@@ -26,6 +26,36 @@ namespace cec_control {
  * monitoring stays off for the rest of the session (no further
  * periodic log noise).
  *
+ * ---------------------------------------------------------------
+ * sd-bus integration invariant — never sd_bus_call* on the loop.
+ * ---------------------------------------------------------------
+ *
+ * Runtime bus operations MUST be asynchronous (sd_bus_send or
+ * sd_bus_call_method_async). sd_bus_call_method internally uses
+ * sd_bus_process_priority() to wait for its reply, which dispatches
+ * only the specific reply it is waiting for — signals that arrive
+ * during the wait are read into sd-bus's internal receive queue but
+ * their match callbacks are NOT fired. By the time the sync call
+ * returns, the kernel socket is drained (so epoll will not wake on
+ * the bus fd) and the signals are stranded inside libsystemd. They
+ * sit there until some unrelated event wakes the loop, which in the
+ * suspend path means after the kernel has already slept and resumed.
+ * That's exactly the regression that keeps coming back every time
+ * someone reaches for sd_bus_call_method because it's convenient.
+ *
+ * Async paths in this class:
+ *   - suspendSystem(): sd_bus_call_method_async with a floating slot.
+ *     The reply carries no payload we care about, but routing it
+ *     through onSuspendReply surfaces any authorization/bus errors.
+ *   - takeInhibitLock() at runtime: sd_bus_call_method_async with
+ *     m_inhibitSlot tracked so we can cancel on shutdown; the reply
+ *     (onInhibitReply) dups the inhibitor fd into m_inhibitFd.
+ *
+ * The single exception is the initial inhibit-lock acquisition inside
+ * initialize(): it runs before attach(), so there is no event loop to
+ * carry the reply. A synchronous call is safe there because no signals
+ * could yet be queued against the newly-installed match.
+ *
  * Single-threaded ownership: every sd-bus operation runs on the thread
  * that calls run() on the EventLoop. Other threads that need to emit
  * bus calls (e.g. the TV-standby worker calling suspendSystem()) must
@@ -74,8 +104,15 @@ public:
 
     /**
      * (Re)take a delay inhibitor from logind. Must run on the main
-     * thread (sd-bus calls are not thread-safe with us). Harmless if
-     * we already hold a lock.
+     * thread (sd-bus calls are not thread-safe with us).
+     *
+     * Before attach() — the one-shot path used only from initialize() —
+     * the request is issued synchronously and the fd is stored before
+     * return. At runtime (post-attach) the request is scheduled via
+     * sd_bus_call_method_async and the reply dups the fd into
+     * m_inhibitFd asynchronously; the return value indicates only that
+     * the call was queued. Harmless if we already hold a lock or a
+     * prior request is still pending.
      */
     bool takeInhibitLock();
 
@@ -87,8 +124,10 @@ public:
 
     /**
      * Ask logind to suspend the system. Must run on the main thread.
-     * Returns true on successful dispatch; the actual PrepareForSleep
-     * signal arrives later via the main loop.
+     * Fires sd_bus_call_method_async and returns immediately; the
+     * PrepareForSleep signals arrive later through the normal
+     * processBus() dispatch path. Returns true if the call was queued
+     * successfully.
      */
     bool suspendSystem();
 
@@ -140,21 +179,47 @@ private:
     void tearDownBusState() noexcept;
 
     /** Static signal handler registered with sd-bus; forwards to m_callback. */
-    static int onPrepareForSleep(sd_bus_message* msg, void* userdata,
-                                 sd_bus_error* ret_error);
+    static int onPrepareForSleep(
+        sd_bus_message* msg,
+        void* userdata,
+        sd_bus_error* ret_error
+    );
+
+    /**
+     * Reply handler for the async Inhibit method call. Stores the
+     * dup'd inhibitor fd in m_inhibitFd, or logs a warning on error.
+     * Runs on the main thread as part of a processBus() dispatch.
+     */
+    static int onInhibitReply(
+        sd_bus_message* msg,
+        void* userdata,
+        sd_bus_error* ret_error
+    );
+
+    /**
+     * Reply handler for the async Suspend method call. Carries no
+     * payload we need, but surfaces authorization or bus errors so
+     * they end up in the log instead of vanishing.
+     */
+    static int onSuspendReply(
+        sd_bus_message* msg,
+        void* userdata,
+        sd_bus_error* ret_error
+    );
 
     /** Short textual conversion for negative sd-bus return values. */
     static const char* busErrorToString(int error) noexcept;
 
     sd_bus* m_bus = nullptr;
     sd_bus_slot* m_signalSlot = nullptr;
+    sd_bus_slot* m_inhibitSlot = nullptr;  // In-flight async Inhibit request.
     int m_inhibitFd = -1;
 
     EventLoop* m_loop = nullptr;
-    int m_registeredBusFd = -1;    // The fd we have currently added to m_loop.
+    int m_registeredBusFd = -1;     // The fd we have currently added to m_loop.
     uint32_t m_registeredMask = 0;  // Last mask passed to loop->modify.
-    TimerSource m_timer;           // Carries sd-bus's internal deadline.
-    TimerSource m_reconnectTimer;  // Drives the disconnect-backoff schedule.
+    TimerSource m_timer;            // Carries sd-bus's internal deadline.
+    TimerSource m_reconnectTimer;   // Drives the disconnect-backoff schedule.
 
     PowerStateCallback m_callback;
 

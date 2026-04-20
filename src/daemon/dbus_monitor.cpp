@@ -9,11 +9,22 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <utility>
 
 namespace cec_control {
 
 namespace {
+
+/** RAII owner for sd_bus_message*. Used on error paths so we never
+ *  leak a partially-built call message before it reaches sd_bus_send. */
+struct BusMessageDeleter {
+    void operator()(sd_bus_message* m) const noexcept {
+        if (m) sd_bus_message_unref(m);
+    }
+};
+using BusMessagePtr = std::unique_ptr<sd_bus_message, BusMessageDeleter>;
+
 
 /**
  * Convert an absolute CLOCK_MONOTONIC µs timestamp (the shape
@@ -100,7 +111,7 @@ bool DBusMonitor::initialize() {
     }
 
     if (!takeInhibitLock()) {
-        LOG_WARNING("Failed to take initial inhibitor lock - sleep delays may not work properly");
+        LOG_WARNING("Failed to take initial inhibitor lock");
     }
 
     LOG_INFO("sd-bus D-Bus monitor initialized successfully");
@@ -213,42 +224,74 @@ bool DBusMonitor::takeInhibitLock() {
         LOG_DEBUG("Already have inhibitor lock (fd=", m_inhibitFd, ")");
         return true;
     }
+    if (m_inhibitSlot) {
+        LOG_DEBUG("Inhibit request already in flight; not re-scheduling");
+        return true;
+    }
 
-    LOG_INFO("Taking systemd inhibitor lock");
+    // Runtime path (post-attach): asynchronous so the main loop never
+    // blocks on the bus. See the class-level doc for why a sync call
+    // here would strand any PrepareForSleep that arrives during the
+    // wait inside sd-bus's internal queue.
+    if (m_loop) {
+        LOG_INFO("Scheduling asynchronous Inhibit request");
+        const int r = sd_bus_call_method_async(m_bus, &m_inhibitSlot,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "Inhibit",
+            &DBusMonitor::onInhibitReply, this,
+            "ssss",
+            "sleep",
+            "cec-control",
+            "Preparing CEC adapter for sleep",
+            "delay");
+        if (r < 0) {
+            LOG_ERROR("Failed to schedule Inhibit method call: ", busErrorToString(r));
+            m_inhibitSlot = nullptr;
+            return false;
+        }
+        // The outbox now holds the request; update the loop so POLLOUT
+        // is armed on the bus fd and the next processBus() will flush.
+        updateLoopRegistration();
+        return true;
+    }
 
-    sd_bus_message* reply = nullptr;
+    // Pre-attach path (initialize() only). A synchronous call is safe
+    // because the signal match was just installed and no PrepareForSleep
+    // could yet have been queued against it.
+    LOG_INFO("Taking systemd inhibitor lock (synchronous, pre-attach)");
+
+    sd_bus_message* rawReply = nullptr;
     sd_bus_error error = SD_BUS_ERROR_NULL;
-    int r = sd_bus_call_method(m_bus,
+    const int r = sd_bus_call_method(m_bus,
         "org.freedesktop.login1",
         "/org/freedesktop/login1",
         "org.freedesktop.login1.Manager",
         "Inhibit",
         &error,
-        &reply,
+        &rawReply,
         "ssss",
         "sleep",
         "cec-control",
         "Preparing CEC adapter for sleep",
         "delay");
-
     if (r < 0) {
         LOG_ERROR("Failed to call Inhibit method: ",
                   error.message ? error.message : busErrorToString(r));
         sd_bus_error_free(&error);
         return false;
     }
+    BusMessagePtr reply(rawReply);
 
     int tempFd = -1;
-    r = sd_bus_message_read(reply, "h", &tempFd);
-    if (r < 0) {
-        LOG_ERROR("Failed to read inhibitor file descriptor: ", busErrorToString(r));
-        sd_bus_message_unref(reply);
+    const int readR = sd_bus_message_read(reply.get(), "h", &tempFd);
+    if (readR < 0) {
+        LOG_ERROR("Failed to read inhibitor file descriptor: ", busErrorToString(readR));
         return false;
     }
 
     m_inhibitFd = ::dup(tempFd);
-    sd_bus_message_unref(reply);
-
     if (m_inhibitFd < 0) {
         LOG_ERROR("Failed to duplicate inhibitor file descriptor: ", std::strerror(errno));
         return false;
@@ -256,6 +299,51 @@ bool DBusMonitor::takeInhibitLock() {
 
     LOG_INFO("Successfully took inhibitor lock (fd=", m_inhibitFd, ")");
     return true;
+}
+
+int DBusMonitor::onInhibitReply(sd_bus_message* msg, void* userdata,
+                                sd_bus_error* /*ret_error*/) {
+    auto* monitor = static_cast<DBusMonitor*>(userdata);
+    if (!monitor) return 0;
+
+    // sd-bus implicitly releases the slot as part of dispatching this
+    // reply; drop our handle so a subsequent takeInhibitLock() doesn't
+    // treat the (now-gone) request as still pending.
+    monitor->m_inhibitSlot = nullptr;
+
+    if (sd_bus_message_is_method_error(msg, nullptr)) {
+        const sd_bus_error* e = sd_bus_message_get_error(msg);
+        LOG_WARNING("Inhibit reply returned error: ",
+                    (e && e->message) ? e->message : "unknown");
+        return 0;
+    }
+
+    int fd = -1;
+    const int r = sd_bus_message_read(msg, "h", &fd);
+    if (r < 0) {
+        LOG_ERROR("Failed to read inhibitor fd from async reply: ",
+                  busErrorToString(r));
+        return 0;
+    }
+
+    // If somebody released the previous lock between scheduling and
+    // this reply arriving (safety timer during a stuck suspend,
+    // operator action), close the stale fd before installing the new
+    // one. Normal path: m_inhibitFd is already -1.
+    if (monitor->m_inhibitFd >= 0) {
+        ::close(monitor->m_inhibitFd);
+        monitor->m_inhibitFd = -1;
+    }
+
+    monitor->m_inhibitFd = ::dup(fd);
+    if (monitor->m_inhibitFd < 0) {
+        LOG_ERROR("Failed to duplicate inhibitor file descriptor: ",
+                  std::strerror(errno));
+        return 0;
+    }
+
+    LOG_INFO("Successfully took inhibitor lock (fd=", monitor->m_inhibitFd, ")");
+    return 0;
 }
 
 bool DBusMonitor::releaseInhibitLock() noexcept {
@@ -277,29 +365,39 @@ bool DBusMonitor::suspendSystem() {
 
     LOG_INFO("Initiating system suspend via D-Bus");
 
-    sd_bus_message* reply = nullptr;
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    int r = sd_bus_call_method(m_bus,
+    // Floating slot (nullptr): sd-bus manages the lifetime and frees
+    // it after onSuspendReply fires. The reply carries no payload we
+    // need; it exists so authorization/bus errors are logged instead
+    // of silently dropped.
+    const int r = sd_bus_call_method_async(m_bus, nullptr,
         "org.freedesktop.login1",
         "/org/freedesktop/login1",
         "org.freedesktop.login1.Manager",
         "Suspend",
-        &error,
-        &reply,
+        &DBusMonitor::onSuspendReply, this,
         "b",
         1);  // interactive=true
-
     if (r < 0) {
-        LOG_ERROR("Failed to call Suspend method: ",
-                  error.message ? error.message : busErrorToString(r));
-        sd_bus_error_free(&error);
+        LOG_ERROR("Failed to schedule Suspend method call: ", busErrorToString(r));
         return false;
     }
 
-    if (reply) sd_bus_message_unref(reply);
-
-    LOG_INFO("System suspend initiated successfully via D-Bus");
+    // Message is queued in sd-bus's outbox; the main loop flushes it
+    // on the next iteration once POLLOUT is armed via the updated mask.
+    updateLoopRegistration();
     return true;
+}
+
+int DBusMonitor::onSuspendReply(sd_bus_message* msg, void* /*userdata*/,
+                                sd_bus_error* /*ret_error*/) {
+    if (sd_bus_message_is_method_error(msg, nullptr)) {
+        const sd_bus_error* e = sd_bus_message_get_error(msg);
+        LOG_WARNING("Suspend reply returned error: ",
+                    (e && e->message) ? e->message : "unknown");
+    } else {
+        LOG_DEBUG("Suspend method call acknowledged by logind");
+    }
+    return 0;
 }
 
 void DBusMonitor::processBus() {
@@ -508,6 +606,14 @@ bool DBusMonitor::registerBusWithLoop() {
 }
 
 void DBusMonitor::tearDownBusState() noexcept {
+    // Cancel any in-flight Inhibit request before dropping the bus so
+    // the reply callback can't fire against a dead connection. sd-bus
+    // does not invoke callbacks on slot unref; the call is simply
+    // cancelled.
+    if (m_inhibitSlot) {
+        sd_bus_slot_unref(m_inhibitSlot);
+        m_inhibitSlot = nullptr;
+    }
     if (m_signalSlot) {
         sd_bus_slot_unref(m_signalSlot);
         m_signalSlot = nullptr;

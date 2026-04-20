@@ -44,20 +44,20 @@ void Connection::run() {
         }
         if (static_cast<std::size_t>(received) > buffer.size()) {
             // MSG_TRUNC exposed that the datagram was larger than our buffer.
-            LOG_WARNING("Received oversized datagram (", received, " bytes), closing connection");
+            LOG_WARNING("Received oversized datagram (", received, " bytes)");
             break;
         }
 
-        auto request = Message::deserialize(buffer.data(),
-                                            static_cast<std::size_t>(received));
+        auto request = Message::deserialize(
+            buffer.data(), static_cast<std::size_t>(received)
+        );
         if (!request) {
             LOG_WARNING("Received malformed message, closing connection");
             break;
         }
 
-        Message response = m_handler
-            ? m_handler(*request)
-            : Message(MessageType::RESP_ERROR);
+        Message response = m_handler ? m_handler(*request)
+                                     : Message(MessageType::RESP_ERROR);
 
         auto out = response.serialize();
         ssize_t sent = ::send(m_fd.get(), out.data(), out.size(), MSG_NOSIGNAL);
@@ -86,9 +86,11 @@ std::size_t ConnectionManager::size() const {
     return m_entries.size();
 }
 
-bool ConnectionManager::add(std::unique_ptr<Connection> conn,
-                            ThreadPool& pool,
-                            std::size_t maxConnections) {
+bool ConnectionManager::add(
+    std::unique_ptr<Connection> conn,
+    ThreadPool& pool,
+    std::size_t maxConnections
+) {
     std::shared_ptr<Connection> shared(conn.release());
     uint64_t id;
 

@@ -16,7 +16,7 @@ ThreadPool::ThreadPool(size_t numThreads)
         m_threadCount = numThreads;
     }
     
-    LOG_INFO("Creating thread pool with ", m_threadCount, " worker threads");
+    LOG_DEBUG("Creating thread pool with ", m_threadCount, " worker threads");
 }
 
 ThreadPool::~ThreadPool() {
