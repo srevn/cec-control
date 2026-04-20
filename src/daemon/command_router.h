@@ -103,11 +103,13 @@ public:
 
     /**
      * Invoked when the router concludes the system should suspend (TV
-     * signalled standby and auto-standby is enabled). Daemon wires this to
-     * the D-Bus Suspend method; returns true if the suspend was initiated.
-     * Called on a thread-pool worker, never inline from dispatch().
+     * signalled standby and auto-standby is enabled). Daemon wires this
+     * to the D-Bus Suspend method; the actual success/failure of the
+     * Suspend call is logged by the DBus monitor itself, so the callback
+     * is fire-and-forget. Called on a thread-pool worker, never inline
+     * from dispatch().
      */
-    void setSuspendCallback(std::function<bool()> callback);
+    void setSuspendCallback(std::function<void()> callback);
 
     [[nodiscard]] bool isAdapterValid() const;
     [[nodiscard]] bool isSuspended() const;
@@ -138,7 +140,7 @@ private:
     std::atomic<bool> m_autoStandbyEnabled;
 
     // Suspend dispatch target installed by the daemon.
-    std::function<bool()> m_suspendCallback;
+    std::function<void()> m_suspendCallback;
 
     /** Dispatch body. Caller must hold m_routerMutex. */
     Message dispatchLocked(const Message& command);

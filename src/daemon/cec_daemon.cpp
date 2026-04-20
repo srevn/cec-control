@@ -64,15 +64,14 @@ bool CECDaemon::start() {
             });
         });
 
-        m_router->setSuspendCallback([this]() -> bool {
+        m_router->setSuspendCallback([this]() {
             // Router calls this on a pool worker; sd-bus is single-owner
-            // (main thread), so we post the call via the work queue.
-            // Returning true here means "dispatch accepted," not "Suspend
-            // succeeded" — the sd-bus call itself logs its own result.
+            // (main thread), so we post the call via the work queue. The
+            // actual Suspend() success/failure is logged by DBusMonitor,
+            // so this side is fire-and-forget.
             m_work.post([this]() {
                 if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
             });
-            return true;
         });
 
         if (!m_router->initialize()) {

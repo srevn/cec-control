@@ -187,7 +187,7 @@ void CommandRouter::setConnectionLostCallback(std::function<void()> callback) {
     m_adapter.setConnectionLostCallback(std::move(callback));
 }
 
-void CommandRouter::setSuspendCallback(std::function<bool()> callback) {
+void CommandRouter::setSuspendCallback(std::function<void()> callback) {
     m_suspendCallback = std::move(callback);
 }
 
@@ -426,9 +426,7 @@ void CommandRouter::onTvStandby() {
             LOG_WARNING("No suspend callback wired; cannot suspend the system");
             return;
         }
-        if (!m_suspendCallback()) {
-            LOG_ERROR("Suspend callback reported failure");
-        }
+        m_suspendCallback();
     });
 }
 
