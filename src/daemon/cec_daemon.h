@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 
 #include "../common/event_loop.h"
@@ -74,6 +75,32 @@ private:
     /** Handler for the post-resume delayed-retry timer. */
     void onResumeRetryTimer();
 
+    /**
+     * Main-thread entry point for a libCEC connection-lost alert. Resets
+     * the retry state machine and kicks off the first reconnect attempt.
+     */
+    void onConnectionLost();
+
+    /**
+     * Run a single reconnect attempt on the thread pool. Results land
+     * back on the main loop via MainThreadWork → onReconnectResult.
+     */
+    void submitReconnectAttempt();
+
+    /**
+     * Process the outcome of the most recent reconnect attempt: on
+     * success reset the counter; on failure either arm the next retry
+     * timer or give up per kConnectionLostRetrySchedule.
+     */
+    void onReconnectResult(bool ok);
+
+    /**
+     * Handler for the connection-lost retry timer: invoked between
+     * attempts. Bails out silently if suspend / resume already fixed
+     * the adapter or rendered the retry moot.
+     */
+    void onReconnectRetryTimer();
+
     /** Route an incoming wire command to the right subsystem. */
     Message handleCommand(const Message& command);
 
@@ -91,6 +118,7 @@ private:
     EventLoop         m_loop;
     TimerSource       m_suspendSafetyTimer;
     TimerSource       m_resumeRetryTimer;
+    TimerSource       m_reconnectRetryTimer;
 
     // Cross-thread worker pool. Must outlive router and socket server.
     std::shared_ptr<ThreadPool> m_threadPool;
@@ -107,6 +135,11 @@ private:
     bool m_suspendSafetyArmed   = false;
     bool m_resumeRetryPending   = false;
     int  m_terminationSignalCount = 0;
+
+    // Connection-lost retry state. Counts attempts completed in the
+    // current cycle; reset to 0 after success, after giving up, or on
+    // any suspend/resume. Main thread only.
+    std::size_t m_reconnectAttempts = 0;
 
     // Daemon-level lifecycle options.
     Options m_options;

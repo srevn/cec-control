@@ -2,6 +2,7 @@
 #include "../common/logger.h"
 #include "../common/systemd_env.h"
 
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <utility>
@@ -12,6 +13,20 @@ namespace {
 
 constexpr auto kSuspendSafetyDeadline = std::chrono::seconds(10);
 constexpr auto kResumeRetryDelay      = std::chrono::seconds(10);
+
+/**
+ * Retry schedule for CEC reconnect after a connection-lost event: the
+ * libCEC alert triggers attempt #0 immediately; each subsequent entry
+ * is the delay before the next attempt. A flaky USB-to-CEC bridge can
+ * take a few seconds to re-enumerate, which the single prior retry
+ * occasionally missed. Cancelled on suspend/resume; reset on any
+ * successful reopen.
+ */
+constexpr std::array<std::chrono::milliseconds, 3> kConnectionLostRetrySchedule = {
+    std::chrono::milliseconds(5'000),
+    std::chrono::milliseconds(10'000),
+    std::chrono::milliseconds(20'000),
+};
 
 } // namespace
 
@@ -36,7 +51,8 @@ bool CECDaemon::start() {
         LOG_ERROR("Main-thread work queue not initialised; aborting start");
         return false;
     }
-    if (!m_suspendSafetyTimer.valid() || !m_resumeRetryTimer.valid()) {
+    if (!m_suspendSafetyTimer.valid() || !m_resumeRetryTimer.valid()
+            || !m_reconnectRetryTimer.valid()) {
         LOG_ERROR("Timer source(s) not initialised; aborting start");
         return false;
     }
@@ -51,17 +67,10 @@ bool CECDaemon::start() {
         m_router = std::make_unique<CommandRouter>(std::move(m_routerOptions), m_threadPool);
 
         m_router->setConnectionLostCallback([this]() {
-            // Runs on a libCEC-owned thread. Submit reconnect to the pool
-            // so the main loop is not blocked by libCEC's Close/Destroy/
-            // Initialise cycle inside reopenConnection().
-            m_threadPool->submit([this]() {
-                LOG_WARNING("CEC connection lost, attempting to reconnect");
-                if (m_router->reconnect()) {
-                    LOG_INFO("Successfully reconnected to CEC adapter");
-                } else {
-                    LOG_ERROR("Failed to reconnect to CEC adapter - will retry on next event");
-                }
-            });
+            // Runs on a libCEC-owned thread. Hand off to the main loop
+            // so the retry state machine (counter, timer) is touched by
+            // a single thread only.
+            m_work.post([this]() { this->onConnectionLost(); });
         });
 
         m_router->setSuspendCallback([this]() {
@@ -126,6 +135,11 @@ bool CECDaemon::start() {
         if (!m_loop.add(m_resumeRetryTimer.fd(), READ,
                         [this](uint32_t) { this->onResumeRetryTimer(); })) {
             LOG_ERROR("Failed to register resume-retry timer with event loop");
+            return false;
+        }
+        if (!m_loop.add(m_reconnectRetryTimer.fd(), READ,
+                        [this](uint32_t) { this->onReconnectRetryTimer(); })) {
+            LOG_ERROR("Failed to register reconnect-retry timer with event loop");
             return false;
         }
 
@@ -242,6 +256,12 @@ void CECDaemon::onSuspend() {
     m_resumeRetryTimer.disarm();
     m_resumeRetryPending = false;
 
+    // Cancel any pending connection-lost retry: suspend closes the
+    // adapter deliberately, so further reconnect attempts would just
+    // race the suspend path. resume() will reopen the adapter itself.
+    m_reconnectRetryTimer.disarm();
+    m_reconnectAttempts = 0;
+
     // Arm the safety deadline so we never leave the system wedged waiting
     // on our inhibit lock if router->suspend() hangs.
     m_suspendSafetyArmed = true;
@@ -289,6 +309,11 @@ void CECDaemon::onResume() {
     // Clear any stale retry flag (another resume cycle starts fresh).
     m_resumeRetryTimer.disarm();
     m_resumeRetryPending = false;
+
+    // resume() drives its own reopen; a connection-lost retry cycle
+    // from before suspend is now stale.
+    m_reconnectRetryTimer.disarm();
+    m_reconnectAttempts = 0;
 
     m_threadPool->submit([this]() {
         try {
@@ -341,6 +366,68 @@ void CECDaemon::onResumeRetryTimer() {
         LOG_INFO("Performing delayed reconnection attempt");
         (void)m_router->reconnect();
     });
+}
+
+void CECDaemon::onConnectionLost() {
+    LOG_WARNING("CEC connection lost, attempting to reconnect");
+    m_reconnectRetryTimer.disarm();
+    m_reconnectAttempts = 0;
+    submitReconnectAttempt();
+}
+
+void CECDaemon::submitReconnectAttempt() {
+    m_threadPool->submit([this]() {
+        const bool ok = m_router && m_router->reconnect();
+        m_work.post([this, ok]() { this->onReconnectResult(ok); });
+    });
+}
+
+void CECDaemon::onReconnectResult(bool ok) {
+    // A suspend cycle overlapping with an in-flight attempt leaves
+    // m_router->isSuspended() true; the reconnect result is stale and
+    // resume() handles the reopen. Drop the result silently.
+    if (m_router && m_router->isSuspended()) {
+        m_reconnectAttempts = 0;
+        return;
+    }
+    if (ok) {
+        LOG_INFO("Successfully reconnected to CEC adapter");
+        m_reconnectAttempts = 0;
+        return;
+    }
+
+    if (m_reconnectAttempts >= kConnectionLostRetrySchedule.size()) {
+        LOG_WARNING("CEC reconnect abandoned after ",
+                    m_reconnectAttempts + 1,
+                    " attempts; waiting for next connection-lost event");
+        m_reconnectAttempts = 0;
+        return;
+    }
+
+    const auto delay = kConnectionLostRetrySchedule[m_reconnectAttempts];
+    ++m_reconnectAttempts;
+    LOG_WARNING("CEC reconnect attempt failed; next retry in ",
+                delay.count(), "ms");
+    if (!m_reconnectRetryTimer.armOnce(delay)) {
+        LOG_ERROR("Failed to arm reconnect-retry timer; giving up this cycle");
+        m_reconnectAttempts = 0;
+    }
+}
+
+void CECDaemon::onReconnectRetryTimer() {
+    m_reconnectRetryTimer.consume();
+    if (!m_router) return;
+    if (m_router->isSuspended() || m_router->isAdapterValid()) {
+        // Either the adapter is already back (a concurrent retry won,
+        // or resume() reopened it) or we are now suspended. Reset the
+        // cycle either way.
+        m_reconnectAttempts = 0;
+        return;
+    }
+    LOG_INFO("Performing retried CEC reconnection (attempt ",
+             m_reconnectAttempts + 1, "/",
+             kConnectionLostRetrySchedule.size() + 1, ")");
+    submitReconnectAttempt();
 }
 
 bool CECDaemon::setupPowerMonitor() {
