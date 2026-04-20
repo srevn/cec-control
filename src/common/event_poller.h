@@ -52,6 +52,22 @@ public:
     bool add(int fd, uint32_t events);
 
     /**
+     * Change the events watched on an already-added file descriptor. Used by
+     * sd-bus integration, where the requested event mask changes every time
+     * sd_bus_process() runs (outbox-empty drops POLLOUT, arrival of a reply
+     * adds POLLIN, etc). Returns false if @p fd was not previously add()ed.
+     */
+    bool modify(int fd, uint32_t events);
+
+    /**
+     * Remove a previously-added file descriptor from the poller. Required for
+     * clean unregistration when a subsystem's fd goes invalid (e.g., a bus
+     * disconnect before reopening). Does not close the fd. Returns false if
+     * the descriptor was not registered.
+     */
+    bool remove(int fd);
+
+    /**
      * Wait for events on the added file descriptors.
      *
      * @param timeoutMs Timeout in milliseconds, -1 for indefinite.

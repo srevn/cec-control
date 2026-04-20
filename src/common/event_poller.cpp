@@ -38,6 +38,43 @@ bool EventPoller::add(int fd, uint32_t events) {
     return true;
 }
 
+bool EventPoller::modify(int fd, uint32_t events) {
+    if (m_epollFd < 0 || fd < 0) {
+        return false;
+    }
+
+    struct epoll_event ev;
+    ev.events = eventsToEpoll(events);
+    ev.data.fd = fd;
+
+    if (epoll_ctl(m_epollFd, EPOLL_CTL_MOD, fd, &ev) < 0) {
+        LOG_ERROR("Failed to modify fd ", fd, " in epoll: ", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool EventPoller::remove(int fd) {
+    if (m_epollFd < 0 || fd < 0) {
+        return false;
+    }
+
+    // epoll_ctl_del ignores its event argument but Linux <2.6.9 required a
+    // non-null pointer; pass a zero-initialised one for defensiveness.
+    struct epoll_event ev{};
+    if (epoll_ctl(m_epollFd, EPOLL_CTL_DEL, fd, &ev) < 0) {
+        // ENOENT = not registered. Callers often tolerate that (idempotent
+        // cleanup paths); log at debug rather than error.
+        if (errno == ENOENT) {
+            LOG_DEBUG("remove(): fd ", fd, " was not registered with epoll");
+            return false;
+        }
+        LOG_ERROR("Failed to remove fd ", fd, " from epoll: ", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 std::optional<std::vector<EventPoller::EventData>> EventPoller::wait(int timeoutMs) {
     if (m_epollFd < 0) {
         return std::nullopt;
