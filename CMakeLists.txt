@@ -54,7 +54,6 @@ set(DAEMON_SOURCES
     src/daemon/cec_manager.cpp
     src/daemon/cec_adapter.cpp
     src/daemon/command_throttler.cpp
-    src/daemon/device_operations.cpp
     src/daemon/socket_server.cpp
     src/daemon/socket_connection.cpp
     src/daemon/thread_pool.cpp
