@@ -46,46 +46,40 @@ private:
     
 public:
     /**
-     * Create directories recursively with appropriate permissions
-     * @param path The path to create
-     * @param mode The permissions to set (default: 0755)
-     * @return True if successful or directory already exists
+     * Get the canonical socket path. Pure query: no filesystem side effects.
+     * Honours $CEC_CONTROL_SOCKET; falls back to a path under SYSTEM_RUN_BASE.
+     */
+    static std::string getSocketPath();
+
+    /**
+     * Get the canonical config file path. Pure query: no filesystem side effects.
+     * Honours $CEC_CONTROL_CONFIG; falls back to a path under SYSTEM_CONFIG_BASE.
+     */
+    static std::string getConfigPath();
+
+    /**
+     * Get the canonical log file path. Pure query: no filesystem side effects.
+     * Honours $CEC_CONTROL_LOG; falls back to a path under SYSTEM_LOG_BASE.
+     */
+    static std::string getLogPath();
+
+    /**
+     * Ensure that the parent directory of @p path exists, creating it (and any
+     * intermediate parents) with @p mode if necessary. For daemon-side use:
+     * the client must never invoke this, since it may have insufficient
+     * privileges to create system directories.
+     *
+     * @return True if the parent directory exists and is writable on return.
+     */
+    static bool ensureParentDirExists(const std::string& path, mode_t mode = 0755);
+
+    /**
+     * Create directories recursively with the given permissions.
+     * @return True if the directory exists on return (created or pre-existing).
      */
     static bool createDirectories(const std::string& path, mode_t mode = 0755);
-    
-    /**
-     * Get a consistent socket path
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Fully qualified socket path
-     */
-    static std::string getSocketPath(bool createIfMissing = true);
-    
-    /**
-     * Get the appropriate config file path
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Fully qualified config file path
-     */
-    static std::string getConfigPath(bool createIfMissing = true);
-    
-    /**
-     * Get the appropriate log file path
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Fully qualified log file path
-     */
-    static std::string getLogPath(bool createIfMissing = true);
-    
-    /**
-     * Get the runtime directory
-     * @param createIfMissing Create the directory if it doesn't exist
-     * @return Fully qualified runtime directory path
-     */
-    static std::string getRuntimeDir(bool createIfMissing = true);
-    
-    /**
-     * Check if a path exists
-     * @param path The path to check
-     * @return True if the path exists
-     */
+
+    /** Returns true if @p path refers to an existing filesystem entry. */
     static bool pathExists(const std::string& path);
 };
 

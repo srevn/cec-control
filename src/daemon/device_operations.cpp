@@ -72,92 +72,85 @@ bool DeviceOperations::setMute(uint8_t logicalAddress, bool mute) {
     });
 }
 
+namespace {
+
+// HDMI source IDs as documented in --help: 2..5 map to HDMI 1..4. The CEC
+// physical address byte layout is 0xN000 where N is the HDMI port number.
+constexpr uint8_t kFirstHdmiSource = 2;
+constexpr uint8_t kLastHdmiSource = 5;
+
+uint16_t hdmiPhysicalAddress(uint8_t source) {
+    return static_cast<uint16_t>((source - kFirstHdmiSource + 1) << 12);
+}
+
+CEC::cec_user_control_code hdmiNumberKey(uint8_t source) {
+    switch (source) {
+        case 2: return CEC::CEC_USER_CONTROL_CODE_NUMBER1;
+        case 3: return CEC::CEC_USER_CONTROL_CODE_NUMBER2;
+        case 4: return CEC::CEC_USER_CONTROL_CODE_NUMBER3;
+        case 5: return CEC::CEC_USER_CONTROL_CODE_NUMBER4;
+    }
+    return CEC::CEC_USER_CONTROL_CODE_UNKNOWN;
+}
+
+} // namespace
+
 bool DeviceOperations::setSource(uint8_t logicalAddress, uint8_t source) {
     (void)logicalAddress;
     if (!m_adapter->isConnected()) return false;
-    
+
     LOG_INFO("Selecting input source ", static_cast<int>(source), " on TV");
-    
+
     std::lock_guard<std::mutex> lock(m_sourceMutex);
-    
+
     return m_throttler->executeWithThrottle([this, source]() {
-        // First we'll try using SetStreamPath with physical addresses
-        CEC::ICECAdapter* rawAdapter = m_adapter->getRawAdapter();
-        if (!rawAdapter) {
-            LOG_ERROR("Failed to get raw adapter reference");
-            return false;
-        }
-        
-        // Map source to physical address for HDMI ports
-        uint16_t physicalAddress = 0;
-        switch (source) {
-            case 0: physicalAddress = 0x1000; break; // HDMI 1
-            case 1: physicalAddress = 0x2000; break; // HDMI 2
-            case 2: physicalAddress = 0x1000; break; // HDMI 1
-            case 3: physicalAddress = 0x2000; break; // HDMI 2
-            case 4: physicalAddress = 0x3000; break; // HDMI 3
-            case 5: physicalAddress = 0x4000; break; // HDMI 4
-            default:
-                LOG_WARNING("Invalid source value: ", source);
+        // Sources 0 and 1 are TV-internal inputs without a CEC physical
+        // address; SetStreamPath cannot reach them, so go straight to a
+        // function-key keypress.
+        auto sendKey = [this](CEC::cec_user_control_code key) -> bool {
+            if (!m_adapter->sendKeypress(CEC::CECDEVICE_TV, key, false)) {
                 return false;
-        }
-        
-        LOG_INFO("Setting stream path to physical address: 0x", std::hex, physicalAddress);
-        
-        // Try SetStreamPath - if it fails due to permission issues, fall back to key presses
-        if (rawAdapter->SetStreamPath(physicalAddress)) {
-            return true;
-        }
-        
-        // If SetStreamPath failed, try with key presses to the TV
-        LOG_INFO("SetStreamPath failed, trying with key presses");
-        
-        bool result = false;
-        
-        // For general inputs (0-1), use the specific function keys
-        if (source == 0) {
-            // General AV input
-            result = m_adapter->sendKeypress(CEC::CECDEVICE_TV, 
-                CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION, false);
-        } else if (source == 1) {
-            // Audio input
-            result = m_adapter->sendKeypress(CEC::CECDEVICE_TV, 
-                CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION, false);
-        } else {
-            // For HDMI 1-4, first send INPUT_SELECT, then the appropriate number
-            result = m_adapter->sendKeypress(CEC::CECDEVICE_TV, 
-                CEC::CEC_USER_CONTROL_CODE_INPUT_SELECT, false);
-                
-            if (result) {
-                // Wait a short time between keypresses
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                
-                // Choose the right number key for the HDMI input
-                // HDMI 1 = source 2, send NUMBER1
-                // HDMI 2 = source 3, send NUMBER2
-                // HDMI 3 = source 4, send NUMBER3
-                // HDMI 4 = source 5, send NUMBER4
-                CEC::cec_user_control_code numberCode;
-                switch (source) {
-                    case 2: numberCode = CEC::CEC_USER_CONTROL_CODE_NUMBER1; break;
-                    case 3: numberCode = CEC::CEC_USER_CONTROL_CODE_NUMBER2; break;
-                    case 4: numberCode = CEC::CEC_USER_CONTROL_CODE_NUMBER3; break;
-                    case 5: numberCode = CEC::CEC_USER_CONTROL_CODE_NUMBER4; break;
-                    default: return false;
-                }
-                
-                // Send the number key
-                result = m_adapter->sendKeypress(CEC::CECDEVICE_TV, numberCode, false);
             }
-        }
-        
-        // Send key release if initial press was successful
-        if (result) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             m_adapter->sendKeypress(CEC::CECDEVICE_TV, CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
+            return true;
+        };
+
+        if (source == 0) {
+            return sendKey(CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION);
         }
-        
-        return result;
+        if (source == 1) {
+            return sendKey(CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION);
+        }
+        if (source < kFirstHdmiSource || source > kLastHdmiSource) {
+            LOG_WARNING("Invalid source value: ", source);
+            return false;
+        }
+
+        // HDMI input: SetStreamPath is the canonical mechanism; fall back to
+        // INPUT_SELECT + number keypress sequence if the TV refuses.
+        const uint16_t physicalAddress = hdmiPhysicalAddress(source);
+        LOG_INFO("Setting stream path to physical address: 0x", std::hex, physicalAddress);
+
+        CEC::ICECAdapter* rawAdapter = m_adapter->getRawAdapter();
+        if (rawAdapter && rawAdapter->SetStreamPath(physicalAddress)) {
+            return true;
+        }
+
+        LOG_INFO("SetStreamPath failed, trying with key presses");
+        if (!m_adapter->sendKeypress(CEC::CECDEVICE_TV,
+                                     CEC::CEC_USER_CONTROL_CODE_INPUT_SELECT, false)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        const auto numberCode = hdmiNumberKey(source);
+        if (!m_adapter->sendKeypress(CEC::CECDEVICE_TV, numberCode, false)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        m_adapter->sendKeypress(CEC::CECDEVICE_TV, CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
+        return true;
     });
 }
 

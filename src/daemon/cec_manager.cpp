@@ -116,6 +116,10 @@ void CECManager::setSuspendCallback(std::function<bool()> callback) {
     m_suspendCallback = std::move(callback);
 }
 
+void CECManager::setFatalErrorCallback(std::function<void()> callback) {
+    m_fatalErrorCallback = std::move(callback);
+}
+
 bool CECManager::initialize() {
     std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Initializing CEC manager");
@@ -196,23 +200,12 @@ bool CECManager::reconnect() {
     m_reconnectFailures++;
     LOG_ERROR("Failed to reconnect CEC adapter (attempt ", m_reconnectFailures, ")");
     if (m_reconnectFailures >= 3) {
-        LOG_ERROR("Multiple reconnect failures, daemon will exit");
-        // If running as a systemd service, schedule exit
-        if (getenv("NOTIFY_SOCKET") != nullptr) {
-            LOG_INFO("Notifying systemd of persistent adapter failure");
-
-            auto exitFunc = []() {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                LOG_FATAL("Exiting due to persistent CEC adapter failure");
-                exit(EXIT_FAILURE);
-            };
-
-            // Use thread pool if available, otherwise fall back to detached thread
-            if (m_threadPool) {
-                m_threadPool->submit(exitFunc);
-            } else {
-                std::thread(exitFunc).detach();
-            }
+        LOG_ERROR("Multiple reconnect failures, signalling daemon shutdown");
+        // Hand control back to the daemon's run loop, which terminates
+        // cleanly. The supervising service (systemd) is responsible for
+        // restarting us — no need to call exit() ourselves.
+        if (m_fatalErrorCallback) {
+            m_fatalErrorCallback();
         }
     }
     return false;
@@ -223,20 +216,7 @@ bool CECManager::isAdapterValid() const {
 }
 
 Message CECManager::processCommand(const Message& command) {
-    // Synchronous version - delegates to command queue
     return m_commandQueue->executeSync(command, m_options.commandTimeoutMs);
-}
-
-std::shared_ptr<CECOperation> CECManager::processCommandAsync(const Message& command, uint32_t timeoutMs) {
-    // Asynchronous version - returns operation that can be waited on
-    uint32_t timeout = timeoutMs == 0 ? m_options.commandTimeoutMs : timeoutMs;
-
-    // Determine priority based on command type
-    CECOperation::Priority priority = (command.type == MessageType::CMD_RESTART_ADAPTER) ?
-                                        CECOperation::Priority::HIGH :
-                                        CECOperation::Priority::NORMAL;
-
-    return m_commandQueue->enqueue(command, priority, timeout);
 }
 
 Message CECManager::handleCommand(const Message& command) {

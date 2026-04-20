@@ -38,13 +38,7 @@ private:
      * @return true if we're in daemon context, false if parent should exit
      */
     static bool daemonize();
-    
-    /**
-     * Set up process for systemd service
-     * @return true if setup succeeded
-     */
-    static bool setupService();
-    
+
     /**
      * Initialize logging with the given configuration
      * @param parseResult Configuration from argument parsing

@@ -15,10 +15,13 @@
 namespace cec_control {
 
 int DaemonBootstrap::runDaemon(const ArgumentParser::ParseResult& parseResult) {
-    // Set up logging first so we can log any issues
+    // Provision system directories the daemon will write into. Done before
+    // logging is set up, since the logger opens the log file by path.
+    SystemPaths::ensureParentDirExists(parseResult.logFile);
+    SystemPaths::ensureParentDirExists(parseResult.socketPath);
+
     setupLogging(parseResult);
-    
-    // Load configuration
+
     ConfigManager& configManager = setupConfiguration(parseResult);
     
     // Setup the process (daemonization, service mode, etc.)
@@ -168,29 +171,6 @@ bool DaemonBootstrap::daemonize() {
     dup2(null, STDOUT_FILENO);
     dup2(null, STDERR_FILENO);
     return true; // We're the daemon process
-}
-
-bool DaemonBootstrap::setupService() {
-    LOG_INFO("Running as system service");
-
-    // Redirect stdin to /dev/null (we don't need it)
-    if (close(STDIN_FILENO) != 0) {
-        LOG_ERROR("Failed to close STDIN: ", strerror(errno));
-        return false;
-    }
-    int null_fd = open("/dev/null", O_RDWR);
-    if (null_fd < 0) {
-        LOG_ERROR("Failed to open /dev/null: ", strerror(errno));
-        return false;
-    }
-    if (dup2(null_fd, STDIN_FILENO) < 0) {
-        LOG_ERROR("Failed to redirect /dev/null to STDIN: ", strerror(errno));
-        close(null_fd); // Close null_fd in case dup2 failed
-        return false;
-    }
-
-    // Keep stdout/stderr open for service manager journal
-    return true;
 }
 
 void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResult) {

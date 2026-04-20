@@ -83,13 +83,6 @@ public:
     bool isConnected() const;
 
     /**
-     * Check if we have an adapter object (even if not connected)
-     * @return true if adapter object exists, false otherwise
-     */
-    bool hasAdapter() const;
-
-
-    /**
      * Get a reference to the raw libCEC adapter
      * @return pointer to the libCEC adapter, or nullptr if not initialized
      */
@@ -209,12 +202,23 @@ public:
     bool powerOnDevices(CEC::cec_logical_address address = CEC::CECDEVICE_BROADCAST);
 
 private:
+    // libCEC owns the ICECAdapter instance; ownership is released back to it
+    // via CECDestroy() rather than `delete`. Using the default unique_ptr
+    // deleter would invoke `delete` on a libCEC-allocated object, which is
+    // outside the documented API contract.
+    struct AdapterDeleter {
+        void operator()(CEC::ICECAdapter* adapter) const noexcept {
+            if (adapter) ::CECDestroy(adapter);
+        }
+    };
+    using AdapterPtr = std::unique_ptr<CEC::ICECAdapter, AdapterDeleter>;
+
     // Configuration
     Options m_options;
     std::string m_portName;
 
     // libCEC adapter
-    std::unique_ptr<CEC::ICECAdapter> m_adapter;
+    AdapterPtr m_adapter;
     CEC::libcec_configuration m_config;
     std::atomic<bool> m_connected;
 

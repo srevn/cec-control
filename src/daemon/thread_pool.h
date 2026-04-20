@@ -60,76 +60,39 @@ public:
     void shutdown();
     
 private:
-    // Worker threads
     std::vector<std::thread> m_workers;
-    
-    // Task queue
     std::queue<std::function<void()>> m_tasks;
-    
-    // Synchronization
+
     mutable std::mutex m_queueMutex;
     std::condition_variable m_condition;
-    
-    // Shutdown flag
+
     std::atomic<bool> m_stop;
-    
-    // Number of threads to create
     size_t m_threadCount;
-    
-    // Worker thread function
+
     void workerThread();
-    
-    // Add task wrapper pool to reduce allocation overhead
-    struct TaskWrapper {
-        std::function<void()> task;
-        void reset() { task = nullptr; }
-    };
-    
-    // Pool of task wrapper objects to reduce allocations
-    std::queue<std::shared_ptr<TaskWrapper>> m_taskWrapperPool;
-    size_t m_maxPooledTaskWrappers = 100; // Limit pool size
-    
-    // Get a task wrapper from the pool or create a new one
-    std::shared_ptr<TaskWrapper> getTaskWrapper();
-    
-    // Return a task wrapper to the pool
-    void recycleTaskWrapper(std::shared_ptr<TaskWrapper> wrapper);
 };
 
-// Template method implementation
 template<class F, class... Args>
-auto ThreadPool::submit(F&& f, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type> {
+auto ThreadPool::submit(F&& f, Args&&... args)
+        -> std::future<typename std::invoke_result<F, Args...>::type> {
     using return_type = typename std::invoke_result<F, Args...>::type;
-    
-    // Create a shared_ptr to the packaged_task to store in the queue
+
+    // packaged_task itself is move-only, but std::function requires CopyConstructible.
+    // Wrap it in a shared_ptr so the lambda we enqueue is copyable.
     auto task = std::make_shared<std::packaged_task<return_type()>>(
-        std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-    );
-    
-    // Get the future before pushing the task
+        std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+
     std::future<return_type> result = task->get_future();
-    
+
     {
-        std::unique_lock<std::mutex> lock(m_queueMutex);
-        
-        // Don't allow enqueueing after stopping the pool
-        if (m_stop) {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (m_stop.load(std::memory_order_acquire)) {
             throw std::runtime_error("Cannot enqueue task on stopped ThreadPool");
         }
-        
-        // Get a task wrapper from pool
-        auto wrapper = getTaskWrapper();
-        wrapper->task = [task](){ (*task)(); };
-        
-        // Add task to queue
-        m_tasks.emplace([wrapper, this](){
-            wrapper->task();
-            recycleTaskWrapper(wrapper); // Return to pool after execution
-        });
+        m_tasks.emplace([task]() { (*task)(); });
     }
-    
+
     m_condition.notify_one();
-    
     return result;
 }
 

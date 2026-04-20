@@ -23,7 +23,6 @@ enum class MessageType : uint8_t {
     // Response messages (daemon -> client)
     RESP_SUCCESS = 100,
     RESP_ERROR,
-    RESP_STATUS,
 };
 
 /**

@@ -18,8 +18,7 @@ public:
      */
     enum class Priority {
         HIGH,   // Critical operations like restart
-        NORMAL, // Standard commands
-        LOW     // Background operations
+        NORMAL  // Standard commands
     };
 
     /**
@@ -45,9 +44,8 @@ public:
     // Get the original command
     const Message& getCommand() const { return m_command; }
     
-    // Get/set the response
+    // Get the response
     const Message& getResponse() const { return m_response; }
-    void setResponse(const Message& response);
     
     // Get the timestamp when this operation was created
     std::chrono::time_point<std::chrono::steady_clock> getCreationTime() const { 

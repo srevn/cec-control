@@ -39,47 +39,28 @@ public:
      */
     bool executeWithThrottle(std::function<bool()> command);
     
-    /**
-     * Throttle execution based on recent command history
-     * @return true if throttling was successful
-     */
-    bool throttleCommand();
-    
-    /**
-     * Get the number of consecutive failures
-     */
-    int getConsecutiveFailures() const;
-    
-    /**
-     * Reset consecutive failures count
-     */
-    void resetConsecutiveFailures();
-    
-    /**
-     * Update command status based on execution result
-     * @param success Whether the command was successful
-     */
-    void updateCommandStatus(bool success);
-
 private:
     Options m_options;
-    
+
     // Command tracking
     struct CommandStatus {
         std::chrono::time_point<std::chrono::steady_clock> lastExecutionTime;
         int consecutiveFailures;
         bool lastCommandSucceeded;
     };
-    
+
     CommandStatus m_commandStatus;
     std::chrono::time_point<std::chrono::steady_clock> m_lastCommandTime;
     mutable std::mutex m_throttleMutex;
-    
-    // Get adaptive throttle time based on command history
+
+    /** Block until enough time has passed since the previous command. */
+    void throttleCommand();
+
+    /** Update command status based on execution result. */
+    void updateCommandStatus(bool success);
+
+    /** Compute the inter-command interval, growing it on consecutive failures. */
     uint32_t getAdaptiveThrottleTime() const;
-    
-    // Check if the adapter is busy processing previous commands
-    bool isAdapterBusy() const;
 };
 
 } // namespace cec_control

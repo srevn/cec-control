@@ -2,24 +2,24 @@
 #include "../common/logger.h"
 #include "../common/config_manager.h"
 
+#include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <unistd.h>
-#include <iostream>
-#include <string>
-#include <thread>
-#include <chrono>
-#include <signal.h>
-#include <unordered_set>
+#include <cstring>
 #include <future>
-#include <atomic>
+#include <string>
+#include <sys/eventfd.h>
+#include <thread>
+#include <unistd.h>
+#include <unordered_set>
+#include <utility>
+
+#include "../common/event_poller.h"
 
 namespace cec_control {
 
-// Static instance pointer for signal handler
 CECDaemon* CECDaemon::s_instance = nullptr;
-// Track how many times we've received termination signals
-static std::atomic<int> s_termSignalCount{0};
 
 CECDaemon::CECDaemon(Options options) 
     : m_running(false), 
@@ -40,59 +40,57 @@ CECDaemon::~CECDaemon() {
 }
 
 bool CECDaemon::start() {
-    // Add mutex to protect initialization
     static std::mutex startupMutex;
     std::lock_guard<std::mutex> lock(startupMutex);
-    
-    // Start thread pool
-    m_threadPool->start();
-    
+
     LOG_INFO("Starting CEC daemon");
-    
+
+    // Wake fd must be created before installing signal handlers, since the
+    // handler writes into it. Non-blocking + close-on-exec.
+    m_wakeFd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (m_wakeFd < 0) {
+        LOG_ERROR("Failed to create wakeup eventfd: ", std::strerror(errno));
+        return false;
+    }
+
+    m_threadPool->start();
+
     try {
-        // Create CEC manager with our options and shared thread pool
         CECManager::Options cecOptions;
         cecOptions.scanDevicesAtStartup = m_options.scanDevicesAtStartup;
-        
+
         m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
         m_cecManager->setConnectionLostCallback([this]() { this->onConnectionLost(); });
         m_cecManager->setSuspendCallback([this]() -> bool {
             return m_dbusMonitor ? m_dbusMonitor->suspendSystem() : false;
         });
-        
-        // Initialize CEC manager
+        m_cecManager->setFatalErrorCallback([this]() {
+            // Signal the run loop to exit; supervising service will restart us.
+            m_running.store(false, std::memory_order_release);
+            wakeMainLoop();
+        });
+
         if (!m_cecManager->initialize()) {
             LOG_ERROR("Failed to initialize CEC manager");
-            
-            // If running under systemd, exit with proper code
-            if (getenv("NOTIFY_SOCKET") != nullptr) {
-                LOG_INFO("Notifying systemd of failure");
-                return false;
-            } else {
-                LOG_INFO("Exiting daemon due to no CEC adapters found");
-                exit(EXIT_SUCCESS);
-            }
+            return false;
         }
-        
-        // Create socket server with shared thread pool
+
         LOG_INFO("Creating socket server with shared thread pool");
         m_socketServer = std::make_unique<SocketServer>(m_threadPool);
         m_socketServer->setCommandHandler([this](const Message& cmd) {
             return this->handleCommand(cmd);
         });
-        
+
         LOG_INFO("Starting socket server");
         if (!m_socketServer->start()) {
             LOG_ERROR("Failed to start socket server");
             m_cecManager->shutdown();
             return false;
         }
-        
-        // Set up signal handlers
+
         LOG_INFO("Setting up signal handlers");
         setupSignalHandlers();
-        
-        // Set up power monitoring if enabled
+
         if (m_options.enablePowerMonitor) {
             LOG_INFO("Setting up power monitor");
             if (!setupPowerMonitor()) {
@@ -101,10 +99,10 @@ bool CECDaemon::start() {
         } else {
             LOG_INFO("D-Bus power monitoring disabled via configuration. Suspend/resume operations will require manual commands.");
         }
-        
-        m_running = true;
+
+        m_running.store(true, std::memory_order_release);
         LOG_INFO("CEC daemon started successfully");
-        
+
         return true;
     }
     catch (const std::exception& e) {
@@ -114,39 +112,41 @@ bool CECDaemon::start() {
 }
 
 void CECDaemon::stop() {
-    // Add mutex to protect shutdown
     static std::mutex shutdownMutex;
     std::lock_guard<std::mutex> lock(shutdownMutex);
-    
-    if (!m_running) return;
-    
+
+    if (!m_running.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+
     LOG_INFO("Stopping CEC daemon");
-    
-    // Set running flag to false to exit main loop
-    m_running = false;
-    
-    // Clear any queued commands
+
+    // Restore default signal handlers before any other teardown, so a signal
+    // arriving mid-shutdown doesn't try to call into a half-destroyed daemon.
+    teardownSignalHandlers();
+
+    // Wake the run loop so it can exit on its next iteration. Safe even if
+    // run() has already returned.
+    wakeMainLoop();
+
     {
-        std::lock_guard<std::mutex> lock(m_queuedCommandsMutex);
+        std::lock_guard<std::mutex> qLock(m_queuedCommandsMutex);
         if (!m_queuedCommands.empty()) {
             LOG_INFO("Clearing ", m_queuedCommands.size(), " queued commands on shutdown");
             m_queuedCommands.clear();
         }
     }
-    
-    // If running under systemd, log shutdown
+
     if (getenv("NOTIFY_SOCKET") != nullptr) {
         LOG_INFO("Stopping daemon under systemd control");
     }
-    
+
     try {
-        // Stop D-Bus monitor
         if (m_dbusMonitor) {
             LOG_INFO("Stopping D-Bus monitor");
             m_dbusMonitor->stop();
         }
-        
-        // Shutdown socket server
+
         if (m_socketServer) {
             LOG_INFO("Stopping socket server");
             auto serverStopStart = std::chrono::steady_clock::now();
@@ -155,8 +155,7 @@ void CECDaemon::stop() {
                 std::chrono::steady_clock::now() - serverStopStart).count();
             LOG_INFO("Socket server stopped in ", serverStopDuration, "ms");
         }
-        
-        // Shutdown CEC manager
+
         if (m_cecManager) {
             LOG_INFO("Shutting down CEC manager");
             auto cecShutdownStart = std::chrono::steady_clock::now();
@@ -169,58 +168,98 @@ void CECDaemon::stop() {
     catch (const std::exception& e) {
         LOG_ERROR("Exception during daemon shutdown: ", e.what());
     }
-    
-    // Safely release resources
+
     LOG_INFO("Releasing resources");
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_cecManager.reset();
-    
-    // Shutdown thread pool last since other components might use it during their shutdown
+
     if (m_threadPool) {
         LOG_INFO("Shutting down thread pool");
         m_threadPool->shutdown();
         m_threadPool.reset();
     }
-    
+
+    // Close wake fd after handlers are restored. Setting m_wakeFd to -1
+    // before close ensures any concurrent (best-effort) signal handler
+    // observes the invalid fd and skips its write().
+    if (int fd = std::exchange(m_wakeFd, -1); fd >= 0) {
+        ::close(fd);
+    }
+
     LOG_INFO("CEC daemon stopped - shutdown sequence complete");
 }
 
 void CECDaemon::run() {
     LOG_INFO("Entering main daemon loop");
 
-    std::unique_lock<std::mutex> lock(m_runMutex);
-    while (m_running.load()) {
-        // Wait for a signal to shutdown, or for a connection loss event
-        m_runCv.wait(lock, [this] {
-            return !m_running.load() || m_connectionLost.load();
-        });
+    if (m_wakeFd < 0) {
+        LOG_ERROR("Wake fd not initialised; main loop cannot run");
+        return;
+    }
 
-        // If we woke up due to shutdown, exit the loop
-        if (!m_running.load()) {
+    EventPoller poller;
+    if (!poller.add(m_wakeFd, static_cast<uint32_t>(EventPoller::Event::READ))) {
+        LOG_ERROR("Failed to register wake fd with event poller");
+        return;
+    }
+
+    while (m_running.load(std::memory_order_acquire)) {
+        // Block until a wakeup arrives (signal handler, onConnectionLost,
+        // or stop()). EINTR yields an empty event vector; nullopt means the
+        // poller is unusable and we should exit so systemd can restart us.
+        auto events = poller.wait(-1);
+        if (!events) {
+            LOG_ERROR("Event poller failed; main loop exiting");
+            m_running.store(false, std::memory_order_release);
+            break;
+        }
+        drainWakeFd();
+
+        if (!m_running.load(std::memory_order_acquire)) {
             break;
         }
 
-        // If we woke up due to connection loss, try to reconnect
-        if (m_connectionLost.load()) {
-            m_connectionLost = false; // Reset the flag
-
-            if (!m_suspended.load(std::memory_order_acquire) && m_cecManager) {
-                LOG_WARNING("CEC connection lost, attempting to reconnect");
-                if (m_cecManager->reconnect()) {
-                    LOG_INFO("Successfully reconnected to CEC adapter");
-                } else {
-                    LOG_ERROR("Failed to reconnect to CEC adapter - will retry on next event");
-                }
-            }
+        if (m_connectionLost.exchange(false, std::memory_order_acq_rel)) {
+            onConnectionLostEvent();
         }
     }
+
+    LOG_DEBUG("Main daemon loop exited");
 }
 
 void CECDaemon::onConnectionLost() {
     LOG_INFO("CEC connection lost event received.");
-    m_connectionLost = true;
-    m_runCv.notify_one();
+    m_connectionLost.store(true, std::memory_order_release);
+    wakeMainLoop();
+}
+
+void CECDaemon::onConnectionLostEvent() {
+    if (m_suspended.load(std::memory_order_acquire) || !m_cecManager) {
+        return;
+    }
+    LOG_WARNING("CEC connection lost, attempting to reconnect");
+    if (m_cecManager->reconnect()) {
+        LOG_INFO("Successfully reconnected to CEC adapter");
+    } else {
+        LOG_ERROR("Failed to reconnect to CEC adapter - will retry on next event");
+    }
+}
+
+void CECDaemon::wakeMainLoop() noexcept {
+    int fd = m_wakeFd;
+    if (fd < 0) return;
+    const uint64_t one = 1;
+    ssize_t r = ::write(fd, &one, sizeof(one));
+    (void)r;  // Best-effort: if the eventfd is full or closed we have nothing useful to do.
+}
+
+void CECDaemon::drainWakeFd() noexcept {
+    if (m_wakeFd < 0) return;
+    uint64_t scratch;
+    while (::read(m_wakeFd, &scratch, sizeof(scratch)) > 0) {
+        // eventfd is a counter; one read returns the current sum and zeros it.
+    }
 }
 
 void CECDaemon::onSuspend() {
@@ -452,32 +491,50 @@ Message CECDaemon::handleCommand(const Message& command) {
 }
 
 void CECDaemon::setupSignalHandlers() {
-    // Set up signal handlers for graceful shutdown
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
-    std::signal(SIGHUP, signalHandler);
+    // sigaction is preferred over std::signal: well-defined semantics across
+    // POSIX implementations, and we explicitly want signals to interrupt
+    // blocking syscalls (no SA_RESTART) so the run loop wakes deterministically.
+    struct sigaction sa{};
+    sa.sa_handler = &CECDaemon::signalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+    ::sigaction(SIGHUP, &sa, nullptr);
 }
 
-void CECDaemon::signalHandler(int signal) {
-    // This handler should be as simple as possible to be async-signal-safe.
-    // It just notifies the main loop to terminate by setting the running flag
-    // and notifying the condition variable.
-    CECDaemon* instance = CECDaemon::getInstance();
+void CECDaemon::teardownSignalHandlers() {
+    struct sigaction sa{};
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+    ::sigaction(SIGHUP, &sa, nullptr);
+}
+
+void CECDaemon::signalHandler(int /*signum*/) {
+    // Strictly async-signal-safe: only atomic stores, write() on an eventfd,
+    // and _exit(). No logging, no condition variables, no allocator calls.
+    CECDaemon* instance = s_instance;
     if (!instance) {
         _exit(EXIT_FAILURE);
-        return;
     }
 
-    if (instance->m_running.exchange(false)) {
-        // This log is not strictly async-signal-safe but is useful for debugging.
-        LOG_INFO("Shutdown initiated by signal ", signal);
-        instance->m_runCv.notify_one();
+    instance->m_running.store(false, std::memory_order_release);
+
+    int fd = instance->m_wakeFd;
+    if (fd >= 0) {
+        const uint64_t one = 1;
+        ssize_t r = ::write(fd, &one, sizeof(one));
+        (void)r;  // Best-effort wake; the loop will re-check m_running anyway.
     }
 
-    // Handle multiple signals for forced exit
-    static std::atomic<int> s_termSignalCount{0};
-    if (++s_termSignalCount > 2) {
-        LOG_FATAL("Forcing exit after multiple signals.");
+    // Escalate to forced exit on the third signal so a wedged shutdown can
+    // still be aborted by a determined operator.
+    if (instance->m_signalCount.fetch_add(1, std::memory_order_relaxed) >= 2) {
         _exit(EXIT_FAILURE);
     }
 }

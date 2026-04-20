@@ -42,10 +42,6 @@ CECOperation::~CECOperation() {
     }
 }
 
-void CECOperation::setResponse(const Message& response) {
-    m_response = response;
-}
-
 bool CECOperation::hasTimedOut() const {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -105,9 +101,8 @@ std::string CECOperation::getDescription() const {
     switch (m_priority) {
         case Priority::HIGH: ss << "HIGH"; break;
         case Priority::NORMAL: ss << "NORMAL"; break;
-        case Priority::LOW: ss << "LOW"; break;
     }
-    
+
     return ss.str();
 }
 

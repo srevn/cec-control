@@ -73,8 +73,6 @@ void HelpPrinter::printClientHelp(const char* programName) {
               << "OPTIONS:\n"
               << "  --socket-path=PATH                       Set daemon socket path\n"
               << "                                           (default: " << SystemPaths::getSocketPath() << ")\n"
-              << "  --config=PATH                            Set configuration file path\n"
-              << "                                           (default: " << SystemPaths::getConfigPath() << ")\n"
               << "\n"
               << "ENVIRONMENT:\n"
               << "  CEC_CONTROL_SOCKET                       Override socket path for system service\n"

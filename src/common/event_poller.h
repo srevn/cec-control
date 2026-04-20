@@ -1,7 +1,8 @@
 #pragma once
 
-#include <vector>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 namespace cec_control {
 
@@ -49,28 +50,18 @@ public:
      * @return true if successful, false otherwise
      */
     bool add(int fd, uint32_t events);
-    
+
     /**
-     * Modify the events to watch for a file descriptor
-     * @param fd The file descriptor to modify
-     * @param events The new events to watch for (bitwise OR of Event values)
-     * @return true if successful, false otherwise
+     * Wait for events on the added file descriptors.
+     *
+     * @param timeoutMs Timeout in milliseconds, -1 for indefinite.
+     * @return - A populated vector when at least one fd is ready.
+     *         - An empty vector on timeout or when an EINTR aborted the wait;
+     *           callers should treat this as "no events, continue".
+     *         - std::nullopt on an unrecoverable error (e.g. EBADF on the
+     *           epoll fd). Callers must stop using this poller in that case.
      */
-    bool modify(int fd, uint32_t events);
-    
-    /**
-     * Remove a file descriptor from the poller
-     * @param fd The file descriptor to remove
-     * @return true if successful, false otherwise
-     */
-    bool remove(int fd);
-    
-    /**
-     * Wait for events on the added file descriptors
-     * @param timeoutMs Timeout in milliseconds, -1 for indefinite
-     * @return Vector of EventData for the file descriptors that have events
-     */
-    std::vector<EventData> wait(int timeoutMs = -1);
+    std::optional<std::vector<EventData>> wait(int timeoutMs = -1);
     
     /**
      * Convert epoll events to EventPoller events

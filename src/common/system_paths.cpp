@@ -3,11 +3,12 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <string>
+#include <string_view>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <string>
-#include <filesystem>
 
 namespace cec_control {
 
@@ -74,25 +75,21 @@ bool SystemPaths::pathExists(const std::string& path) {
 }
 
 std::string SystemPaths::getSystemRuntimeDir() {
-    // Check if environment has a specific runtime dir from systemd
     const char* runtimeDir = getenv("RUNTIME_DIRECTORY");
-    if (runtimeDir && *runtimeDir) {
-        // The systemd runtime directory variable already contains the full path under /run
-        if (strncmp(runtimeDir, APP_NAME.c_str(), APP_NAME.length()) == 0) {
-            // Simple directory name, add /run/
-            return joinPath(SYSTEM_RUN_BASE, runtimeDir);
-        } else if (runtimeDir[0] == '/') {
-            // Absolute path, use as is
-            return runtimeDir;
-        } else {
-            // Relative path but not just our app name
-            LOG_INFO("Using runtime directory from systemd: ", runtimeDir);
-            return joinPath(SYSTEM_RUN_BASE, runtimeDir);
-        }
+    if (!runtimeDir || !*runtimeDir) {
+        return joinPath(SYSTEM_RUN_BASE, APP_NAME);
     }
-    
-    // Default system runtime directory
-    return joinPath(SYSTEM_RUN_BASE, APP_NAME);
+
+    // systemd's RUNTIME_DIRECTORY is either an absolute path or a directory
+    // name relative to /run. The bare app-name case is the expected default;
+    // anything else gets a log entry so the deviation is visible.
+    if (runtimeDir[0] == '/') {
+        return runtimeDir;
+    }
+    if (std::string_view(runtimeDir) != APP_NAME) {
+        LOG_INFO("Using runtime directory from systemd: ", runtimeDir);
+    }
+    return joinPath(SYSTEM_RUN_BASE, runtimeDir);
 }
 
 bool SystemPaths::createDirectories(const std::string& path, mode_t mode) {
@@ -119,78 +116,36 @@ bool SystemPaths::createDirectories(const std::string& path, mode_t mode) {
     }
 }
 
-std::string SystemPaths::getSocketPath(bool createIfMissing) {
-    // Always check for explicit environment override first
-    const char* socketPathEnv = getenv("CEC_CONTROL_SOCKET");
-    if (socketPathEnv && *socketPathEnv) {
-        std::string socketPath = socketPathEnv;
-        
-        if (createIfMissing && !socketPath.empty()) {
-            // Create parent directory if needed
-            std::string parentDir = getParentDir(socketPath);
-            if (!parentDir.empty()) {
-                createDirectories(parentDir, 0755);
-            }
-        }
-        
-        return socketPath;
+std::string SystemPaths::getSocketPath() {
+    if (const char* envOverride = getenv("CEC_CONTROL_SOCKET");
+        envOverride && *envOverride) {
+        return envOverride;
     }
-    
-    // System service socket
-    std::string socketDir = getSystemRuntimeDir();
-    std::string socketPath = joinPath(socketDir, SOCKET_FILENAME);
-    
-    if (createIfMissing && !socketDir.empty()) {
-        createDirectories(socketDir, 0755);
-    }
-    
-    return socketPath;
+    return joinPath(getSystemRuntimeDir(), SOCKET_FILENAME);
 }
 
-std::string SystemPaths::getConfigPath(bool createIfMissing) {
-    // First check for override
-    const char* configPathEnv = getenv("CEC_CONTROL_CONFIG");
-    if (configPathEnv && *configPathEnv) {
-        return configPathEnv;
+std::string SystemPaths::getConfigPath() {
+    if (const char* envOverride = getenv("CEC_CONTROL_CONFIG");
+        envOverride && *envOverride) {
+        return envOverride;
     }
-    
-    // System config
-    std::string configDir = joinPath(SYSTEM_CONFIG_BASE, APP_NAME);
-    std::string configPath = joinPath(configDir, CONFIG_FILENAME);
-    
-    // Create config directory if needed
-    if (createIfMissing && !configDir.empty()) {
-        createDirectories(configDir, 0755);
-    }
-    
-    return configPath;
+    return joinPath(joinPath(SYSTEM_CONFIG_BASE, APP_NAME), CONFIG_FILENAME);
 }
 
-std::string SystemPaths::getLogPath(bool createIfMissing) {
-    // First check for override
-    const char* logPathEnv = getenv("CEC_CONTROL_LOG");
-    if (logPathEnv && *logPathEnv) {
-        return logPathEnv;
+std::string SystemPaths::getLogPath() {
+    if (const char* envOverride = getenv("CEC_CONTROL_LOG");
+        envOverride && *envOverride) {
+        return envOverride;
     }
-    
-    // System services log to /var/log by convention
-    std::string logDir = joinPath(SYSTEM_LOG_BASE, APP_NAME);
-    std::string logPath = joinPath(logDir, LOG_FILENAME);
-    
-    if (createIfMissing && !logDir.empty()) {
-        createDirectories(logDir, 0755);
-    }
-    
-    return logPath;
+    return joinPath(joinPath(SYSTEM_LOG_BASE, APP_NAME), LOG_FILENAME);
 }
 
-std::string SystemPaths::getRuntimeDir(bool createIfMissing) {
-    std::string runtimeDir = getSystemRuntimeDir();
-    if (createIfMissing && !runtimeDir.empty()) {
-        createDirectories(runtimeDir, 0755);
+bool SystemPaths::ensureParentDirExists(const std::string& path, mode_t mode) {
+    std::string parent = getParentDir(path);
+    if (parent.empty()) {
+        return true;  // No parent component (e.g. relative filename in cwd).
     }
-    
-    return runtimeDir;
+    return createDirectories(parent, mode);
 }
 
 } // namespace cec_control

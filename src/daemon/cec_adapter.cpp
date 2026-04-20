@@ -124,7 +124,7 @@ bool CECAdapter::initialize() {
         return true;
     }
 
-    m_adapter = std::unique_ptr<CEC::ICECAdapter>(::CECInitialise(&m_config));
+    m_adapter = AdapterPtr(::CECInitialise(&m_config));
     if (!m_adapter) {
         LOG_ERROR("Failed to initialize libCEC - CECInitialise returned null");
         return false;
@@ -372,11 +372,6 @@ CEC::cec_logical_address CECAdapter::getActiveSource() const {
     if (!m_adapter || !m_connected) return CEC::CECDEVICE_UNKNOWN;
 
     return m_adapter->GetActiveSource();
-}
-
-bool CECAdapter::hasAdapter() const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    return m_adapter != nullptr;
 }
 
 // Callback implementations

@@ -46,31 +46,22 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
     return false;
 }
 
-bool CommandThrottler::throttleCommand() {
+void CommandThrottler::throttleCommand() {
     std::lock_guard<std::mutex> lock(m_throttleMutex);
-    
+
     auto now = std::chrono::steady_clock::now();
-    
-    // Get adaptive throttle time based on adapter behavior
     uint32_t throttleTime = getAdaptiveThrottleTime();
-    
+
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastCommandTime).count();
-        
-    // If not enough time has passed since last command
+
     if (elapsed < throttleTime) {
-        // Calculate how long to wait
         auto sleepTime = throttleTime - elapsed;
-        
         LOG_DEBUG("Throttling CEC command for ", sleepTime, "ms (adaptive delay)");
-        
-        // Sleep for the remaining time to satisfy minimum interval
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
     }
-    
-    // Update last command time
+
     m_lastCommandTime = std::chrono::steady_clock::now();
-    return true;
 }
 
 uint32_t CommandThrottler::getAdaptiveThrottleTime() const {
@@ -97,22 +88,8 @@ void CommandThrottler::updateCommandStatus(bool success) {
         m_commandStatus.consecutiveFailures++;
         m_commandStatus.lastCommandSucceeded = false;
     }
-    
+
     m_commandStatus.lastExecutionTime = std::chrono::steady_clock::now();
-}
-
-int CommandThrottler::getConsecutiveFailures() const {
-    return m_commandStatus.consecutiveFailures;
-}
-
-void CommandThrottler::resetConsecutiveFailures() {
-    m_commandStatus.consecutiveFailures = 0;
-}
-
-bool CommandThrottler::isAdapterBusy() const {
-    // Consider adapter busy if we had very recent failures
-    return (std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - m_commandStatus.lastExecutionTime).count() < 100);
 }
 
 } // namespace cec_control

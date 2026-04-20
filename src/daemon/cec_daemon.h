@@ -5,7 +5,6 @@
 #include <signal.h>
 #include <thread>
 #include <mutex>
-#include <condition_variable>
 
 #include "cec_manager.h"
 #include "socket_server.h"
@@ -114,45 +113,49 @@ private:
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_suspended{false};
     std::atomic<bool> m_connectionLost{false};
-    
-    // Synchronization
+
+    // Counts how many termination signals have been received. The third one
+    // escalates to _exit() in the signal handler.
+    std::atomic<int> m_signalCount{0};
+
+    // eventfd that the signal handler and onConnectionLost() write to in order
+    // to wake the main loop. Created in start() before signal handlers are
+    // installed; closed in stop() after handlers are restored to SIG_DFL.
+    int m_wakeFd{-1};
+
     std::mutex m_suspendMutex;
-    std::mutex m_runMutex;
-    std::condition_variable m_runCv;
-    
-    // Configuration
+
     Options m_options;
-    
-    // Singleton instance
+
     static CECDaemon* s_instance;
-    
+
     // Command queuing during suspend
     std::mutex m_queuedCommandsMutex;
     std::vector<Message> m_queuedCommands;
     bool m_queueCommandsDuringSuspend;
-    
-    /**
-     * @brief Command handler for socket messages
-     * @param command Command to handle
-     * @return Response message
-     */
+
+    /** Command handler dispatched from socket messages. */
     Message handleCommand(const Message& command);
-    
-    /**
-     * @brief Setup signal handlers
-     */
+
+    /** Install SIGINT/SIGTERM/SIGHUP handlers via sigaction. */
     void setupSignalHandlers();
-    
-    /**
-     * @brief Handle power state change from D-Bus
-     * @param state New power state
-     */
+
+    /** Restore the affected signals to SIG_DFL. Idempotent. */
+    void teardownSignalHandlers();
+
+    /** Wake the main loop by writing to m_wakeFd. Async-signal-safe; best-effort. */
+    void wakeMainLoop() noexcept;
+
+    /** Drain any accumulated counter writes from m_wakeFd. */
+    void drainWakeFd() noexcept;
+
+    /** React to a connection-loss event surfaced by the adapter. */
+    void onConnectionLostEvent();
+
+    /** Handle power state change from D-Bus. */
     void handlePowerStateChange(DBusMonitor::PowerState state);
-    
-    /**
-     * @brief Setup power monitoring
-     * @return true if setup successful
-     */
+
+    /** Setup power monitoring. Returns true on success. */
     bool setupPowerMonitor();
 };
 

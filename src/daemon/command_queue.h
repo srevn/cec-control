@@ -42,13 +42,7 @@ public:
     
     // Is the queue running?
     bool isRunning() const { return m_running; }
-    
-    // Get the number of pending operations
-    size_t getPendingCount() const;
-    
-    // Get the number of operations processed
-    uint64_t getProcessedCount() const { return m_processedCount; }
-    
+
     // Cancel all pending operations
     void cancelAll();
 
@@ -63,8 +57,7 @@ private:
     std::atomic<bool> m_running;
     std::thread m_workerThread;
     OperationHandler m_handler;
-    std::atomic<uint64_t> m_processedCount;
-    
+
     // Track active operations
     std::unordered_map<uint64_t, std::shared_ptr<CECOperation>> m_activeOperations;
     

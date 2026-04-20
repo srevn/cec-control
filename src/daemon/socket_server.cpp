@@ -46,13 +46,13 @@ bool SocketServer::start() {
         return true;
     }
 
-    // Parent directory of the socket must exist and be writable. Permissions
-    // on the socket file itself are handled inside UnixSocket::listen.
-    auto slash = m_socketPath.find_last_of('/');
-    if (slash != std::string::npos) {
+    // The parent directory is provisioned by DaemonBootstrap. Verify that we
+    // can actually write into it; surface a clear error if a packaging or
+    // permissions regression has left the path unusable.
+    if (auto slash = m_socketPath.find_last_of('/'); slash != std::string::npos) {
         std::string parent = m_socketPath.substr(0, slash);
-        if (!SystemPaths::createDirectories(parent) || ::access(parent.c_str(), W_OK) != 0) {
-            LOG_ERROR("Socket directory missing or not writable: ", parent);
+        if (::access(parent.c_str(), W_OK) != 0) {
+            LOG_ERROR("Socket directory not writable: ", parent, " (", std::strerror(errno), ")");
             return false;
         }
     }
@@ -142,11 +142,16 @@ void SocketServer::acceptLoop() {
 
     while (m_running.load(std::memory_order_acquire)) {
         auto events = poller.wait(-1);
+        if (!events) {
+            // Unrecoverable error on the poller; bail. systemd will restart us.
+            LOG_ERROR("Event poller failed; accept loop exiting");
+            break;
+        }
 
         bool shouldExit = false;
         bool hasAccept = false;
 
-        for (const auto& ev : events) {
+        for (const auto& ev : *events) {
             if (ev.fd == m_wakeFd) {
                 shouldExit = true;
                 break;

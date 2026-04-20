@@ -16,7 +16,6 @@ bool isKnownMessageType(uint8_t raw) noexcept {
         case MessageType::CMD_AUTO_STANDBY:
         case MessageType::RESP_SUCCESS:
         case MessageType::RESP_ERROR:
-        case MessageType::RESP_STATUS:
             return true;
     }
     return false;

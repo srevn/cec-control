@@ -157,12 +157,12 @@ bool ArgumentParser::validateArgCount(int argc, int expectedCount, const std::st
 }
 
 void ArgumentParser::extractSocketPath(int argc, char* argv[], std::string& socketPath) {
-    // Extract socket path override using the same logic as CECClient
-    for (int i = 2; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg.substr(0, 13) == "--socket-path=") {
-            socketPath = arg.substr(13);
-            break;
+    constexpr std::string_view kPrefix = "--socket-path=";
+    for (int i = 2; i < argc; ++i) {
+        std::string_view arg(argv[i]);
+        if (arg.size() > kPrefix.size() && arg.compare(0, kPrefix.size(), kPrefix) == 0) {
+            socketPath.assign(arg.substr(kPrefix.size()));
+            return;
         }
     }
 }

@@ -82,21 +82,21 @@ public:
     void setSuspendCallback(std::function<bool()> callback);
 
     /**
+     * @brief Set a callback invoked when the manager hits an unrecoverable error
+     *
+     * The intended owner is the daemon, which should signal its main loop to
+     * exit. The callback runs on whichever thread surfaced the failure, so it
+     * must be cheap and reentrant; do not perform shutdown work inside it.
+     */
+    void setFatalErrorCallback(std::function<void()> callback);
+
+    /**
      * @brief Process client command synchronously
      * @param command Command message to process
      * @return Response message
      */
     Message processCommand(const Message& command);
-    
-    /**
-     * @brief Process client command asynchronously
-     * @param command Command message to process
-     * @param timeoutMs Command timeout in milliseconds (0 = use default)
-     * @return Operation handle that can be waited on
-     */
-    std::shared_ptr<CECOperation> processCommandAsync(const Message& command, 
-                                                    uint32_t timeoutMs = 0);
-    
+
     /**
      * @brief Check if adapter is valid and ready for operations
      * @return true if adapter is connected and operational
@@ -141,6 +141,9 @@ private:
     
     // Suspend callback
     std::function<bool()> m_suspendCallback;
+
+    // Fatal error callback (e.g. invoked after persistent reconnect failures)
+    std::function<void()> m_fatalErrorCallback;
 
     /**
      * @brief Internal command handler for the command queue

@@ -5,9 +5,7 @@
 
 namespace cec_control {
 
-CommandQueue::CommandQueue() 
-    : m_running(false), m_processedCount(0) {
-}
+CommandQueue::CommandQueue() : m_running(false) {}
 
 CommandQueue::~CommandQueue() {
     stop();
@@ -102,11 +100,6 @@ Message CommandQueue::executeSync(const Message& command, uint32_t timeoutMs) {
     
     // Return result if operation completed within timeout, otherwise error
     return operation->wait(timeoutMs) ? operation->getResponse() : Message(MessageType::RESP_ERROR);
-}
-
-size_t CommandQueue::getPendingCount() const {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-    return m_queue.size();
 }
 
 void CommandQueue::cancelAll() {
@@ -212,8 +205,7 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
         
         // Update the operation with the result
         operation->complete(result);
-        m_processedCount++;
-        
+
         // Remove from active operations
         std::lock_guard<std::mutex> lock(m_queueMutex);
         m_activeOperations.erase(operation->getId());
