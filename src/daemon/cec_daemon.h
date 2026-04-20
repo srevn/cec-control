@@ -4,9 +4,8 @@
 #include <memory>
 #include <signal.h>
 #include <thread>
-#include <mutex>
 
-#include "cec_manager.h"
+#include "command_router.h"
 #include "socket_server.h"
 #include "dbus_monitor.h"
 #include "thread_pool.h"
@@ -16,127 +15,64 @@ namespace cec_control {
 
 /**
  * @class CECDaemon
- * @brief Main daemon class that handles CEC control, socket communication, and system events
- * 
- * This class manages the lifecycle of the CEC daemon, including initialization, 
- * command handling, system power state monitoring, and graceful shutdown processes.
- * It acts as a central coordinator between the CEC manager, socket server, and D-Bus monitor.
+ * @brief Top-level orchestrator: signals, main-loop wake, DBus + router
+ *        coordination, socket server lifetime.
+ *
+ * The daemon itself carries very little state. Suspend/resume bookkeeping
+ * lives in the CommandRouter; adapter liveness lives in CECAdapter; connection
+ * lifetime lives in SocketServer. What remains here is the glue: wire the
+ * signal handler into the run-loop via an eventfd, route socket commands to
+ * the right subsystem, and coordinate suspend/resume between the router and
+ * the D-Bus inhibit lock.
  */
 class CECDaemon {
 public:
     /**
-     * @brief Configuration options for the daemon process itself.
-     *
-     * Purely process/lifecycle concerns. CEC-side knobs live on
-     * CECManager::Options; DaemonBootstrap populates both structs.
+     * @brief Daemon-level lifecycle knobs. Anything CEC-specific (devices,
+     * throttling, auto-standby) lives on CommandRouter::Options; these are
+     * the handful of switches that sit above the router.
      */
     struct Options {
-        bool queueCommandsDuringSuspend = true;
         bool enablePowerMonitor = true;
     };
 
-    /**
-     * @brief Constructor
-     * @param daemonOptions  Daemon-level (lifecycle) options
-     * @param managerOptions Fully-populated CEC-manager options; moved into
-     *                       the manager when start() runs.
-     */
-    CECDaemon(Options daemonOptions, CECManager::Options managerOptions);
-    
-    /**
-     * @brief Destructor
-     */
+    CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions);
     ~CECDaemon();
-    
-    /**
-     * @brief Initialize and start daemon
-     * @return true if daemon started successfully
-     */
-    bool start();
-    
-    /**
-     * @brief Shutdown daemon gracefully
-     */
+
+    CECDaemon(const CECDaemon&) = delete;
+    CECDaemon& operator=(const CECDaemon&) = delete;
+
+    /** Bring up the router, socket server, signal handlers, DBus monitor. */
+    [[nodiscard]] bool start();
+
+    /** Signal the run-loop to exit; tear everything down. Idempotent. */
     void stop();
-    
-    /**
-     * @brief Run the daemon main loop
-     */
+
+    /** Block on the main-loop eventfd until signalled to exit. */
     void run();
-    
+
     /**
-     * @brief Handle signals (static to be used with signal())
-     * @param signal Signal number
+     * Async-signal-safe static handler. Kept for the current single-threaded
+     * signal delivery model; Phase E collapses this onto a signalfd inside
+     * the unified poller and deletes the handler + singleton entirely.
      */
     static void signalHandler(int signal);
-    
-    /**
-     * @brief Get singleton instance
-     * @return Pointer to daemon instance
-     */
-    static CECDaemon* getInstance() { return s_instance; }
-    
-    /**
-     * @brief Handle system suspend event
-     */
+    static CECDaemon* getInstance() noexcept { return s_instance; }
+
+    /** Pre-sleep coordination: router suspend + DBus inhibit release. */
     void onSuspend();
-    
-    /**
-     * @brief Handle system resume event
-     */
+
+    /** Post-wake coordination: router resume + optional 10s retry fallback. */
     void onResume();
-    
-    /**
-     * @brief Process explicit suspend command
-     */
-    void processSuspendCommand();
-    
-    /**
-     * @brief Process explicit resume command
-     */
-    void processResumeCommand();
 
 private:
-    /**
-     * @brief Callback for CEC adapter connection loss
-     */
+    /** Connection-lost callback invoked by the router on a libCEC thread. */
     void onConnectionLost();
 
-    // Core components
-    std::unique_ptr<CECManager> m_cecManager;
-    std::unique_ptr<SocketServer> m_socketServer;
-    std::unique_ptr<DBusMonitor> m_dbusMonitor;
-    std::shared_ptr<ThreadPool> m_threadPool;
-    
-    // State flags
-    std::atomic<bool> m_running{false};
-    std::atomic<bool> m_suspended{false};
-    std::atomic<bool> m_connectionLost{false};
+    /** Main-loop side of connection-lost: run the reconnect on our thread. */
+    void onConnectionLostEvent();
 
-    // Counts how many termination signals have been received. The third one
-    // escalates to _exit() in the signal handler.
-    std::atomic<int> m_signalCount{0};
-
-    // eventfd that the signal handler and onConnectionLost() write to in order
-    // to wake the main loop. Created in start() before signal handlers are
-    // installed; closed in stop() after handlers are restored to SIG_DFL.
-    int m_wakeFd{-1};
-
-    std::mutex m_suspendMutex;
-
-    Options m_options;
-    // Held from construction until start() consumes it via std::move.
-    // Not read elsewhere; treat as single-use input state.
-    CECManager::Options m_managerOptions;
-
-    static CECDaemon* s_instance;
-
-    // Command queuing during suspend
-    std::mutex m_queuedCommandsMutex;
-    std::vector<Message> m_queuedCommands;
-    bool m_queueCommandsDuringSuspend;
-
-    /** Command handler dispatched from socket messages. */
+    /** Route a wire message to the appropriate handler. */
     Message handleCommand(const Message& command);
 
     /** Install SIGINT/SIGTERM/SIGHUP handlers via sigaction. */
@@ -151,14 +87,35 @@ private:
     /** Drain any accumulated counter writes from m_wakeFd. */
     void drainWakeFd() noexcept;
 
-    /** React to a connection-loss event surfaced by the adapter. */
-    void onConnectionLostEvent();
-
-    /** Handle power state change from D-Bus. */
+    /** React to a power state change surfaced by DBusMonitor. */
     void handlePowerStateChange(DBusMonitor::PowerState state);
 
-    /** Setup power monitoring. Returns true on success. */
+    /** Create and start the DBus monitor. Returns true on success. */
     bool setupPowerMonitor();
+
+    // Core components
+    CommandRouter::Options m_routerOptions;  // staged until start()
+    std::unique_ptr<CommandRouter> m_router;
+    std::unique_ptr<SocketServer> m_socketServer;
+    std::unique_ptr<DBusMonitor> m_dbusMonitor;
+    std::shared_ptr<ThreadPool> m_threadPool;
+
+    // Run-loop state
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_connectionLost{false};
+
+    // Counts how many termination signals have been received. The third one
+    // escalates to _exit() in the signal handler.
+    std::atomic<int> m_signalCount{0};
+
+    // eventfd that the signal handler and onConnectionLost() write to in
+    // order to wake the main loop. Created in start() before signal handlers
+    // are installed; closed in stop() after handlers are restored to SIG_DFL.
+    int m_wakeFd{-1};
+
+    Options m_options;
+
+    static CECDaemon* s_instance;
 };
 
 } // namespace cec_control

@@ -1,6 +1,7 @@
 #include "daemon_bootstrap.h"
 #include "../common/logger.h"
 #include "../common/system_paths.h"
+#include "../common/systemd_env.h"
 
 #include <libcec/cec.h>
 
@@ -87,7 +88,7 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
 
     try {
-        CECDaemon daemon(options.daemon, std::move(options.manager));
+        CECDaemon daemon(options.daemon, std::move(options.router));
 
         if (!daemon.start()) {
             LOG_FATAL("Failed to start CEC daemon");
@@ -149,25 +150,7 @@ bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
 }
 
 bool DaemonBootstrap::isRunningUnderSystemd() {
-    // Primary method: Check for NOTIFY_SOCKET environment variable
-    const char* notifySocket = getenv("NOTIFY_SOCKET");
-    if (notifySocket && *notifySocket) {
-        return true;
-    }
-    
-    // Secondary method: Check for INVOCATION_ID (set for systemd services)
-    const char* invocationId = getenv("INVOCATION_ID");
-    if (invocationId && *invocationId) {
-        return true;
-    }
-    
-    // Tertiary method: Check for SYSTEMD_EXEC_PID (should be set to our PID)
-    const char* execPid = getenv("SYSTEMD_EXEC_PID");
-    if (execPid && *execPid) {
-        return true;
-    }
-    
-    return false;
+    return SystemdEnv::isUnderSystemd();
 }
 
 bool DaemonBootstrap::daemonize() {
@@ -244,41 +227,49 @@ void DaemonBootstrap::setupLogging(const RunDaemon& action) {
 DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
     DaemonAllOptions opts;
 
-    // Daemon-level (lifecycle) knobs
-    opts.daemon.queueCommandsDuringSuspend =
-        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    // Daemon-level (lifecycle) knob: only DBus power monitoring lives here.
+    // Suspend-queue policy moved to the router alongside the queue state.
     opts.daemon.enablePowerMonitor =
         cfg.getBool("Daemon", "EnablePowerMonitor", true);
 
-    // Manager top-level knobs
-    opts.manager.scanDevicesAtStartup =
+    // Router top-level knobs
+    auto& router = opts.router;
+    router.scanDevicesAtStartup =
         cfg.getBool("Daemon", "ScanDevicesAtStartup", false);
+    router.queueCommandsDuringSuspend =
+        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    // PowerOffOnStandby is the auto-standby policy gate — the router acts on
+    // it, not libcec. See CECAdapter::populateConfigFromOptions for the
+    // rationale on not mirroring this into m_config.bPowerOffOnStandby.
+    router.autoStandbyEnabled =
+        cfg.getBool("Adapter", "PowerOffOnStandby", false);
 
     // Adapter sub-options
-    auto& adapter = opts.manager.adapter;
-    adapter.deviceName        = cfg.getString("Adapter", "DeviceName", "CEC Controller");
-    adapter.autoPowerOn       = cfg.getBool("Adapter", "AutoPowerOn", false);
-    adapter.autoWakeAVR       = cfg.getBool("Adapter", "AutoWakeAVR", false);
-    adapter.activateSource    = cfg.getBool("Adapter", "ActivateSource", false);
-    adapter.systemAudioMode   = cfg.getBool("Adapter", "SystemAudioMode", false);
-    adapter.powerOffOnStandby = cfg.getBool("Adapter", "PowerOffOnStandby", false);
-    adapter.wakeDevices       = parseLogicalAddressList(
+    auto& adapter = router.adapter;
+    adapter.deviceName      = cfg.getString("Adapter", "DeviceName", "CEC Controller");
+    adapter.autoPowerOn     = cfg.getBool("Adapter", "AutoPowerOn", false);
+    adapter.autoWakeAVR     = cfg.getBool("Adapter", "AutoWakeAVR", false);
+    adapter.activateSource  = cfg.getBool("Adapter", "ActivateSource", false);
+    adapter.systemAudioMode = cfg.getBool("Adapter", "SystemAudioMode", false);
+    adapter.wakeDevices     = parseLogicalAddressList(
         cfg.getString("Adapter", "WakeDevices", ""), "WakeDevices");
-    adapter.powerOffDevices   = parseLogicalAddressList(
+    adapter.powerOffDevices = parseLogicalAddressList(
         cfg.getString("Adapter", "PowerOffDevices", ""), "PowerOffDevices");
 
     // Throttler sub-options
-    auto& throttler = opts.manager.throttler;
+    auto& throttler = router.throttler;
     throttler.baseIntervalMs   = cfg.getInt("Throttler", "BaseIntervalMs", 200);
     throttler.maxIntervalMs    = cfg.getInt("Throttler", "MaxIntervalMs", 1000);
     throttler.maxRetryAttempts = cfg.getInt("Throttler", "MaxRetryAttempts", 3);
 
     LOG_INFO("Configuration: ScanDevicesAtStartup = ",
-             (opts.manager.scanDevicesAtStartup ? "true" : "false"));
+             (opts.router.scanDevicesAtStartup ? "true" : "false"));
     LOG_INFO("Configuration: QueueCommandsDuringSuspend = ",
-             (opts.daemon.queueCommandsDuringSuspend ? "true" : "false"));
+             (opts.router.queueCommandsDuringSuspend ? "true" : "false"));
     LOG_INFO("Configuration: EnablePowerMonitor = ",
              (opts.daemon.enablePowerMonitor ? "true" : "false"));
+    LOG_INFO("Configuration: PowerOffOnStandby = ",
+             (opts.router.autoStandbyEnabled ? "true" : "false"));
 
     return opts;
 }

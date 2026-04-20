@@ -24,7 +24,6 @@ public:
         bool autoPowerOn;
         bool autoWakeAVR;
         bool activateSource;
-        bool powerOffOnStandby;
         bool systemAudioMode;
         CEC::cec_logical_addresses wakeDevices;
         CEC::cec_logical_addresses powerOffDevices;
@@ -34,7 +33,6 @@ public:
             autoPowerOn(false),
             autoWakeAVR(false),
             activateSource(false),
-            powerOffOnStandby(false),
             systemAudioMode(false) {
             wakeDevices.Clear();
             powerOffDevices.Clear();
@@ -170,14 +168,10 @@ public:
     CEC::cec_logical_address getActiveSource() const;
 
     /**
-     * Set whether the system should auto-suspend when the TV powers off
-     * @param enabled Whether to enable or disable the feature
-     */
-    void setAutoStandby(bool enabled);
-
-    /**
-     * @brief Set a callback to be invoked when the TV signals standby
-     * @param callback The function to call
+     * @brief Set a callback to be invoked when the TV signals standby.
+     *
+     * The adapter fires the callback unconditionally on every TV-originated
+     * standby opcode; policy (whether to act on it) lives in the caller.
      */
     void setOnTvStandbyCallback(std::function<void()> callback);
 

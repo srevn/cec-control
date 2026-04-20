@@ -8,12 +8,12 @@ namespace cec_control {
 
 /**
  * Aggregate of everything DaemonBootstrap needs to hand into CECDaemon.
- * Keeps daemon-side (lifecycle) knobs and manager-side (CEC) knobs on
- * separate members so CECDaemon's constructor takes one of each.
+ * Keeps daemon-level lifecycle knobs and router-level CEC knobs on separate
+ * members so CECDaemon's constructor takes one of each.
  */
 struct DaemonAllOptions {
     CECDaemon::Options daemon;
-    CECManager::Options manager;
+    CommandRouter::Options router;
 };
 
 /**
@@ -44,7 +44,7 @@ private:
 
     /**
      * Read every tunable from @p cfg and package it into the option structs
-     * that CECDaemon and CECManager consume. All config parsing — including
+     * that CECDaemon and CommandRouter consume. All config parsing — including
      * the comma-separated WakeDevices/PowerOffDevices lists — lives here.
      */
     static DaemonAllOptions loadAllOptions(const ConfigManager& cfg);

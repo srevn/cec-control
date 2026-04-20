@@ -43,6 +43,7 @@ set(COMMON_SOURCES
     src/common/unix_socket.cpp
     src/common/config_manager.cpp
     src/common/system_paths.cpp
+    src/common/systemd_env.cpp
     src/common/event_poller.cpp
     src/common/command_registry.cpp
     src/common/argument_parser.cpp
@@ -51,7 +52,7 @@ set(COMMON_SOURCES
 
 set(DAEMON_SOURCES
     src/daemon/cec_daemon.cpp
-    src/daemon/cec_manager.cpp
+    src/daemon/command_router.cpp
     src/daemon/cec_adapter.cpp
     src/daemon/command_throttler.cpp
     src/daemon/socket_server.cpp

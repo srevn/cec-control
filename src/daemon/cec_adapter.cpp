@@ -68,9 +68,12 @@ void CECAdapter::populateConfigFromOptions(const Options& options) {
     m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
     m_config.bAutoPowerOn = m_options.autoPowerOn ? 1 : 0;
 
-    // Set up source activation and power off on standby
+    // Source activation. bPowerOffOnStandby is deliberately not mirrored here
+    // — auto-standby is a router-level policy, gated on the router's flag
+    // rather than libcec's internal config. Leaving libcec's flag at its
+    // default (0) prevents the library from taking its own standby-driven
+    // actions underneath us.
     m_config.bActivateSource = m_options.activateSource ? 1 : 0;
-    m_config.bPowerOffOnStandby = m_options.powerOffOnStandby ? 1 : 0;
 
     // Set up wake devices and power off devices
     m_config.wakeDevices = m_options.wakeDevices;
@@ -420,18 +423,13 @@ void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* comma
               ", destination=", static_cast<int>(command->destination),
               ", opcode=", static_cast<int>(command->opcode));
 
-    // Detect TV Standby command
+    // Detect TV Standby command. Fire the callback unconditionally; the
+    // caller owns the policy decision (whether to act on the signal).
     if (command->initiator == CEC::CECDEVICE_TV &&
         command->opcode == CEC::CEC_OPCODE_STANDBY) {
-
         LOG_INFO("TV power off command detected");
-
-        // Check if auto-standby is enabled in config
-        if (adapter->m_config.bPowerOffOnStandby) {
-            LOG_INFO("TV powered off and auto-standby is enabled. Invoking callback.");
-            if (adapter->m_tvStandbyCallback) {
-                adapter->m_tvStandbyCallback();
-            }
+        if (adapter->m_tvStandbyCallback) {
+            adapter->m_tvStandbyCallback();
         }
     }
 }
@@ -461,11 +459,6 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
             LOG_DEBUG("CEC alert: ", static_cast<int>(alert));
             break;
     }
-}
-
-void CECAdapter::setAutoStandby(bool enabled) {
-    m_config.bPowerOffOnStandby = enabled ? 1 : 0;
-    LOG_INFO("Auto-standby feature ", enabled ? "enabled" : "disabled");
 }
 
 void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {
