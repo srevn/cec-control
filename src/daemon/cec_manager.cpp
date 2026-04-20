@@ -13,16 +13,12 @@ CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
     m_throttler = std::make_shared<CommandThrottler>(m_options.throttler);
     m_deviceOps = std::make_shared<DeviceOperations>(m_adapter, m_throttler);
 
-    // Set up the callback for TV standby events
     m_adapter->setOnTvStandbyCallback([this]() {
         LOG_INFO("TV standby callback triggered. Initiating system suspend.");
         auto suspendTask = [this]() {
             if (m_suspendCallback) {
                 LOG_INFO("Executing suspend command via callback");
-                bool success = m_suspendCallback();
-                if (success) {
-                    LOG_INFO("Suspend command executed successfully");
-                } else {
+                if (!m_suspendCallback()) {
                     LOG_ERROR("Failed to execute suspend command via callback");
                 }
             } else {
@@ -36,18 +32,9 @@ CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
             std::thread(suspendTask).detach();
         }
     });
-
-    // Create command queue
-    m_commandQueue = std::make_unique<CommandQueue>();
-    m_commandQueue->setOperationHandler([this](const Message& cmd) { return this->handleCommand(cmd); });
 }
 
 CECManager::~CECManager() {
-    // Stop command queue first to prevent new operations
-    if (m_commandQueue) {
-        m_commandQueue->stop();
-    }
-
     shutdown();
 }
 
@@ -69,26 +56,16 @@ bool CECManager::initialize() {
     std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Initializing CEC manager");
 
-    // Initialize the adapter library and detect hardware
     if (!m_adapter->initialize()) {
         LOG_ERROR("Failed to initialize CEC adapter library");
         return false;
     }
 
-    // Open a connection to the adapter
     if (!m_adapter->openConnection()) {
         LOG_ERROR("Failed to open CEC adapter connection");
         return false;
     }
 
-    // Start the command queue
-    if (!m_commandQueue->start()) {
-        LOG_ERROR("Failed to start command queue");
-        shutdown();
-        return false;
-    }
-
-    // Scan for CEC devices if the option is enabled
     if (m_options.scanDevicesAtStartup) {
         LOG_INFO("Scanning for CEC devices...");
         scanDevices();
@@ -104,24 +81,16 @@ void CECManager::shutdown() {
     std::lock_guard<std::mutex> lock(m_managerMutex);
     LOG_INFO("Shutting down CEC manager");
 
-    // Stop the command queue to prevent new operations
-    if (m_commandQueue) {
-        m_commandQueue->stop();
-    }
-
-    // Shutdown the adapter
     if (m_adapter) {
         m_adapter->closeConnection();
     }
 }
 
 bool CECManager::reconnect() {
-    // Global adapter mutex
     std::lock_guard<std::mutex> lock(m_managerMutex);
 
     LOG_INFO("Attempting to reconnect to CEC adapter");
 
-    // Check if adapter is already connected - quick exit
     if (isAdapterValid()) {
         LOG_INFO("Adapter already connected, no need to reconnect");
         m_reconnectFailures = 0;
@@ -131,14 +100,6 @@ bool CECManager::reconnect() {
     if (m_adapter && m_adapter->reopenConnection()) {
         m_reconnectFailures = 0;
         LOG_INFO("CEC adapter reconnected successfully");
-
-        // Start the command queue if needed
-        if (!m_commandQueue->isRunning() && !m_commandQueue->start()) {
-            LOG_ERROR("Failed to start command queue during reconnect");
-            m_adapter->closeConnection();
-            return false;
-        }
-
         return true;
     }
 
@@ -161,11 +122,6 @@ bool CECManager::isAdapterValid() const {
 }
 
 Message CECManager::processCommand(const Message& command) {
-    return m_commandQueue->executeSync(command, m_options.commandTimeoutMs);
-}
-
-Message CECManager::handleCommand(const Message& command) {
-    // Take a read lock on the adapter mutex to check validity
     std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid() && command.type != MessageType::CMD_RESTART_ADAPTER) {
@@ -174,8 +130,6 @@ Message CECManager::handleCommand(const Message& command) {
     }
 
     bool success = false;
-
-    // Delegate commands to device operations
     switch (command.type) {
         case MessageType::CMD_VOLUME_UP:
             success = m_deviceOps->setVolume(command.deviceId, true);
@@ -204,36 +158,26 @@ Message CECManager::handleCommand(const Message& command) {
             }
             break;
         case MessageType::CMD_RESTART_ADAPTER: {
-            LOG_INFO("Processing restart adapter command");
+            LOG_INFO("Scheduling adapter restart");
 
-            // Define the restart task
+            // The restart runs async so the client call returns promptly.
+            // RESP_SUCCESS here means "accepted"; the actual reconnect
+            // happens on a pool worker and logs its own result.
             auto restartTask = [this]() {
-                LOG_INFO("Performing asynchronous adapter restart");
-
-                // Acquire the adapter mutex so no other operations can interfere
-                std::lock_guard<std::mutex> lock(m_managerMutex);
-
-                bool success = this->m_adapter->reopenConnection();
-
-                if (success) {
-                    // Start command queue if needed
-                    if (!this->m_commandQueue->isRunning()) {
-                        this->m_commandQueue->start();
-                    }
+                std::lock_guard<std::mutex> restartLock(m_managerMutex);
+                if (m_adapter && m_adapter->reopenConnection()) {
                     LOG_INFO("Adapter restart completed successfully");
                 } else {
                     LOG_ERROR("Failed to restart adapter");
                 }
             };
 
-            // Use thread pool for better resource management
             if (m_threadPool) {
                 m_threadPool->submit(restartTask);
             } else {
                 std::thread(restartTask).detach();
             }
 
-            // Return success immediately, actual restart happens in background
             success = true;
             break;
         }
@@ -246,7 +190,6 @@ Message CECManager::handleCommand(const Message& command) {
 }
 
 bool CECManager::standbyDevices() {
-    // Take the global adapter mutex to ensure thread safety
     std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid()) {
@@ -264,7 +207,6 @@ bool CECManager::standbyDevices() {
 }
 
 bool CECManager::powerOnDevices() {
-    // Take the global adapter mutex to ensure thread safety
     std::lock_guard<std::mutex> lock(m_managerMutex);
 
     if (!isAdapterValid()) {

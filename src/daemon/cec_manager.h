@@ -1,17 +1,10 @@
 #pragma once
 
-#include <string>
-#include <memory>
 #include <functional>
+#include <memory>
 #include <mutex>
-#include <atomic>
-#include <condition_variable>
-#include <thread>
-#include <unordered_map>
-#include <chrono>
 
 #include "../common/messages.h"
-#include "command_queue.h"
 #include "cec_adapter.h"
 #include "command_throttler.h"
 #include "device_operations.h"
@@ -37,7 +30,6 @@ public:
      */
     struct Options {
         bool scanDevicesAtStartup = false;
-        uint32_t commandTimeoutMs = 5000;
         CECAdapter::Options adapter;
         CommandThrottler::Options throttler;
     };
@@ -123,36 +115,23 @@ public:
     bool powerOnDevices();
 
 private:
-    // Components
-    std::unique_ptr<CommandQueue> m_commandQueue;
     std::shared_ptr<CECAdapter> m_adapter;
     std::shared_ptr<CommandThrottler> m_throttler;
     std::shared_ptr<DeviceOperations> m_deviceOps;
-    
-    // Options
+
     Options m_options;
-    
-    // Thread pool for background operations (may be shared with daemon)
+
     std::shared_ptr<ThreadPool> m_threadPool;
 
-    // Mutex for synchronizing high-level manager operations
+    // Serialises adapter access and lifecycle transitions. Taken by every
+    // public method; nothing else synchronises with libCEC.
     mutable std::mutex m_managerMutex;
 
-    // Reconnection failure counter
     int m_reconnectFailures = 0;
-    
-    // Suspend callback
-    std::function<bool()> m_suspendCallback;
 
-    // Fatal error callback (e.g. invoked after persistent reconnect failures)
+    std::function<bool()> m_suspendCallback;
     std::function<void()> m_fatalErrorCallback;
 
-    /**
-     * @brief Internal command handler for the command queue
-     * @param command Command message to handle
-     * @return Response message
-     */
-    Message handleCommand(const Message& command);
 };
 
 } // namespace cec_control
