@@ -1,6 +1,5 @@
 #include "cec_adapter.h"
 #include "../common/logger.h"
-#include "../common/config_manager.h"
 
 #include <thread>
 #include <future>

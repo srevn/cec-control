@@ -1,71 +1,16 @@
 #include "cec_manager.h"
 #include "../common/logger.h"
-#include "../common/config_manager.h"
 
-#include <sstream>
 #include <thread>
-#include <mutex>
+#include <utility>
 
 namespace cec_control {
 
 CECManager::CECManager(Options options, std::shared_ptr<ThreadPool> threadPool)
-    : m_options(options), m_threadPool(threadPool) {
+    : m_options(std::move(options)), m_threadPool(std::move(threadPool)) {
 
-    CECAdapter::Options adapterOptions;
-
-    // Load adapter options from configuration
-    auto& config = ConfigManager::getInstance();
-    adapterOptions.deviceName = config.getString("Adapter", "DeviceName", "CEC Controller");
-    adapterOptions.autoPowerOn = config.getBool("Adapter", "AutoPowerOn", false);
-    adapterOptions.autoWakeAVR = config.getBool("Adapter", "AutoWakeAVR", false);
-    adapterOptions.activateSource = config.getBool("Adapter", "ActivateSource", false);
-    adapterOptions.systemAudioMode = config.getBool("Adapter", "SystemAudioMode", false);
-    adapterOptions.powerOffOnStandby = config.getBool("Adapter", "PowerOffOnStandby", false);
-
-    // Parse wake devices string (comma-separated list of logical addresses)
-    std::string wakeDevicesStr = config.getString("Adapter", "WakeDevices", "");
-    if (!wakeDevicesStr.empty()) {
-        adapterOptions.wakeDevices.Clear();
-        std::stringstream ss(wakeDevicesStr);
-        std::string device;
-        while (std::getline(ss, device, ',')) {
-            try {
-                int deviceId = std::stoi(device);
-                if (deviceId >= 0 && deviceId <= 15) {  // Valid CEC logical addresses are 0-15
-                    adapterOptions.wakeDevices.Set((CEC::cec_logical_address)deviceId);
-                }
-            } catch (const std::exception& e) {
-                LOG_WARNING("Invalid wake device address in config: ", device);
-            }
-        }
-    }
-
-    // Parse power off devices string (comma-separated list of logical addresses)
-    std::string powerOffDevicesStr = config.getString("Adapter", "PowerOffDevices", "");
-    if (!powerOffDevicesStr.empty()) {
-        adapterOptions.powerOffDevices.Clear();
-        std::stringstream ss(powerOffDevicesStr);
-        std::string device;
-        while (std::getline(ss, device, ',')) {
-            try {
-                int deviceId = std::stoi(device);
-                if (deviceId >= 0 && deviceId <= 15) {  // Valid CEC logical addresses are 0-15
-                    adapterOptions.powerOffDevices.Set((CEC::cec_logical_address)deviceId);
-                }
-            } catch (const std::exception& e) {
-                LOG_WARNING("Invalid power off device address in config: ", device);
-            }
-        }
-    }
-
-    // Create command throttler with proper options
-    CommandThrottler::Options throttlerOptions;
-    throttlerOptions.baseIntervalMs = config.getInt("Throttler", "BaseIntervalMs", 200);
-    throttlerOptions.maxIntervalMs = config.getInt("Throttler", "MaxIntervalMs", 1000);
-    throttlerOptions.maxRetryAttempts = config.getInt("Throttler", "MaxRetryAttempts", 3);
-
-    m_adapter = std::make_shared<CECAdapter>(adapterOptions);
-    m_throttler = std::make_shared<CommandThrottler>(throttlerOptions);
+    m_adapter = std::make_shared<CECAdapter>(m_options.adapter);
+    m_throttler = std::make_shared<CommandThrottler>(m_options.throttler);
     m_deviceOps = std::make_shared<DeviceOperations>(m_adapter, m_throttler);
 
     // Set up the callback for TV standby events

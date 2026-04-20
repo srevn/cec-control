@@ -2,17 +2,58 @@
 #include "../common/logger.h"
 #include "../common/system_paths.h"
 
-#include <iostream>
-#include <fstream>
+#include <libcec/cec.h>
+
+#include <cerrno>
 #include <cstdlib>
-#include <unistd.h>
+#include <cstring>
+#include <fcntl.h>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <fcntl.h>
-#include <cerrno>
-#include <cstring>
+#include <unistd.h>
+#include <utility>
 
 namespace cec_control {
+
+namespace {
+
+/**
+ * Parse a comma-separated list of CEC logical addresses (e.g. "0,1,5") into
+ * a cec_logical_addresses bitmask. Out-of-range or non-numeric entries are
+ * logged and skipped; an empty input yields a cleared mask. No whitespace
+ * handling — matches the legacy behaviour and keeps the config format
+ * predictable.
+ */
+CEC::cec_logical_addresses parseLogicalAddressList(const std::string& input,
+                                                   std::string_view fieldLabel) {
+    CEC::cec_logical_addresses addrs;
+    addrs.Clear();
+    if (input.empty()) return addrs;
+
+    std::stringstream ss(input);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        try {
+            int id = std::stoi(token);
+            if (id >= 0 && id <= 15) {
+                addrs.Set(static_cast<CEC::cec_logical_address>(id));
+            } else {
+                LOG_WARNING("Logical address out of range in config field ",
+                            fieldLabel, ": ", id);
+            }
+        } catch (const std::exception&) {
+            LOG_WARNING("Invalid logical address in config field ",
+                        fieldLabel, ": ", token);
+        }
+    }
+    return addrs;
+}
+
+} // namespace
 
 int DaemonBootstrap::runDaemon(const ArgumentParser::ParseResult& parseResult) {
     // Provision system directories the daemon will write into. Done before
@@ -22,37 +63,37 @@ int DaemonBootstrap::runDaemon(const ArgumentParser::ParseResult& parseResult) {
 
     setupLogging(parseResult);
 
-    ConfigManager& configManager = setupConfiguration(parseResult);
-    
+    // Configuration is a local value; once we've extracted the option structs
+    // it falls out of scope. No ambient/singleton access after this point.
+    ConfigManager configManager(parseResult.configFile);
+    if (!configManager.load()) {
+        LOG_WARNING("Failed to load configuration file, using defaults");
+    }
+
+    DaemonAllOptions options = loadAllOptions(configManager);
+
     // Setup the process (daemonization, service mode, etc.)
     if (!setupProcess(parseResult.runAsDaemon)) {
         LOG_FATAL("Failed to setup daemon process");
         return EXIT_FAILURE;
     }
-    
-    // Log runtime environment and PID
+
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
-    
-    // Create daemon with options from config
-    CECDaemon::Options daemonOptions = createDaemonOptions(configManager);
-    
+
     try {
-        // Create and start daemon
-        CECDaemon daemon(daemonOptions);
-        
+        CECDaemon daemon(options.daemon, std::move(options.manager));
+
         if (!daemon.start()) {
             LOG_FATAL("Failed to start CEC daemon");
             return EXIT_FAILURE;
         }
-        
-        // Run the main loop
+
         LOG_INFO("CEC daemon initialized successfully, starting main loop");
         daemon.run();
-        
-        // Should only get here if daemon.run() returns
+
         LOG_INFO("CEC daemon exited normally");
         return EXIT_SUCCESS;
-    } 
+    }
     catch (const std::exception& e) {
         LOG_FATAL("Exception in CEC daemon: ", e.what());
         return EXIT_FAILURE;
@@ -192,32 +233,46 @@ void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResul
              ", level=", parseResult.verboseMode ? "DEBUG" : "INFO");
 }
 
-ConfigManager& DaemonBootstrap::setupConfiguration(const ArgumentParser::ParseResult& parseResult) {
-    // First call to getInstance will initialize it with the provided config path.
-    ConfigManager& configManager = ConfigManager::getInstance(parseResult.configFile);
-    
-    // Load the configuration
-    if (!configManager.load()) {
-        LOG_WARNING("Failed to load configuration file, using defaults");
-    }
-    
-    return configManager;
-}
+DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
+    DaemonAllOptions opts;
 
-CECDaemon::Options DaemonBootstrap::createDaemonOptions(const ConfigManager& configManager) {
-    CECDaemon::Options options;
+    // Daemon-level (lifecycle) knobs
+    opts.daemon.queueCommandsDuringSuspend =
+        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    opts.daemon.enablePowerMonitor =
+        cfg.getBool("Daemon", "EnablePowerMonitor", true);
 
-    // Set daemon options from configuration
-    options.scanDevicesAtStartup = configManager.getBool("Daemon", "ScanDevicesAtStartup", false);
-    options.queueCommandsDuringSuspend = configManager.getBool("Daemon", "QueueCommandsDuringSuspend", true);
-    options.enablePowerMonitor = configManager.getBool("Daemon", "EnablePowerMonitor", true);
+    // Manager top-level knobs
+    opts.manager.scanDevicesAtStartup =
+        cfg.getBool("Daemon", "ScanDevicesAtStartup", false);
 
-    // Log daemon options - use more concise logging with direct boolean values
-    LOG_INFO("Configuration: ScanDevicesAtStartup = ", (options.scanDevicesAtStartup ? "true" : "false"));
-    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ", (options.queueCommandsDuringSuspend ? "true" : "false"));
-    LOG_INFO("Configuration: EnablePowerMonitor = ", (options.enablePowerMonitor ? "true" : "false"));
+    // Adapter sub-options
+    auto& adapter = opts.manager.adapter;
+    adapter.deviceName        = cfg.getString("Adapter", "DeviceName", "CEC Controller");
+    adapter.autoPowerOn       = cfg.getBool("Adapter", "AutoPowerOn", false);
+    adapter.autoWakeAVR       = cfg.getBool("Adapter", "AutoWakeAVR", false);
+    adapter.activateSource    = cfg.getBool("Adapter", "ActivateSource", false);
+    adapter.systemAudioMode   = cfg.getBool("Adapter", "SystemAudioMode", false);
+    adapter.powerOffOnStandby = cfg.getBool("Adapter", "PowerOffOnStandby", false);
+    adapter.wakeDevices       = parseLogicalAddressList(
+        cfg.getString("Adapter", "WakeDevices", ""), "WakeDevices");
+    adapter.powerOffDevices   = parseLogicalAddressList(
+        cfg.getString("Adapter", "PowerOffDevices", ""), "PowerOffDevices");
 
-    return options;
+    // Throttler sub-options
+    auto& throttler = opts.manager.throttler;
+    throttler.baseIntervalMs   = cfg.getInt("Throttler", "BaseIntervalMs", 200);
+    throttler.maxIntervalMs    = cfg.getInt("Throttler", "MaxIntervalMs", 1000);
+    throttler.maxRetryAttempts = cfg.getInt("Throttler", "MaxRetryAttempts", 3);
+
+    LOG_INFO("Configuration: ScanDevicesAtStartup = ",
+             (opts.manager.scanDevicesAtStartup ? "true" : "false"));
+    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ",
+             (opts.daemon.queueCommandsDuringSuspend ? "true" : "false"));
+    LOG_INFO("Configuration: EnablePowerMonitor = ",
+             (opts.daemon.enablePowerMonitor ? "true" : "false"));
+
+    return opts;
 }
 
 } // namespace cec_control

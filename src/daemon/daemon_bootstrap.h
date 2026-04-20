@@ -7,6 +7,16 @@
 namespace cec_control {
 
 /**
+ * Aggregate of everything DaemonBootstrap needs to hand into CECDaemon.
+ * Keeps daemon-side (lifecycle) knobs and manager-side (CEC) knobs on
+ * separate members so CECDaemon's constructor takes one of each.
+ */
+struct DaemonAllOptions {
+    CECDaemon::Options daemon;
+    CECManager::Options manager;
+};
+
+/**
  * Bootstrap class responsible for daemon process management and initialization
  * Extracts all process-level functionality from main.cpp
  */
@@ -18,46 +28,26 @@ public:
      * @return Exit code (EXIT_SUCCESS or EXIT_FAILURE)
      */
     static int runDaemon(const ArgumentParser::ParseResult& parseResult);
-    
+
 private:
-    /**
-     * Setup the process (daemonization, service mode, etc.)
-     * @param runAsDaemon Whether to daemonize the process
-     * @return true if setup succeeded
-     */
+    /** Setup the process (daemonization, service mode, etc.). */
     static bool setupProcess(bool runAsDaemon);
-    
-    /**
-     * Check if running under systemd
-     * @return true if running under systemd
-     */
+
+    /** Check if running under systemd. */
     static bool isRunningUnderSystemd();
-    
-    /**
-     * Daemonize the process by forking into background
-     * @return true if we're in daemon context, false if parent should exit
-     */
+
+    /** Daemonize the process by forking into background. */
     static bool daemonize();
 
-    /**
-     * Initialize logging with the given configuration
-     * @param parseResult Configuration from argument parsing
-     */
+    /** Initialize logging with the given configuration. */
     static void setupLogging(const ArgumentParser::ParseResult& parseResult);
-    
+
     /**
-     * Load and setup configuration management
-     * @param parseResult Configuration from argument parsing
-     * @return Reference to configured ConfigManager
+     * Read every tunable from @p cfg and package it into the option structs
+     * that CECDaemon and CECManager consume. All config parsing — including
+     * the comma-separated WakeDevices/PowerOffDevices lists — lives here.
      */
-    static ConfigManager& setupConfiguration(const ArgumentParser::ParseResult& parseResult);
-    
-    /**
-     * Create daemon options from loaded configuration
-     * @param configManager Loaded configuration manager
-     * @return CECDaemon options structure
-     */
-    static CECDaemon::Options createDaemonOptions(const ConfigManager& configManager);
+    static DaemonAllOptions loadAllOptions(const ConfigManager& cfg);
 };
 
 } // namespace cec_control

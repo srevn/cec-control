@@ -1,13 +1,12 @@
-#include "logger.h"
-#include "system_paths.h"
 #include "config_manager.h"
 
-#include <fstream>
+#include "logger.h"
+#include "system_paths.h"
+
 #include <algorithm>
 #include <cctype>
-#include <sstream>
-#include <filesystem>
-#include <mutex>
+#include <fstream>
+#include <utility>
 
 namespace cec_control {
 
@@ -18,11 +17,12 @@ void ConfigManager::trim(std::string& s) {
         [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
 }
 
-ConfigManager::ConfigManager(const std::string& configPath)
-    : m_configPath(configPath.empty() ? SystemPaths::getConfigPath() : configPath) {
+ConfigManager::ConfigManager(std::string configPath) {
     if (configPath.empty()) {
+        m_configPath = SystemPaths::getConfigPath();
         LOG_INFO("No configuration path specified, using default: ", m_configPath);
     } else {
+        m_configPath = std::move(configPath);
         LOG_INFO("Using specified configuration path: ", m_configPath);
     }
 }
@@ -111,17 +111,6 @@ int ConfigManager::getInt(const std::string& section, const std::string& key,
         LOG_ERROR("Failed to convert '", value, "' to integer: ", e.what());
         return defaultValue;
     }
-}
-
-ConfigManager& ConfigManager::getInstance(const std::string& configPath) {
-    static std::unique_ptr<ConfigManager> s_instance;
-    static std::once_flag s_onceFlag;
-
-    std::call_once(s_onceFlag, [&]{
-        s_instance.reset(new ConfigManager(configPath));
-    });
-
-    return *s_instance;
 }
 
 } // namespace cec_control

@@ -1,6 +1,5 @@
 #include "cec_daemon.h"
 #include "../common/logger.h"
-#include "../common/config_manager.h"
 
 #include <cerrno>
 #include <chrono>
@@ -8,7 +7,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
-#include <string>
 #include <sys/eventfd.h>
 #include <thread>
 #include <unistd.h>
@@ -21,15 +19,14 @@ namespace cec_control {
 
 CECDaemon* CECDaemon::s_instance = nullptr;
 
-CECDaemon::CECDaemon(Options options) 
-    : m_running(false), 
-      m_suspended(false), 
-      m_options(options),
-      m_queueCommandsDuringSuspend(options.queueCommandsDuringSuspend) {
-    
+CECDaemon::CECDaemon(Options daemonOptions, CECManager::Options managerOptions)
+    : m_options(daemonOptions),
+      m_managerOptions(std::move(managerOptions)),
+      m_queueCommandsDuringSuspend(m_options.queueCommandsDuringSuspend) {
+
     // Create thread pool for background tasks (4 threads)
     m_threadPool = std::make_shared<ThreadPool>(4);
-    
+
     // Set static instance
     s_instance = this;
 }
@@ -56,10 +53,9 @@ bool CECDaemon::start() {
     m_threadPool->start();
 
     try {
-        CECManager::Options cecOptions;
-        cecOptions.scanDevicesAtStartup = m_options.scanDevicesAtStartup;
-
-        m_cecManager = std::make_unique<CECManager>(cecOptions, m_threadPool);
+        // Consume the prebuilt options into the manager. m_managerOptions is
+        // not read again after this point.
+        m_cecManager = std::make_unique<CECManager>(std::move(m_managerOptions), m_threadPool);
         m_cecManager->setConnectionLostCallback([this]() { this->onConnectionLost(); });
         m_cecManager->setSuspendCallback([this]() -> bool {
             return m_dbusMonitor ? m_dbusMonitor->suspendSystem() : false;

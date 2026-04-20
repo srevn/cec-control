@@ -22,7 +22,7 @@ namespace cec_control {
 /**
  * @class CECManager
  * @brief Manages CEC device operations and command processing
- * 
+ *
  * Provides a high-level interface for CEC device control, command processing,
  * and adapter management. Handles reconnection logic and command throttling.
  */
@@ -30,22 +30,24 @@ class CECManager {
 public:
     /**
      * @brief Configuration options for CEC Manager
+     *
+     * The adapter and throttler sub-structs are populated by DaemonBootstrap
+     * from the configuration file; CECManager forwards them to the relevant
+     * subcomponents at construction time and does no config reads itself.
      */
     struct Options {
-        bool scanDevicesAtStartup;
-        uint32_t commandTimeoutMs;  // Default timeout for commands
-        
-        Options() 
-            : scanDevicesAtStartup(true),
-              commandTimeoutMs(5000) {}  // 5 second default timeout
+        bool scanDevicesAtStartup = false;
+        uint32_t commandTimeoutMs = 5000;
+        CECAdapter::Options adapter;
+        CommandThrottler::Options throttler;
     };
 
     /**
      * @brief Constructor
-     * @param options Configuration options
-     * @param threadPool Optional thread pool for background operations
+     * @param options Fully-populated configuration options
+     * @param threadPool Thread pool for background operations (required)
      */
-    CECManager(Options options = Options(), std::shared_ptr<ThreadPool> threadPool = nullptr);
+    CECManager(Options options, std::shared_ptr<ThreadPool> threadPool);
     
     /**
      * @brief Destructor

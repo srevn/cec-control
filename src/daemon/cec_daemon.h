@@ -25,24 +25,23 @@ namespace cec_control {
 class CECDaemon {
 public:
     /**
-     * @brief Configuration options for the daemon
+     * @brief Configuration options for the daemon process itself.
+     *
+     * Purely process/lifecycle concerns. CEC-side knobs live on
+     * CECManager::Options; DaemonBootstrap populates both structs.
      */
     struct Options {
-        bool scanDevicesAtStartup;       // Whether to scan for devices at startup
-        bool queueCommandsDuringSuspend; // Whether to queue commands during suspend
-        bool enablePowerMonitor;         // Whether to enable D-Bus power state monitoring
-        
-        Options() 
-            : scanDevicesAtStartup(false),
-              queueCommandsDuringSuspend(true),
-              enablePowerMonitor(true) {}
+        bool queueCommandsDuringSuspend = true;
+        bool enablePowerMonitor = true;
     };
-    
+
     /**
      * @brief Constructor
-     * @param options Configuration options
+     * @param daemonOptions  Daemon-level (lifecycle) options
+     * @param managerOptions Fully-populated CEC-manager options; moved into
+     *                       the manager when start() runs.
      */
-    explicit CECDaemon(Options options = Options());
+    CECDaemon(Options daemonOptions, CECManager::Options managerOptions);
     
     /**
      * @brief Destructor
@@ -126,6 +125,9 @@ private:
     std::mutex m_suspendMutex;
 
     Options m_options;
+    // Held from construction until start() consumes it via std::move.
+    // Not read elsewhere; treat as single-use input state.
+    CECManager::Options m_managerOptions;
 
     static CECDaemon* s_instance;
 
