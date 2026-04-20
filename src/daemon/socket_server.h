@@ -1,133 +1,65 @@
 #pragma once
 
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <string>
 #include <thread>
-#include <atomic>
-#include <unordered_map>
-#include <unordered_set>
-#include <mutex>
-#include <functional>
 
-#include "../common/protocol.h"
+#include "../common/messages.h"
 #include "../common/system_paths.h"
+#include "../common/unix_socket.h"
+#include "socket_connection.h"
 #include "thread_pool.h"
 
 namespace cec_control {
 
+/**
+ * Accepts client connections on a Unix SEQPACKET socket and dispatches each
+ * one to a worker in the provided ThreadPool. Connection lifetime and FD
+ * ownership live entirely in socket_connection.{h,cpp}; this class only runs
+ * the accept loop and coordinates startup/shutdown.
+ */
 class SocketServer {
 public:
-    /**
-     * Callback type for processing client commands
-     */
-    using ClientHandler = std::function<Message(const Message&)>;
-    
-    // Disable copying and moving
+    using CommandHandler = std::function<Message(const Message&)>;
+
     SocketServer(const SocketServer&) = delete;
     SocketServer& operator=(const SocketServer&) = delete;
     SocketServer(SocketServer&&) = delete;
     SocketServer& operator=(SocketServer&&) = delete;
-    
-    /**
-     * Create socket server with default system socket path
-     * @param threadPool Optional external thread pool to use
-     */
-    SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr)
-        : SocketServer(SystemPaths::getSocketPath(), threadPool) {}
-    
-    /**
-     * Create socket server with specified socket path
-     * @param socketPath Path to the socket file
-     * @param threadPool Optional external thread pool to use
-     */
-    explicit SocketServer(const std::string& socketPath, std::shared_ptr<ThreadPool> threadPool = nullptr);
-    
-    /**
-     * Destructor
-     */
+
+    explicit SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr)
+        : SocketServer(SystemPaths::getSocketPath(), std::move(threadPool)) {}
+
+    SocketServer(std::string socketPath,
+                 std::shared_ptr<ThreadPool> threadPool = nullptr);
+
     ~SocketServer();
-    
-    // Start server in a separate thread
+
     bool start();
-    
-    /**
-     * Stop the socket server
-     */
     void stop();
-    
-    /**
-     * Set the handler for processing client commands
-     * @param handler Function to handle client commands
-     */
-    void setCommandHandler(ClientHandler handler);
-    
-    /**
-     * Check if the server is running
-     * @return True if the server is running
-     */
-    bool isRunning() const;
+
+    void setCommandHandler(CommandHandler handler);
+
+    bool isRunning() const noexcept { return m_running.load(); }
 
 private:
-    std::string m_socketPath;
-    int m_socketFd;
-    int m_shutdownFd[2];
-    std::atomic<bool> m_running;
-    std::thread m_serverThread;
-    ClientHandler m_cmdHandler;
-    
-    // Thread pool for client connections
-    std::shared_ptr<ThreadPool> m_threadPool;
-    
-    // Active client connections
-    std::mutex m_clientsMutex;
-    std::unordered_set<int> m_activeClients;
+    void acceptLoop();
+    bool wakeupAcceptLoop() noexcept;
 
-    // Handler completion tracking for graceful shutdown
-    std::atomic<int> m_activeHandlers{0};
-    std::mutex m_handlersMutex;
-    std::condition_variable m_handlersCV;
-    
-    /**
-     * Main server loop
-     */
-    void serverLoop();
-    
-    /**
-     * Handle a client connection
-     * @param clientFd File descriptor for the client
-     */
-    void handleClient(int clientFd);
-    
-    /**
-     * Set up the server socket
-     * @return True if successful
-     */
-    bool setupSocket();
-    
-    /**
-     * Clean up the server socket
-     */
-    void cleanupSocket();
-    
-    /**
-     * Close a client connection
-     * @param clientFd File descriptor for the client
-     */
-    void closeClient(int clientFd);
-    
-    /**
-     * Process a command message and send the response back to the client
-     * @param clientFd File descriptor for the client connection
-     * @param cmd The message/command to process
-     * @return true if successful, false otherwise
-     */
-    bool sendDataToClient(int clientFd, const Message& cmd);
-    
-    /**
-     * Set a socket to non-blocking mode
-     * @param fd Socket file descriptor
-     * @return True if successful
-     */
-    bool setNonBlocking(int fd);
+    std::string m_socketPath;
+    std::shared_ptr<ThreadPool> m_threadPool;
+    bool m_ownsThreadPool = false;
+
+    CommandHandler m_handler;
+
+    UnixSocket m_listener;
+    int m_wakeFd = -1;                  // eventfd used to unblock acceptLoop
+    std::atomic<bool> m_running{false};
+    std::thread m_acceptThread;
+
+    ConnectionManager m_connections;
 };
 
 } // namespace cec_control

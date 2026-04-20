@@ -28,19 +28,18 @@ bool CECClient::connect() {
 }
 
 int CECClient::execute(const Message& command) {
-    // Connect to daemon
     if (!connect()) {
         return EXIT_FAILURE;
     }
-    
-    // Send command
-    Message response = m_socketClient->sendCommand(command);
-    
-    // Print result
-    printResult(response);
-    
-    // Return appropriate exit code
-    return (response.type == MessageType::RESP_SUCCESS) ? EXIT_SUCCESS : EXIT_FAILURE;
+
+    auto response = m_socketClient->sendCommand(command);
+    if (!response) {
+        std::cerr << "Command failed" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    printResult(*response);
+    return (response->type == MessageType::RESP_SUCCESS) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 void CECClient::printResult(const Message& response) {

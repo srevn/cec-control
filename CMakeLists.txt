@@ -38,10 +38,9 @@ include_directories(${LIBSYSTEMD_INCLUDE_DIRS})
 
 # Define source files
 set(COMMON_SOURCES
-    src/common/protocol.cpp
+    src/common/messages.cpp
     src/common/logger.cpp
-    src/common/buffer_pool.cpp
-    src/common/buffer_manager.cpp
+    src/common/unix_socket.cpp
     src/common/config_manager.cpp
     src/common/system_paths.cpp
     src/common/event_poller.cpp
@@ -57,6 +56,7 @@ set(DAEMON_SOURCES
     src/daemon/command_throttler.cpp
     src/daemon/device_operations.cpp
     src/daemon/socket_server.cpp
+    src/daemon/socket_connection.cpp
     src/daemon/command_queue.cpp
     src/daemon/cec_operation.cpp
     src/daemon/thread_pool.cpp

@@ -12,8 +12,6 @@
 #include <type_traits>
 #include <utility>
 
-#include "../common/buffer_pool.h"
-
 namespace cec_control {
 
 /**

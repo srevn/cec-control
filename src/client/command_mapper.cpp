@@ -1,60 +1,58 @@
 #include "command_mapper.h"
 
 #include <iostream>
-#include <stdexcept>
 
 namespace cec_control {
 
-std::optional<Message> CommandMapper::mapVolumeCommand(const std::string& action, const std::string& deviceId) {
+std::optional<Message> CommandMapper::mapVolumeCommand(const std::string& action,
+                                                        const std::string& deviceId) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
     }
-    
-    Message cmd;
-    cmd.deviceId = id;
-    
+
+    MessageType type;
     if (action == "up") {
-        cmd.type = MessageType::CMD_VOLUME_UP;
+        type = MessageType::CMD_VOLUME_UP;
     } else if (action == "down") {
-        cmd.type = MessageType::CMD_VOLUME_DOWN;
+        type = MessageType::CMD_VOLUME_DOWN;
     } else if (action == "mute") {
-        cmd.type = MessageType::CMD_VOLUME_MUTE;
+        type = MessageType::CMD_VOLUME_MUTE;
     } else {
         std::cerr << "Error: Invalid volume action: " << action << std::endl;
         return std::nullopt;
     }
-    
-    return cmd;
+
+    return Message(type, id);
 }
 
-std::optional<Message> CommandMapper::mapPowerCommand(const std::string& action, const std::string& deviceId) {
+std::optional<Message> CommandMapper::mapPowerCommand(const std::string& action,
+                                                      const std::string& deviceId) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
     }
-    
-    Message cmd;
-    cmd.deviceId = id;
-    
+
+    MessageType type;
     if (action == "on") {
-        cmd.type = MessageType::CMD_POWER_ON;
+        type = MessageType::CMD_POWER_ON;
     } else if (action == "off") {
-        cmd.type = MessageType::CMD_POWER_OFF;
+        type = MessageType::CMD_POWER_OFF;
     } else {
         std::cerr << "Error: Invalid power action: " << action << std::endl;
         return std::nullopt;
     }
-    
-    return cmd;
+
+    return Message(type, id);
 }
 
-std::optional<Message> CommandMapper::mapSourceCommand(const std::string& deviceId, const std::string& source) {
+std::optional<Message> CommandMapper::mapSourceCommand(const std::string& deviceId,
+                                                       const std::string& source) {
     uint8_t id = 0;
     if (!parseDeviceId(deviceId, id)) {
         return std::nullopt;
     }
-    
+
     uint8_t sourceId = 0;
     try {
         int val = std::stoi(source);
@@ -63,55 +61,38 @@ std::optional<Message> CommandMapper::mapSourceCommand(const std::string& device
             return std::nullopt;
         }
         sourceId = static_cast<uint8_t>(val);
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         std::cerr << "Error: Invalid source ID: " << source << std::endl;
         return std::nullopt;
     }
-    
-    Message cmd;
-    cmd.type = MessageType::CMD_CHANGE_SOURCE;
-    cmd.deviceId = id;
-    cmd.data.push_back(sourceId);
-    
-    return cmd;
+
+    return Message(MessageType::CMD_CHANGE_SOURCE, id, {sourceId});
 }
 
 std::optional<Message> CommandMapper::mapAutoStandbyCommand(const std::string& enabled) {
-    Message cmd;
-    cmd.type = MessageType::CMD_AUTO_STANDBY;
-    cmd.deviceId = 0;
-    
+    uint8_t flag;
     if (enabled == "on") {
-        cmd.data.push_back(1);  // Enabled
+        flag = 1;
     } else if (enabled == "off") {
-        cmd.data.push_back(0);  // Disabled
+        flag = 0;
     } else {
         std::cerr << "Error: Auto-standby must be 'on' or 'off'" << std::endl;
         return std::nullopt;
     }
-    
-    return cmd;
+
+    return Message(MessageType::CMD_AUTO_STANDBY, 0, {flag});
 }
 
 Message CommandMapper::mapRestartCommand() {
-    Message cmd;
-    cmd.type = MessageType::CMD_RESTART_ADAPTER;
-    cmd.deviceId = 0;  // Device ID is not relevant for restart
-    return cmd;
+    return Message(MessageType::CMD_RESTART_ADAPTER);
 }
 
 Message CommandMapper::mapSuspendCommand() {
-    Message cmd;
-    cmd.type = MessageType::CMD_SUSPEND;
-    cmd.deviceId = 0;  // Device ID is not relevant for system commands
-    return cmd;
+    return Message(MessageType::CMD_SUSPEND);
 }
 
 Message CommandMapper::mapResumeCommand() {
-    Message cmd;
-    cmd.type = MessageType::CMD_RESUME;
-    cmd.deviceId = 0;  // Device ID is not relevant for system commands
-    return cmd;
+    return Message(MessageType::CMD_RESUME);
 }
 
 bool CommandMapper::parseDeviceId(const std::string& deviceId, uint8_t& result) {
@@ -123,7 +104,7 @@ bool CommandMapper::parseDeviceId(const std::string& deviceId, uint8_t& result) 
         }
         result = static_cast<uint8_t>(val);
         return true;
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         std::cerr << "Error: Invalid device ID: " << deviceId << std::endl;
         return false;
     }

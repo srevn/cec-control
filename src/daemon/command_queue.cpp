@@ -194,23 +194,17 @@ void CommandQueue::processOperation(std::shared_ptr<CECOperation> operation) {
                   ", priority=", static_cast<int>(operation->getPriority()));
         
         // Process with reliable completion tracking
-        Message result;
-        int maxAttempts = 2;  // Allow one retry if needed
-        
-        for (int attempt = 0; attempt < maxAttempts; attempt++) {
-            result = m_handler(operation->getCommand());
-            
-            // If we have a definitive result, we can stop
-            if (result.type == MessageType::RESP_SUCCESS || 
+        constexpr int maxAttempts = 2;  // Allow one retry on indeterminate result
+        Message result = m_handler(operation->getCommand());
+
+        for (int attempt = 1; attempt < maxAttempts; ++attempt) {
+            if (result.type == MessageType::RESP_SUCCESS ||
                 result.type == MessageType::RESP_ERROR) {
                 break;
             }
-            
-            // Otherwise, pause briefly and try again for indeterminate results
-            if (attempt < maxAttempts - 1) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                LOG_INFO("Retrying operation due to indeterminate result");
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            LOG_INFO("Retrying operation due to indeterminate result");
+            result = m_handler(operation->getCommand());
         }
         
         LOG_DEBUG("Operation completed: ", operation->getDescription(), 
