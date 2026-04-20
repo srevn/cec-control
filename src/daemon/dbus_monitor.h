@@ -158,14 +158,6 @@ private:
 
     PowerStateCallback m_callback;
 
-    /**
-     * Set by onPrepareForSleep(false) to request a replacement inhibit
-     * lock after the outer sd_bus_process drain returns. Taking the
-     * lock re-enters sd_bus_call_method; deferring keeps that out of
-     * the dispatch callback stack.
-     */
-    bool m_retakeInhibitOnNextIteration = false;
-
     BusState m_state = BusState::Operational;
     std::size_t m_reconnectAttempts = 0;
 };

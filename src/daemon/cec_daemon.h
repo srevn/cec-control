@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
+#include <deque>
 #include <memory>
 
 #include "../common/event_loop.h"
@@ -54,17 +56,62 @@ public:
     void stop();
 
 private:
-    // DBus state-change handler (runs on main thread inside sd_bus_process).
-    void handlePowerStateChange(DBusMonitor::PowerState state);
+    /**
+     * Power-lifecycle sequencer phases. Exactly one lifecycle event is in
+     * flight at a time; subsequent events queue in m_pendingEvents until
+     * the current phase returns to Idle.
+     */
+    enum class LifecyclePhase { Idle, Suspending, Resuming };
 
-    /** Pre-sleep: arm a safety timer, run router->suspend() on the pool, then
-     *  release the inhibit lock on success (or on timer fire, whichever is
-     *  first). */
-    void onSuspend();
+    /** Events fed into the sequencer. */
+    enum class PowerEvent { Suspend, Resume };
 
-    /** Post-wake: run router->resume() on the pool; on failure, arm a delayed
-     *  retry timer. */
-    void onResume();
+    /**
+     * Where a PowerEvent originated. D-Bus events are bound to a real
+     * logind sleep cycle and must release/retake the delay-inhibitor
+     * lock. Wire events are local operator actions and leave the lock
+     * alone.
+     */
+    enum class EventSource { DBus, Wire };
+
+    struct PendingPowerEvent {
+        PowerEvent  event;
+        EventSource source;
+    };
+
+    /**
+     * Enqueue a lifecycle event on the main thread. Safe to call inline
+     * from any main-thread context (dbus callback, m_work drain). Do not
+     * call from worker threads directly; use m_work.post() to hop the
+     * main thread first.
+     */
+    void enqueuePowerEvent(PowerEvent event, EventSource source);
+
+    /**
+     * Drain the next queued event if the sequencer is Idle. Invoked on
+     * every phase-to-Idle transition and on every fresh enqueue.
+     */
+    void startNextLifecycleEvent();
+
+    /** Begin a suspend cycle: arm safety timer, submit router->suspend() to the pool. */
+    void startSuspend(EventSource source);
+
+    /** Begin a resume cycle: submit router->resume() to the pool. */
+    void startResume(EventSource source);
+
+    /**
+     * Main-thread continuation posted from the suspend pool worker.
+     * Releases the inhibit lock (iff source was D-Bus), transitions the
+     * phase back to Idle, and drains the next queued event.
+     */
+    void onSuspendComplete(std::chrono::milliseconds workDuration);
+
+    /**
+     * Main-thread continuation posted from the resume pool worker. Arms
+     * a delayed retry if the adapter failed to come back, retakes the
+     * inhibit lock (iff source was D-Bus), then drains the next event.
+     */
+    void onResumeComplete(bool adapterValid);
 
     /** Handler for signalfd readability. */
     void onSignalReadable();
@@ -132,6 +179,9 @@ private:
     CommandRouter::Options m_routerOptions;
 
     // Suspend / resume coordination state. Main thread only; no atomics.
+    LifecyclePhase                m_phase = LifecyclePhase::Idle;
+    EventSource                   m_phaseSource = EventSource::DBus;
+    std::deque<PendingPowerEvent> m_pendingEvents;
     bool m_suspendSafetyArmed   = false;
     bool m_resumeRetryPending   = false;
     int  m_terminationSignalCount = 0;

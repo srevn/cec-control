@@ -235,22 +235,34 @@ void CECDaemon::onSignalReadable() {
     }
 }
 
-void CECDaemon::handlePowerStateChange(DBusMonitor::PowerState state) {
-    switch (state) {
-        case DBusMonitor::PowerState::Suspending:
-            LOG_INFO("Received system suspend notification from D-Bus");
-            onSuspend();
-            break;
-        case DBusMonitor::PowerState::Resuming:
-            LOG_INFO("Received system resume notification from D-Bus");
-            onResume();
-            break;
+void CECDaemon::enqueuePowerEvent(PowerEvent event, EventSource source) {
+    m_pendingEvents.push_back({event, source});
+    startNextLifecycleEvent();
+}
+
+void CECDaemon::startNextLifecycleEvent() {
+    if (m_phase != LifecyclePhase::Idle) return;
+    if (m_pendingEvents.empty()) return;
+
+    const auto next = m_pendingEvents.front();
+    m_pendingEvents.pop_front();
+    m_phaseSource = next.source;
+
+    switch (next.event) {
+        case PowerEvent::Suspend: startSuspend(next.source); break;
+        case PowerEvent::Resume:  startResume(next.source);  break;
     }
 }
 
-void CECDaemon::onSuspend() {
-    if (!m_router) return;
+void CECDaemon::startSuspend(EventSource /*source*/) {
+    if (!m_router) {
+        // Daemon is mid-teardown; discard silently and keep draining so
+        // the sequencer never wedges the queue.
+        startNextLifecycleEvent();
+        return;
+    }
     LOG_INFO("System suspending, preparing CEC adapter");
+    m_phase = LifecyclePhase::Suspending;
 
     // Cancel any pending post-resume retry: a new suspend invalidates it.
     m_resumeRetryTimer.disarm();
@@ -279,32 +291,39 @@ void CECDaemon::onSuspend() {
         } catch (const std::exception& e) {
             LOG_ERROR("Exception during suspend: ", e.what());
         }
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
-
-        m_work.post([this, ms]() {
-            // Runs on the main thread. Whichever path (completion vs.
-            // safety timer) fires first releases the inhibit lock; the
-            // other becomes a no-op.
-            m_suspendSafetyTimer.disarm();
-            if (m_suspendSafetyArmed) {
-                m_suspendSafetyArmed = false;
-                LOG_INFO("CEC suspend took ", ms, "ms");
-                if (m_dbusMonitor) {
-                    LOG_INFO("CEC sleep preparation complete; allowing system to sleep");
-                    m_dbusMonitor->releaseInhibitLock();
-                }
-            } else {
-                LOG_WARNING("CEC suspend completed in ", ms,
-                            "ms but safety timer had already released the inhibit lock");
-            }
-        });
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0);
+        m_work.post([this, elapsed]() { this->onSuspendComplete(elapsed); });
     });
 }
 
-void CECDaemon::onResume() {
-    if (!m_router) return;
+void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
+    // Whichever path (completion vs. safety timer) fires first releases
+    // the inhibit lock; the other becomes a no-op.
+    m_suspendSafetyTimer.disarm();
+    if (m_suspendSafetyArmed) {
+        m_suspendSafetyArmed = false;
+        LOG_INFO("CEC suspend took ", workDuration.count(), "ms");
+        if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
+            LOG_INFO("CEC sleep preparation complete; allowing system to sleep");
+            m_dbusMonitor->releaseInhibitLock();
+        }
+    } else {
+        LOG_WARNING("CEC suspend completed in ", workDuration.count(),
+                    "ms but safety timer had already released the inhibit lock");
+    }
+
+    m_phase = LifecyclePhase::Idle;
+    startNextLifecycleEvent();
+}
+
+void CECDaemon::startResume(EventSource /*source*/) {
+    if (!m_router) {
+        startNextLifecycleEvent();
+        return;
+    }
     LOG_INFO("System resuming, reinitializing CEC adapter");
+    m_phase = LifecyclePhase::Resuming;
 
     // Clear any stale retry flag (another resume cycle starts fresh).
     m_resumeRetryTimer.disarm();
@@ -321,23 +340,34 @@ void CECDaemon::onResume() {
         } catch (const std::exception& e) {
             LOG_ERROR("Exception during resume: ", e.what());
         }
-
         const bool adapterValid = m_router->isAdapterValid();
-        m_work.post([this, adapterValid]() {
-            // After resume, the USB subsystem can still be settling. One
-            // delayed retry ten seconds later covers the window where the
-            // first reopen races with ttyACM* re-enumeration. Cancellable
-            // (disarmed on the next suspend/resume).
-            if (!adapterValid && !m_resumeRetryPending) {
-                m_resumeRetryPending = true;
-                if (!m_resumeRetryTimer.armOnce(std::chrono::duration_cast<std::chrono::milliseconds>(
-                        kResumeRetryDelay))) {
-                    LOG_WARNING("Could not arm resume-retry timer");
-                    m_resumeRetryPending = false;
-                }
-            }
-        });
+        m_work.post([this, adapterValid]() { this->onResumeComplete(adapterValid); });
     });
+}
+
+void CECDaemon::onResumeComplete(bool adapterValid) {
+    // After resume, the USB subsystem can still be settling. One delayed
+    // retry ten seconds later covers the window where the first reopen
+    // races with ttyACM* re-enumeration. Cancellable (disarmed on the
+    // next suspend/resume).
+    if (!adapterValid && !m_resumeRetryPending) {
+        m_resumeRetryPending = true;
+        if (!m_resumeRetryTimer.armOnce(std::chrono::duration_cast<std::chrono::milliseconds>(
+                kResumeRetryDelay))) {
+            LOG_WARNING("Could not arm resume-retry timer");
+            m_resumeRetryPending = false;
+        }
+    }
+
+    // Retake the delay-inhibitor so the next real sleep is guarded
+    // again. Wire-sourced resumes never dropped the lock, so there is
+    // nothing to retake in that case.
+    if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
+        m_dbusMonitor->takeInhibitLock();
+    }
+
+    m_phase = LifecyclePhase::Idle;
+    startNextLifecycleEvent();
 }
 
 void CECDaemon::onSuspendSafetyTimer() {
@@ -352,7 +382,11 @@ void CECDaemon::onSuspendSafetyTimer() {
     LOG_WARNING("Suspend did not complete within ",
                 kSuspendSafetyDeadline.count(),
                 "s; releasing inhibit lock forcibly");
-    if (m_dbusMonitor) m_dbusMonitor->releaseInhibitLock();
+    // Only a D-Bus-sourced suspend ever held the lock; wire-sourced
+    // suspends leave it untouched so the next real sleep stays guarded.
+    if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
+        m_dbusMonitor->releaseInhibitLock();
+    }
 }
 
 void CECDaemon::onResumeRetryTimer() {
@@ -440,7 +474,14 @@ bool CECDaemon::setupPowerMonitor() {
             return false;
         }
         m_dbusMonitor->setCallback([this](DBusMonitor::PowerState state) {
-            this->handlePowerStateChange(state);
+            // Runs inline inside sd_bus_process; hop through m_work so the
+            // sequencer never executes nested in the bus dispatch stack.
+            const auto event = (state == DBusMonitor::PowerState::Suspending)
+                               ? PowerEvent::Suspend
+                               : PowerEvent::Resume;
+            m_work.post([this, event]() {
+                this->enqueuePowerEvent(event, EventSource::DBus);
+            });
         });
         LOG_INFO("D-Bus power monitoring setup successfully");
         return true;
@@ -461,12 +502,16 @@ Message CECDaemon::handleCommand(const Message& command) {
     // queue. Acknowledge the request as soon as it's been queued.
     if (command.type == MessageType::CMD_SUSPEND) {
         LOG_INFO("Processing suspend command");
-        m_work.post([this]() { this->onSuspend(); });
+        m_work.post([this]() {
+            this->enqueuePowerEvent(PowerEvent::Suspend, EventSource::Wire);
+        });
         return Message(MessageType::RESP_SUCCESS);
     }
     if (command.type == MessageType::CMD_RESUME) {
         LOG_INFO("Processing resume command");
-        m_work.post([this]() { this->onResume(); });
+        m_work.post([this]() {
+            this->enqueuePowerEvent(PowerEvent::Resume, EventSource::Wire);
+        });
         return Message(MessageType::RESP_SUCCESS);
     }
 

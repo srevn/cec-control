@@ -200,7 +200,6 @@ void DBusMonitor::stop() {
     tearDownBusState();
     m_state = BusState::Operational;
     m_reconnectAttempts = 0;
-    m_retakeInhibitOnNextIteration = false;
 
     LOG_INFO("sd-bus D-Bus monitor stopped");
 }
@@ -322,16 +321,6 @@ void DBusMonitor::processBus() {
         }
         if (r == 0) break;  // No more pending events in this pass.
     }
-
-    // Take a replacement inhibit lock *outside* sd_bus_process so the
-    // nested sd_bus_call_method doesn't reorder bus state against
-    // pending messages.
-    if (m_retakeInhibitOnNextIteration) {
-        m_retakeInhibitOnNextIteration = false;
-        if (m_inhibitFd < 0) {
-            takeInhibitLock();
-        }
-    }
 }
 
 void DBusMonitor::updateLoopRegistration() {
@@ -442,7 +431,6 @@ void DBusMonitor::handleBusDisconnect() {
     // isn't left waiting on a holder that no longer exists. A fresh
     // lock will be taken as part of reconnectBus() on success.
     releaseInhibitLock();
-    m_retakeInhibitOnNextIteration = false;
 
     // Remove the bus fd from the loop before unref-ing the bus itself.
     // Removing first keeps the loop's pending batch from dispatching on
@@ -557,10 +545,6 @@ int DBusMonitor::onPrepareForSleep(sd_bus_message* msg, void* userdata,
     } else {
         LOG_INFO("System is waking up");
         monitor->m_callback(PowerState::Resuming);
-        // Queue a replacement inhibit lock; the actual sd_bus_call
-        // happens after processBus() returns so we are not nested
-        // inside sd_bus_process when it runs.
-        monitor->m_retakeInhibitOnNextIteration = true;
     }
 
     return 0;
