@@ -1,4 +1,5 @@
 #include "command_router.h"
+#include "../common/command_registry.h"
 #include "../common/logger.h"
 
 #include <chrono>
@@ -160,19 +161,6 @@ void logDeviceSnapshot(CECAdapter& adapter) {
         }
     } catch (const std::exception& e) {
         LOG_ERROR("Exception during device scanning: ", e.what());
-    }
-}
-
-bool isQueueableWhileSuspended(MessageType type) noexcept {
-    switch (type) {
-        case MessageType::CMD_POWER_ON:
-        case MessageType::CMD_POWER_OFF:
-        case MessageType::CMD_VOLUME_UP:
-        case MessageType::CMD_VOLUME_DOWN:
-        case MessageType::CMD_VOLUME_MUTE:
-            return true;
-        default:
-            return false;
     }
 }
 
@@ -350,8 +338,9 @@ Message CommandRouter::dispatchLocked(const Message& command) {
     }
 
     if (m_suspended) {
+        const auto* spec = findByType(command.type);
         if (m_options.queueCommandsDuringSuspend &&
-            isQueueableWhileSuspended(command.type)) {
+            spec && spec->queueableWhileSuspended) {
             m_queuedCommands.push_back(command);
             LOG_INFO("Queued command type=", static_cast<int>(command.type),
                      " for execution after resume");

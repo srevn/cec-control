@@ -155,19 +155,19 @@ std::optional<Message> parseResume(const std::vector<std::string_view>& args,
 // entry, bump the std::array<CommandSpec, N> declaration there.
 const std::array<CommandSpec, 7> kCommands = {{
     {MessageType::CMD_POWER_ON,         "power",        "(on|off) DEVICE_ID",
-     "Power a device on or off",                                  parsePower},
+     "Power a device on or off",                                  parsePower,       true},
     {MessageType::CMD_VOLUME_UP,        "volume",       "(up|down|mute) DEVICE_ID",
-     "Control volume on the audio system",                        parseVolume},
+     "Control volume on the audio system",                        parseVolume,      true},
     {MessageType::CMD_CHANGE_SOURCE,    "source",       "DEVICE_ID SOURCE_ID",
-     "Change the active input source",                            parseSource},
+     "Change the active input source",                            parseSource,      false},
     {MessageType::CMD_AUTO_STANDBY,     "auto-standby", "(on|off)",
-     "Suspend this PC when the TV powers off",                    parseAutoStandby},
+     "Suspend this PC when the TV powers off",                    parseAutoStandby, false},
     {MessageType::CMD_RESTART_ADAPTER,  "restart",      "",
-     "Restart the CEC adapter",                                   parseRestart},
+     "Restart the CEC adapter",                                   parseRestart,     false},
     {MessageType::CMD_SUSPEND,          "suspend",      "",
-     "Prepare for system sleep (run pre-sleep CEC actions)",      parseSuspend},
+     "Prepare for system sleep (run pre-sleep CEC actions)",      parseSuspend,     false},
     {MessageType::CMD_RESUME,           "resume",       "",
-     "Restore after system wake (run post-wake CEC actions)",     parseResume},
+     "Restore after system wake (run post-wake CEC actions)",     parseResume,      false},
 }};
 
 const CommandSpec* findByName(std::string_view name) noexcept {
