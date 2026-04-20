@@ -211,8 +211,13 @@ private:
     Options m_options;
     std::string m_portName;
 
-    // libCEC adapter
+    // libCEC adapter. m_callbacks is a plain non-owning struct whose address
+    // we hand to libcec via m_config.callbacks; libcec treats the pointer as
+    // borrowed (consistent with AdapterDeleter's CECDestroy note — libcec
+    // never free()s anything we hand it). Value-initialised so every function
+    // slot starts out nullptr; setupCallbacks() fills in the ones we use.
     AdapterPtr m_adapter;
+    CEC::ICECCallbacks m_callbacks{};
     CEC::libcec_configuration m_config;
     std::atomic<bool> m_connected;
 

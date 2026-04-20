@@ -19,42 +19,20 @@ CECAdapter::CECAdapter(Options options)
     // Populate config from options
     populateConfigFromOptions(m_options);
 
-    // Ensure callbacks structure is allocated properly
-    if (!m_config.callbacks) {
-        LOG_INFO("Allocating CEC callbacks structure");
-        m_config.callbacks = new CEC::ICECCallbacks;
-        if (!m_config.callbacks) {
-            LOG_ERROR("Failed to allocate CEC callbacks structure");
-            return;
-        }
-    }
-
-    // Initialize callbacks to null
-    m_config.callbacks->logMessage = nullptr;
-    m_config.callbacks->commandReceived = nullptr;
-    m_config.callbacks->alert = nullptr;
-    m_config.callbacks->sourceActivated = nullptr;
-
-    // Set up our callbacks
+    // m_callbacks is value-initialised so every slot is nullptr; point
+    // libcec's config at it and let setupCallbacks() install the handlers
+    // we care about.
+    m_config.callbacks = &m_callbacks;
     setupCallbacks();
 }
 
 CECAdapter::~CECAdapter() {
     closeConnection();
 
-    // Now reset the adapter pointer with lock
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-        if (m_adapter) {
-            LOG_INFO("Releasing CEC adapter resources");
-            m_adapter.reset();
-        }
-    }
-
-    // Clean up callbacks if we allocated them
-    if (m_config.callbacks) {
-        delete m_config.callbacks;
-        m_config.callbacks = nullptr;
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (m_adapter) {
+        LOG_INFO("Releasing CEC adapter resources");
+        m_adapter.reset();
     }
 }
 
