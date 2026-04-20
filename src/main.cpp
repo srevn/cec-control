@@ -1,6 +1,5 @@
 #include "common/argument_parser.h"
 #include "common/help_printer.h"
-#include "common/logger.h"
 #include "daemon/daemon_bootstrap.h"
 #include "client/cec_client.h"
 
@@ -29,19 +28,22 @@ int main(int argc, char* argv[]) {
     // Branch execution based on detected mode
     switch (parseResult.mode) {
         case cec_control::ApplicationMode::CLIENT: {
-            // Configure minimal logging for client
-            cec_control::Logger::getInstance().setLogLevel(cec_control::LogLevel::ERROR);
+            // The logger defaults to silent (no console, no file). The client
+            // renders every diagnostic through CECClient and never wants stray
+            // LOG_* lines polluting stdout for downstream pipelines, so we
+            // leave the configuration at its default rather than enabling any
+            // sink here.
 
             if (!parseResult.clientCommand.has_value()) {
-                std::cerr << "Error: No valid command specified" << std::endl;
+                std::cerr << "Error: No valid command specified\n";
                 return EXIT_FAILURE;
             }
-            
+
             try {
                 cec_control::CECClient client(parseResult.socketPath);
                 return client.execute(parseResult.clientCommand.value());
             } catch (const std::exception& e) {
-                std::cerr << "Error: " << e.what() << std::endl;
+                std::cerr << "Error: " << e.what() << '\n';
                 return EXIT_FAILURE;
             }
         }

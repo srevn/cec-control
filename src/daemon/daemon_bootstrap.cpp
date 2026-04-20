@@ -174,17 +174,22 @@ bool DaemonBootstrap::daemonize() {
 }
 
 void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResult) {
-    // Configure log file
-    Logger::getInstance().setLogFile(parseResult.logFile);
-    
-    // Set log level based on verbose mode
-    if (parseResult.verboseMode) {
-        Logger::getInstance().setLogLevel(LogLevel::DEBUG);
-    } else {
-        Logger::getInstance().setLogLevel(LogLevel::INFO);
-    }
-    
-    LOG_INFO("Logging initialized with file: ", parseResult.logFile);
+    // Daemon logging routes by severity:
+    //   - INFO/DEBUG/TRAFFIC -> stdout (journald captures as PRIORITY=info)
+    //   - WARNING/ERROR/FATAL -> stderr (journald captures as PRIORITY=err)
+    // The file sink mirrors everything at the configured threshold so a
+    // foreground operator (or a deployment without journald) still has a
+    // durable log even if the standard streams are redirected to /dev/null
+    // by daemonize().
+    LogConfig cfg;
+    cfg.lowLevelSink  = LogSink::Stdout;
+    cfg.highLevelSink = LogSink::Stderr;
+    cfg.filePath      = parseResult.logFile;
+    cfg.minLevel      = parseResult.verboseMode ? LogLevel::DEBUG : LogLevel::INFO;
+    Logger::getInstance().configure(cfg);
+
+    LOG_INFO("Logging initialised; file=", parseResult.logFile,
+             ", level=", parseResult.verboseMode ? "DEBUG" : "INFO");
 }
 
 ConfigManager& DaemonBootstrap::setupConfiguration(const ArgumentParser::ParseResult& parseResult) {

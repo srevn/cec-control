@@ -181,6 +181,9 @@ UnixSocket UnixSocket::connect(const std::string& path, Deadline deadline) {
         int ready = ::poll(&pfd, 1, deadline.remainingMs());
         if (ready == 0) {
             LOG_ERROR("connect(", path, ") timed out");
+            // poll(2) leaves errno untouched on a zero return; set it so
+            // callers can classify timeouts without an out-of-band channel.
+            errno = ETIMEDOUT;
             return {};
         }
         if (ready < 0) {
@@ -200,6 +203,8 @@ UnixSocket UnixSocket::connect(const std::string& path, Deadline deadline) {
             } else {
                 LOG_ERROR("connect(", path, ") failed: ", std::strerror(soerr));
             }
+            // Promote the SO_ERROR value into errno for the same reason.
+            errno = soerr;
             return {};
         }
     }

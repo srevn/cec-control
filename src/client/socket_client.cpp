@@ -1,77 +1,93 @@
 #include "socket_client.h"
 
-#include <sys/socket.h>
 #include <array>
 #include <cerrno>
-#include <cstring>
+#include <string>
+#include <sys/socket.h>
 
-#include "../common/logger.h"
 #include "../common/system_paths.h"
 
 namespace cec_control {
+
+namespace {
+
+ClientErrorKind classifyConnectErrno(int err) noexcept {
+    switch (err) {
+        case ENOENT:
+        case ECONNREFUSED:
+            return ClientErrorKind::DaemonUnavailable;
+        case ETIMEDOUT:
+            return ClientErrorKind::ConnectTimeout;
+        default:
+            return ClientErrorKind::ConnectFailed;
+    }
+}
+
+} // namespace
 
 SocketClient::SocketClient(std::string socketPath)
     : m_socketPath(socketPath.empty() ? SystemPaths::getSocketPath()
                                       : std::move(socketPath)) {}
 
-bool SocketClient::connect() {
+std::optional<ClientError> SocketClient::connect() {
     m_socket = UnixSocket::connect(m_socketPath, Deadline::in(CONNECT_TIMEOUT));
     if (!m_socket.valid()) {
-        return false;
+        const int err = errno;
+        return ClientError{classifyConnectErrno(err), err, m_socketPath};
     }
 
-    // Cap every subsequent send/recv in the kernel, so the caller never has
-    // to thread deadlines explicitly through the request path.
+    // Cap every subsequent send/recv in the kernel so the request path needs
+    // no bespoke deadline plumbing. If we cannot install the timeout we drop
+    // the socket: a request without a recv ceiling could hang forever.
     if (!m_socket.setIoTimeout(IO_TIMEOUT)) {
-        LOG_WARNING("Failed to set socket I/O timeout");
+        const int err = errno;
+        m_socket.reset();
+        return ClientError{ClientErrorKind::ConnectFailed, err,
+                           "could not set I/O timeout on socket"};
     }
-    return true;
+    return std::nullopt;
 }
 
-std::optional<Message> SocketClient::sendCommand(const Message& command) {
+SocketClient::SendResult SocketClient::sendCommand(const Message& command) {
     if (!m_socket.valid()) {
-        LOG_ERROR("Not connected to daemon");
-        return std::nullopt;
+        return ClientError{ClientErrorKind::NotConnected, 0, m_socketPath};
     }
 
-    auto outBuf = command.serialize();
-    ssize_t sent = ::send(m_socket.get(), outBuf.data(), outBuf.size(), MSG_NOSIGNAL);
+    const auto outBuf = command.serialize();
+    const ssize_t sent = ::send(m_socket.get(), outBuf.data(), outBuf.size(), MSG_NOSIGNAL);
     if (sent < 0) {
-        LOG_ERROR("send() failed: ", std::strerror(errno));
-        return std::nullopt;
+        return ClientError{ClientErrorKind::SendFailed, errno, ""};
     }
-    // SEQPACKET is atomic: a successful send transfers the entire datagram or
-    // none of it. A short return would indicate a kernel bug.
     if (static_cast<std::size_t>(sent) != outBuf.size()) {
-        LOG_ERROR("Unexpected partial send on SEQPACKET (", sent, "/",
-                  outBuf.size(), ")");
-        return std::nullopt;
+        // SEQPACKET semantics: a successful send transfers the entire datagram
+        // or none. A short return here would indicate a kernel anomaly.
+        return ClientError{ClientErrorKind::SendFailed, 0,
+                           "short send (" + std::to_string(sent) + "/" +
+                               std::to_string(outBuf.size()) + ")"};
     }
 
     std::array<uint8_t, MAX_MESSAGE_SIZE> buffer;
-    ssize_t received = ::recv(m_socket.get(), buffer.data(), buffer.size(), MSG_TRUNC);
+    const ssize_t received = ::recv(m_socket.get(), buffer.data(), buffer.size(), MSG_TRUNC);
     if (received == 0) {
-        LOG_ERROR("Daemon closed connection");
-        return std::nullopt;
+        return ClientError{ClientErrorKind::PeerClosed, 0, ""};
     }
     if (received < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            LOG_ERROR("Timed out waiting for response from daemon");
-        } else {
-            LOG_ERROR("recv() failed: ", std::strerror(errno));
-        }
-        return std::nullopt;
+        const int err = errno;
+        const bool timedOut = (err == EAGAIN || err == EWOULDBLOCK);
+        return ClientError{
+            timedOut ? ClientErrorKind::ResponseTimeout : ClientErrorKind::ReceiveFailed,
+            err, ""};
     }
     if (static_cast<std::size_t>(received) > buffer.size()) {
-        LOG_ERROR("Received oversized response (", received, " bytes)");
-        return std::nullopt;
+        return ClientError{ClientErrorKind::OversizedResponse, 0,
+                           std::to_string(received) + " bytes"};
     }
 
-    auto msg = Message::deserialize(buffer.data(), static_cast<std::size_t>(received));
-    if (!msg) {
-        LOG_ERROR("Received malformed response from daemon");
+    auto response = Message::deserialize(buffer.data(), static_cast<std::size_t>(received));
+    if (!response) {
+        return ClientError{ClientErrorKind::MalformedResponse, 0, ""};
     }
-    return msg;
+    return std::move(*response);
 }
 
 } // namespace cec_control

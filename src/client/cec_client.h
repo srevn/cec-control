@@ -1,46 +1,41 @@
 #pragma once
 
 #include <string>
-#include <memory>
-#include <utility>
 
-#include "socket_client.h"
 #include "../common/messages.h"
+#include "socket_client.h"
 
 namespace cec_control {
 
 /**
- * CEC client application class
+ * Top-level client adapter.
+ *
+ * Owns a SocketClient, drives one round-trip with the daemon, and renders
+ * the outcome — success, daemon-side error, or transport failure — onto the
+ * standard streams. Stdout carries the human-readable success line; stderr
+ * carries every diagnostic so that pipelines consuming stdout see only the
+ * positive result.
  */
 class CECClient {
 public:
-    /**
-     * Create a new CEC client
-     * @param socketPath Path to the daemon socket
-     */
     explicit CECClient(std::string socketPath);
-    
+
+    CECClient(const CECClient&) = delete;
+    CECClient& operator=(const CECClient&) = delete;
+
     /**
-     * Destructor
-     */
-    ~CECClient();
-    
-    /**
-     * Connect to daemon and execute a command
-     * @param command The command to execute
-     * @return Exit code (0 for success, non-zero for failure)
+     * Connect, send @p command, render the result. Returns a process exit
+     * code: EXIT_SUCCESS only when the daemon acknowledged the command with
+     * RESP_SUCCESS.
      */
     int execute(const Message& command);
 
 private:
-    std::unique_ptr<SocketClient> m_socketClient;
-    std::string m_socketPath;
-    
-    // Connect to the daemon socket
-    bool connect();
-    
-    // Print command result
-    void printResult(const Message& response);
+    void renderConnectError(const ClientError& err) const;
+    void renderTransportError(const ClientError& err) const;
+    int  renderResponse(const Message& response) const;
+
+    SocketClient m_socketClient;
 };
 
 } // namespace cec_control
