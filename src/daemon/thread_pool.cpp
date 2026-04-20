@@ -38,25 +38,23 @@ void ThreadPool::start() {
 }
 
 void ThreadPool::shutdown() {
-    {
-        std::unique_lock<std::mutex> lock(m_queueMutex);
-        
-        // Set stop flag and notify all threads
-        m_stop = true;
+    // Idempotent: the first call performs the shutdown and logs completion;
+    // subsequent calls (e.g. from the destructor after an explicit shutdown)
+    // are no-ops. Racing shutdowns from multiple threads is not supported —
+    // but covering the explicit-then-dtor path here avoids double-logging.
+    if (m_stop.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
-    
-    // Notify all threads to wake up
+
     m_condition.notify_all();
-    
-    // Wait for all threads to finish
+
     for (auto& worker : m_workers) {
         if (worker.joinable()) {
             worker.join();
         }
     }
-    
-    // Clear worker threads
     m_workers.clear();
+
     LOG_INFO("Thread pool shutdown complete");
 }
 

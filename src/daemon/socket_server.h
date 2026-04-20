@@ -1,10 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 
 #include "../common/messages.h"
 #include "../common/system_paths.h"
@@ -15,10 +13,18 @@
 namespace cec_control {
 
 /**
- * Accepts client connections on a Unix SEQPACKET socket and dispatches each
- * one to a worker in the provided ThreadPool. Connection lifetime and FD
- * ownership live entirely in socket_connection.{h,cpp}; this class only runs
- * the accept loop and coordinates startup/shutdown.
+ * Unix-socket listener whose accept queue is drained from the unified
+ * event loop.
+ *
+ * start() provisions the listening socket and returns; there is no
+ * dedicated accept thread. Call listenerFd() to register with the
+ * EventLoop; its handler calls onReadable(), which drains pending
+ * accepts and hands each one to the supplied ThreadPool via
+ * ConnectionManager.
+ *
+ * stop() closes the listener (so no new connections are accepted) and
+ * drains all in-flight connection handlers. The thread pool is borrowed,
+ * never owned — the caller outlives this object.
  */
 class SocketServer {
 public:
@@ -29,36 +35,46 @@ public:
     SocketServer(SocketServer&&) = delete;
     SocketServer& operator=(SocketServer&&) = delete;
 
-    explicit SocketServer(std::shared_ptr<ThreadPool> threadPool = nullptr)
+    /**
+     * @param threadPool  Pool used to run connection handlers. Must be
+     *                    non-null and outlive this object.
+     */
+    explicit SocketServer(std::shared_ptr<ThreadPool> threadPool)
         : SocketServer(SystemPaths::getSocketPath(), std::move(threadPool)) {}
 
-    SocketServer(std::string socketPath,
-                 std::shared_ptr<ThreadPool> threadPool = nullptr);
+    SocketServer(std::string socketPath, std::shared_ptr<ThreadPool> threadPool);
 
     ~SocketServer();
 
-    bool start();
+    /**
+     * Open the listener. Returns false if binding/listening fails or if
+     * another process is already accepting on the socket path.
+     */
+    [[nodiscard]] bool start();
+
+    /** Close the listener and drain all live connections. Idempotent. */
     void stop();
 
+    /** Install/replace the per-request handler. */
     void setCommandHandler(CommandHandler handler);
 
-    bool isRunning() const noexcept { return m_running.load(); }
+    /** The listener fd for EventLoop registration. -1 if not started. */
+    int listenerFd() const noexcept { return m_listener.get(); }
+
+    /**
+     * Handler invoked by the event loop when the listener is readable.
+     * Drains the accept queue; one invocation may produce zero or more
+     * new connections.
+     */
+    void onReadable();
+
+    bool isRunning() const noexcept { return m_listener.valid(); }
 
 private:
-    void acceptLoop();
-    bool wakeupAcceptLoop() noexcept;
-
     std::string m_socketPath;
     std::shared_ptr<ThreadPool> m_threadPool;
-    bool m_ownsThreadPool = false;
-
     CommandHandler m_handler;
-
     UnixSocket m_listener;
-    int m_wakeFd = -1;                  // eventfd used to unblock acceptLoop
-    std::atomic<bool> m_running{false};
-    std::thread m_acceptThread;
-
     ConnectionManager m_connections;
 };
 

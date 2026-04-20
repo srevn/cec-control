@@ -1,36 +1,37 @@
 #pragma once
 
-#include <atomic>
 #include <memory>
-#include <signal.h>
-#include <thread>
 
+#include "../common/event_loop.h"
+#include "../common/main_thread_work.h"
+#include "../common/signal_source.h"
+#include "../common/timer_source.h"
 #include "command_router.h"
-#include "socket_server.h"
 #include "dbus_monitor.h"
+#include "socket_server.h"
 #include "thread_pool.h"
-#include "../common/logger.h"
 
 namespace cec_control {
 
 /**
  * @class CECDaemon
- * @brief Top-level orchestrator: signals, main-loop wake, DBus + router
- *        coordination, socket server lifetime.
+ * @brief Top-level orchestrator: owns the unified event loop and wires
+ *        every event source (signals, work queue, sockets, DBus, timers)
+ *        into it. All long-running work is delegated to the thread pool
+ *        so the main loop itself stays responsive.
  *
- * The daemon itself carries very little state. Suspend/resume bookkeeping
- * lives in the CommandRouter; adapter liveness lives in CECAdapter; connection
- * lifetime lives in SocketServer. What remains here is the glue: wire the
- * signal handler into the run-loop via an eventfd, route socket commands to
- * the right subsystem, and coordinate suspend/resume between the router and
- * the D-Bus inhibit lock.
+ * After Phase E the daemon carries no singleton, no C-style signal
+ * handler, and no cross-thread atomic flags. Shutdown is triggered by
+ * SignalSource, which calls m_loop.stop(); teardown runs in stop() on
+ * return from run(). A third SIGTERM during a stuck teardown does not
+ * self-escalate to _exit — systemd's TimeoutStopSec plus SIGKILL is
+ * the operator escape hatch.
  */
 class CECDaemon {
 public:
     /**
-     * @brief Daemon-level lifecycle knobs. Anything CEC-specific (devices,
-     * throttling, auto-standby) lives on CommandRouter::Options; these are
-     * the handful of switches that sit above the router.
+     * Daemon-level lifecycle knobs. CEC-specific options live on
+     * CommandRouter::Options.
      */
     struct Options {
         bool enablePowerMonitor = true;
@@ -42,80 +43,76 @@ public:
     CECDaemon(const CECDaemon&) = delete;
     CECDaemon& operator=(const CECDaemon&) = delete;
 
-    /** Bring up the router, socket server, signal handlers, DBus monitor. */
+    /** Bring up pool, router, socket server, DBus monitor, loop sources. */
     [[nodiscard]] bool start();
 
-    /** Signal the run-loop to exit; tear everything down. Idempotent. */
-    void stop();
-
-    /** Block on the main-loop eventfd until signalled to exit. */
+    /** Block on the unified event loop until a signal or error exits it. */
     void run();
 
-    /**
-     * Async-signal-safe static handler. Kept for the current single-threaded
-     * signal delivery model; Phase E collapses this onto a signalfd inside
-     * the unified poller and deletes the handler + singleton entirely.
-     */
-    static void signalHandler(int signal);
-    static CECDaemon* getInstance() noexcept { return s_instance; }
-
-    /** Pre-sleep coordination: router suspend + DBus inhibit release. */
-    void onSuspend();
-
-    /** Post-wake coordination: router resume + optional 10s retry fallback. */
-    void onResume();
+    /** Tear everything down. Idempotent; safe to call after a failed start(). */
+    void stop();
 
 private:
-    /** Connection-lost callback invoked by the router on a libCEC thread. */
-    void onConnectionLost();
-
-    /** Main-loop side of connection-lost: run the reconnect on our thread. */
-    void onConnectionLostEvent();
-
-    /** Route a wire message to the appropriate handler. */
-    Message handleCommand(const Message& command);
-
-    /** Install SIGINT/SIGTERM/SIGHUP handlers via sigaction. */
-    void setupSignalHandlers();
-
-    /** Restore the affected signals to SIG_DFL. Idempotent. */
-    void teardownSignalHandlers();
-
-    /** Wake the main loop by writing to m_wakeFd. Async-signal-safe; best-effort. */
-    void wakeMainLoop() noexcept;
-
-    /** Drain any accumulated counter writes from m_wakeFd. */
-    void drainWakeFd() noexcept;
-
-    /** React to a power state change surfaced by DBusMonitor. */
+    // DBus state-change handler (runs on main thread inside sd_bus_process).
     void handlePowerStateChange(DBusMonitor::PowerState state);
 
-    /** Create and start the DBus monitor. Returns true on success. */
+    /** Pre-sleep: arm a safety timer, run router->suspend() on the pool, then
+     *  release the inhibit lock on success (or on timer fire, whichever is
+     *  first). */
+    void onSuspend();
+
+    /** Post-wake: run router->resume() on the pool; on failure, arm a delayed
+     *  retry timer. */
+    void onResume();
+
+    /** Handler for signalfd readability. */
+    void onSignalReadable();
+
+    /** Handler for the suspend-safety timer. */
+    void onSuspendSafetyTimer();
+
+    /** Handler for the post-resume delayed-retry timer. */
+    void onResumeRetryTimer();
+
+    /** Route an incoming wire command to the right subsystem. */
+    Message handleCommand(const Message& command);
+
+    /** Ensure a DBus monitor is up; returns true on success, false on
+     *  initialization failure (logged). */
     bool setupPowerMonitor();
 
-    // Core components
-    CommandRouter::Options m_routerOptions;  // staged until start()
-    std::unique_ptr<CommandRouter> m_router;
-    std::unique_ptr<SocketServer> m_socketServer;
-    std::unique_ptr<DBusMonitor> m_dbusMonitor;
+    // Event loop and single-threaded primitives. Declared first so they
+    // outlive every subsystem that might register handlers against them.
+    // SignalSource must be constructed on the main thread before any worker
+    // threads are spawned — it masks the relevant signals on the current
+    // thread, and workers inherit the mask via thread creation.
+    SignalSource      m_signals;
+    MainThreadWork    m_work;
+    EventLoop         m_loop;
+    TimerSource       m_suspendSafetyTimer;
+    TimerSource       m_resumeRetryTimer;
+
+    // Cross-thread worker pool. Must outlive router and socket server.
     std::shared_ptr<ThreadPool> m_threadPool;
 
-    // Run-loop state
-    std::atomic<bool> m_running{false};
-    std::atomic<bool> m_connectionLost{false};
+    // Domain subsystems.
+    std::unique_ptr<CommandRouter>  m_router;
+    std::unique_ptr<SocketServer>   m_socketServer;
+    std::unique_ptr<DBusMonitor>    m_dbusMonitor;
 
-    // Counts how many termination signals have been received. The third one
-    // escalates to _exit() in the signal handler.
-    std::atomic<int> m_signalCount{0};
+    // Staged options. Router consumes them on initialize().
+    CommandRouter::Options m_routerOptions;
 
-    // eventfd that the signal handler and onConnectionLost() write to in
-    // order to wake the main loop. Created in start() before signal handlers
-    // are installed; closed in stop() after handlers are restored to SIG_DFL.
-    int m_wakeFd{-1};
+    // Suspend / resume coordination state. Main thread only; no atomics.
+    bool m_suspendSafetyArmed   = false;
+    bool m_resumeRetryPending   = false;
+    int  m_terminationSignalCount = 0;
 
+    // Daemon-level lifecycle options.
     Options m_options;
 
-    static CECDaemon* s_instance;
+    // True between start() returning success and stop() completing.
+    bool m_started = false;
 };
 
 } // namespace cec_control

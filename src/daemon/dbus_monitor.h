@@ -1,134 +1,123 @@
 #pragma once
 
-#include <thread>
-#include <atomic>
 #include <functional>
-#include <mutex>
 #include <systemd/sd-bus.h>
+
+#include "../common/event_loop.h"
+#include "../common/timer_source.h"
 
 namespace cec_control {
 
 /**
- * Class to monitor power management events via D-Bus using sd-bus.
- * Simplified implementation with robust error handling and connection management.
+ * Monitors logind PrepareForSleep signals over sd-bus.
+ *
+ * Integrates with the unified EventLoop: attach() registers the bus fd
+ * and a local timerfd (for sd_bus_get_timeout()) with the loop; every
+ * loop callback processes pending bus activity and refreshes the fd
+ * mask plus the timer. No dedicated thread, no shutdown pipe.
+ *
+ * Single-threaded ownership: every sd-bus operation runs on the thread
+ * that calls run() on the EventLoop. Other threads that need to emit
+ * bus calls (e.g. the TV-standby worker calling suspendSystem()) must
+ * post their work through MainThreadWork.
  */
 class DBusMonitor {
 public:
-    /**
-     * @brief Power state events that can occur
-     */
     enum class PowerState {
-        Suspending,  // System is going to sleep
-        Resuming     // System is waking up
+        Suspending,
+        Resuming
     };
-    
-    /**
-     * @brief Callback type for power state changes
-     */
+
     using PowerStateCallback = std::function<void(PowerState)>;
-    
-    /**
-     * @brief Constructor - initializes internal state
-     */
+
     DBusMonitor();
-    
-    /**
-     * @brief Destructor - ensures proper cleanup of D-Bus resources
-     *
-     * Releases inhibitor locks and cleans up D-Bus connection
-     */
     ~DBusMonitor();
-    
+
+    DBusMonitor(const DBusMonitor&) = delete;
+    DBusMonitor& operator=(const DBusMonitor&) = delete;
+
     /**
-     * @brief Initialize the D-Bus connection
-     *
-     * Sets up the connection to the system bus, registers signal handlers,
-     * and takes an initial inhibitor lock.
-     *
-     * @return true if successfully initialized, false otherwise
+     * Connect to the system bus, subscribe to PrepareForSleep, and take
+     * the initial delay-inhibitor lock. Does not register with an event
+     * loop yet; call attach() for that.
      */
-    bool initialize();
-    
+    [[nodiscard]] bool initialize();
+
+    /** Replace the callback invoked on Suspending / Resuming transitions. */
+    void setCallback(PowerStateCallback cb);
+
     /**
-     * @brief Start monitoring for power state changes
-     *
-     * Starts the monitoring thread to watch for power management signals.
-     *
-     * @param callback Function to call when power state changes occur
+     * Register the bus fd and internal timer with @p loop. The loop
+     * must outlive this object (or be detach()ed first). Fails if
+     * initialize() has not run.
      */
-    void start(PowerStateCallback callback);
-    
+    [[nodiscard]] bool attach(EventLoop& loop);
+
+    /** Remove from the event loop. Idempotent. */
+    void detach();
+
     /**
-     * @brief Stop monitoring
-     *
-     * Terminates the monitoring thread and cleans up resources
+     * Release the inhibit lock and unref the bus connection. Idempotent;
+     * safe to call after detach() or without ever having attached.
      */
     void stop();
-    
+
     /**
-     * @brief Take an inhibitor lock to delay system sleep
-     *
-     * This requests a delay-type inhibitor lock from systemd's logind,
-     * which allows the application to perform cleanup before sleep.
-     *
-     * @return true if the lock was successfully taken
+     * (Re)take a delay inhibitor from logind. Must run on the main
+     * thread (sd-bus calls are not thread-safe with us). Harmless if
+     * we already hold a lock.
      */
     bool takeInhibitLock();
-    
+
     /**
-     * @brief Release the inhibitor lock to allow system sleep
-     *
-     * This should be called after completing sleep preparation to
-     * allow the system to continue with the sleep process.
-     *
-     * @return true if successfully released
+     * Release our inhibit lock by closing the fd. Does not touch sd-bus;
+     * safe to call from any thread. Idempotent.
      */
-    bool releaseInhibitLock();
-    
+    bool releaseInhibitLock() noexcept;
+
     /**
-     * @brief Suspend the system via D-Bus
-     *
-     * Calls the systemd logind Suspend method to initiate system suspend.
-     * This uses the same D-Bus connection as the inhibitor locks.
-     *
-     * @return true if suspend was successfully initiated
+     * Ask logind to suspend the system. Must run on the main thread.
+     * Returns true on successful dispatch; the actual PrepareForSleep
+     * signal arrives later via the main loop.
      */
     bool suspendSystem();
 
 private:
-    sd_bus* m_bus;                           // sd-bus connection
-    sd_bus_slot* m_signalSlot;               // Signal subscription slot
-    int m_inhibitFd;                         // File descriptor for inhibit lock
-    
-    std::thread m_thread;                    // Monitoring thread
-    std::atomic<bool> m_running;             // Thread running flag
-    int m_shutdownPipe[2];                   // Pipe for shutdown signaling
-    PowerStateCallback m_callback;           // Power state callback
+    /** Run sd_bus_process until drained; collect any deferred work. */
+    void processBus();
 
-    mutable std::recursive_mutex m_busMutex; // For thread-safe access to sd-bus
-    
+    /** Re-query sd-bus for its desired event mask and next timeout. */
+    void updateLoopRegistration();
+
+    /** Loop handlers. */
+    void onBusReadable();
+    void onTimerFire();
+
+    /** Static signal handler registered with sd-bus; forwards to m_callback. */
+    static int onPrepareForSleep(sd_bus_message* msg, void* userdata,
+                                 sd_bus_error* ret_error);
+
+    /** Short textual conversion for negative sd-bus return values. */
+    static const char* busErrorToString(int error) noexcept;
+
+    sd_bus* m_bus = nullptr;
+    sd_bus_slot* m_signalSlot = nullptr;
+    int m_inhibitFd = -1;
+
+    EventLoop* m_loop = nullptr;
+    int m_registeredBusFd = -1;    // The fd we have currently added to m_loop.
+    uint32_t m_registeredMask = 0;  // Last mask passed to loop->modify.
+    TimerSource m_timer;
+
+    PowerStateCallback m_callback;
+
     /**
-     * @brief Main monitoring loop - handles sd-bus event processing
+     * Set by onPrepareForSleep(false) to request a replacement inhibit
+     * lock after the outer sd_bus_process drain returns. Taking the
+     * lock re-enters sd_bus_call_method; deferring keeps that out of
+     * the dispatch callback stack.
      */
-    void eventLoop();
-    
-    /**
-     * @brief Static callback for PrepareForSleep signal
-     *
-     * @param msg D-Bus message containing the signal
-     * @param userdata User data pointer (this object)
-     * @param ret_error Error return parameter
-     * @return Signal processing result
-     */
-    static int onPrepareForSleep(sd_bus_message* msg, void* userdata, sd_bus_error* ret_error);
-    
-    /**
-     * @brief Helper to format sd-bus error messages
-     *
-     * @param error sd-bus error code
-     * @return Human-readable error string
-     */
-    const char* busErrorToString(int error);
+    bool m_retakeInhibitOnNextIteration = false;
 };
 
 } // namespace cec_control

@@ -57,6 +57,11 @@ public:
     CommandRouter& operator=(const CommandRouter&) = delete;
 
     [[nodiscard]] bool initialize();
+
+    /**
+     * Close the adapter and drop any queued commands. Idempotent: safe
+     * to call multiple times (explicit shutdown plus destructor path).
+     */
     void shutdown();
 
     /**
@@ -124,6 +129,7 @@ private:
 
     // Suspend lifecycle state (guarded by m_routerMutex).
     bool m_suspended = false;
+    bool m_shutdownComplete = false;
     std::vector<Message> m_queuedCommands;
 
     // Policy: suspend the PC when the TV signals standby. Atomic because the

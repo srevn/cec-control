@@ -1,356 +1,389 @@
 #include "dbus_monitor.h"
 #include "../common/logger.h"
 
-#include <systemd/sd-bus.h>
+#include <poll.h>
+#include <time.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cerrno>
 #include <cstring>
-#include <errno.h>
-#include <sys/select.h>
+#include <utility>
 
 namespace cec_control {
 
-DBusMonitor::DBusMonitor()
-    : m_bus(nullptr),
-      m_signalSlot(nullptr),
-      m_inhibitFd(-1),
-      m_running(false) {
-    m_shutdownPipe[0] = -1;
-    m_shutdownPipe[1] = -1;
+namespace {
+
+/**
+ * Convert an absolute CLOCK_MONOTONIC µs timestamp (the shape
+ * sd_bus_get_timeout returns) into a relative millisecond duration.
+ * UINT64_MAX → -1 sentinel for "no deadline"; values already in the
+ * past map to 0; oversized deltas are clamped to INT32_MAX to stay
+ * well inside timerfd's itimerspec range.
+ */
+std::chrono::milliseconds relativeFromAbsoluteUs(uint64_t absUs) {
+    if (absUs == UINT64_MAX) {
+        return std::chrono::milliseconds(-1);
+    }
+
+    struct timespec ts{};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return std::chrono::milliseconds(0);
+    }
+    const uint64_t nowUs =
+        static_cast<uint64_t>(ts.tv_sec) * 1'000'000ull +
+        static_cast<uint64_t>(ts.tv_nsec) / 1000ull;
+
+    if (absUs <= nowUs) return std::chrono::milliseconds(0);
+
+    const uint64_t deltaUs = absUs - nowUs;
+    // Round up so a sub-millisecond timeout never rounds to "already fired".
+    const uint64_t deltaMs = deltaUs / 1000ull + ((deltaUs % 1000ull) ? 1ull : 0ull);
+    constexpr uint64_t kMaxMs = 2'147'483'647ull; // INT32_MAX
+    return std::chrono::milliseconds(std::min(deltaMs, kMaxMs));
 }
 
+uint32_t pollToEventMask(int pollEvents) noexcept {
+    uint32_t mask = 0;
+    if (pollEvents & POLLIN)  mask |= static_cast<uint32_t>(EventPoller::Event::READ);
+    if (pollEvents & POLLOUT) mask |= static_cast<uint32_t>(EventPoller::Event::WRITE);
+    return mask;
+}
+
+} // namespace
+
+DBusMonitor::DBusMonitor() = default;
+
 DBusMonitor::~DBusMonitor() {
+    detach();
     stop();
-    releaseInhibitLock();
-    
-    // Clean up shutdown pipe
-    if (m_shutdownPipe[0] >= 0) close(m_shutdownPipe[0]);
-    if (m_shutdownPipe[1] >= 0) close(m_shutdownPipe[1]);
-    
-    // Clean up D-Bus resources
-    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-    if (m_signalSlot) {
-        sd_bus_slot_unref(m_signalSlot);
-        m_signalSlot = nullptr;
-    }
-    
-    if (m_bus) {
-        sd_bus_unref(m_bus);
-        m_bus = nullptr;
-    }
 }
 
 bool DBusMonitor::initialize() {
     LOG_INFO("Initializing sd-bus D-Bus monitor");
-    
-    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
 
-    // Connect to system bus
     int r = sd_bus_default_system(&m_bus);
     if (r < 0) {
         LOG_ERROR("Failed to connect to system D-Bus: ", busErrorToString(r));
+        m_bus = nullptr;
         return false;
     }
-    
-    // Add match for PrepareForSleep signal
+
     r = sd_bus_add_match(m_bus, &m_signalSlot,
         "type='signal',"
         "interface='org.freedesktop.login1.Manager',"
         "member='PrepareForSleep',"
         "path='/org/freedesktop/login1'",
-        onPrepareForSleep, this);
-    
+        &DBusMonitor::onPrepareForSleep, this);
+
     if (r < 0) {
         LOG_ERROR("Failed to add D-Bus signal match: ", busErrorToString(r));
         sd_bus_unref(m_bus);
         m_bus = nullptr;
         return false;
     }
-    
-    // Create shutdown pipe for thread communication
-    if (pipe(m_shutdownPipe) < 0) {
-        LOG_ERROR("Failed to create shutdown pipe: ", strerror(errno));
-        sd_bus_unref(m_bus);
-        m_bus = nullptr;
-        return false;
-    }
-    
-    // Take initial inhibitor lock
+
     if (!takeInhibitLock()) {
         LOG_WARNING("Failed to take initial inhibitor lock - sleep delays may not work properly");
     }
-    
+
     LOG_INFO("sd-bus D-Bus monitor initialized successfully");
     return true;
 }
 
-void DBusMonitor::start(PowerStateCallback callback) {
-    if (m_running) {
-        LOG_WARNING("D-Bus monitor already running");
-        return;
-    }
-    
+void DBusMonitor::setCallback(PowerStateCallback cb) {
+    m_callback = std::move(cb);
+}
+
+bool DBusMonitor::attach(EventLoop& loop) {
     if (!m_bus) {
-        LOG_ERROR("D-Bus connection not initialized");
-        return;
+        LOG_ERROR("DBusMonitor::attach: not initialized");
+        return false;
     }
-    
-    m_callback = callback;
-    m_running = true;
-    
-    // Start monitoring thread
-    m_thread = std::thread(&DBusMonitor::eventLoop, this);
-    
-    LOG_INFO("sd-bus D-Bus monitor started");
+    if (m_loop) {
+        LOG_ERROR("DBusMonitor::attach: already attached");
+        return false;
+    }
+    if (!m_timer.valid()) {
+        LOG_ERROR("DBusMonitor::attach: timer fd invalid");
+        return false;
+    }
+
+    const int busFd = sd_bus_get_fd(m_bus);
+    if (busFd < 0) {
+        LOG_ERROR("sd_bus_get_fd failed: ", busErrorToString(busFd));
+        return false;
+    }
+
+    m_loop = &loop;
+    m_registeredBusFd = busFd;
+    m_registeredMask = pollToEventMask(sd_bus_get_events(m_bus));
+
+    if (!loop.add(busFd, m_registeredMask, [this](uint32_t) { this->onBusReadable(); })) {
+        m_loop = nullptr;
+        m_registeredBusFd = -1;
+        return false;
+    }
+    if (!loop.add(m_timer.fd(), static_cast<uint32_t>(EventPoller::Event::READ),
+                  [this](uint32_t) { this->onTimerFire(); })) {
+        loop.remove(busFd);
+        m_loop = nullptr;
+        m_registeredBusFd = -1;
+        return false;
+    }
+
+    // Drain and arm the timer to reflect sd-bus's initial state.
+    processBus();
+    updateLoopRegistration();
+    return true;
+}
+
+void DBusMonitor::detach() {
+    if (!m_loop) return;
+    if (m_registeredBusFd >= 0) {
+        m_loop->remove(m_registeredBusFd);
+        m_registeredBusFd = -1;
+    }
+    if (m_timer.valid()) {
+        m_loop->remove(m_timer.fd());
+    }
+    m_loop = nullptr;
 }
 
 void DBusMonitor::stop() {
-    if (!m_running.exchange(false)) {
-        return;
-    }
-    
+    if (!m_bus && m_inhibitFd < 0) return;
+
     LOG_INFO("Stopping sd-bus D-Bus monitor");
-    
-    // Signal thread to exit
-    if (m_shutdownPipe[1] >= 0) {
-        char buf = 1;
-        if (write(m_shutdownPipe[1], &buf, 1) < 0) {
-            LOG_WARNING("Failed to signal shutdown: ", strerror(errno));
-        }
+
+    releaseInhibitLock();
+
+    if (m_signalSlot) {
+        sd_bus_slot_unref(m_signalSlot);
+        m_signalSlot = nullptr;
     }
-    
-    // Wait for thread to complete
-    if (m_thread.joinable()) {
-        LOG_DEBUG("Waiting for D-Bus monitor thread to exit");
-        m_thread.join();
+    if (m_bus) {
+        sd_bus_unref(m_bus);
+        m_bus = nullptr;
     }
-    
+
     LOG_INFO("sd-bus D-Bus monitor stopped");
 }
 
 bool DBusMonitor::takeInhibitLock() {
-    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-
     if (!m_bus) {
         LOG_ERROR("D-Bus connection not initialized");
         return false;
     }
-    
-    // If we already have a lock, don't take another
     if (m_inhibitFd >= 0) {
         LOG_DEBUG("Already have inhibitor lock (fd=", m_inhibitFd, ")");
         return true;
     }
-    
+
     LOG_INFO("Taking systemd inhibitor lock");
-    
+
     sd_bus_message* reply = nullptr;
     sd_bus_error error = SD_BUS_ERROR_NULL;
     int r = sd_bus_call_method(m_bus,
-        "org.freedesktop.login1",           // destination
-        "/org/freedesktop/login1",          // path
-        "org.freedesktop.login1.Manager",   // interface
-        "Inhibit",                          // method
-        &error,                             // error
-        &reply,                             // reply
-        "ssss",                             // signature
-        "sleep",                            // what
-        "cec-control",                      // who
-        "Preparing CEC adapter for sleep",  // why
-        "delay");                           // mode
-    
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "Inhibit",
+        &error,
+        &reply,
+        "ssss",
+        "sleep",
+        "cec-control",
+        "Preparing CEC adapter for sleep",
+        "delay");
+
     if (r < 0) {
-        LOG_ERROR("Failed to call Inhibit method: ", error.message);
+        LOG_ERROR("Failed to call Inhibit method: ",
+                  error.message ? error.message : busErrorToString(r));
         sd_bus_error_free(&error);
         return false;
     }
-    
-    // Extract file descriptor from reply
-    int temp_fd;
-    r = sd_bus_message_read(reply, "h", &temp_fd);
+
+    int tempFd = -1;
+    r = sd_bus_message_read(reply, "h", &tempFd);
     if (r < 0) {
         LOG_ERROR("Failed to read inhibitor file descriptor: ", busErrorToString(r));
         sd_bus_message_unref(reply);
         return false;
     }
-    
-    // Duplicate the file descriptor to keep it alive after message cleanup
-    m_inhibitFd = dup(temp_fd);
+
+    m_inhibitFd = ::dup(tempFd);
     sd_bus_message_unref(reply);
-    
+
     if (m_inhibitFd < 0) {
-        LOG_ERROR("Failed to duplicate inhibitor file descriptor: ", strerror(errno));
+        LOG_ERROR("Failed to duplicate inhibitor file descriptor: ", std::strerror(errno));
         return false;
     }
-    
+
     LOG_INFO("Successfully took inhibitor lock (fd=", m_inhibitFd, ")");
     return true;
 }
 
-bool DBusMonitor::releaseInhibitLock() {
+bool DBusMonitor::releaseInhibitLock() noexcept {
     if (m_inhibitFd < 0) {
         LOG_DEBUG("No inhibitor lock to release");
         return true;
     }
-    
     LOG_INFO("Releasing inhibitor lock (fd=", m_inhibitFd, ")");
-    
-    // Close the file descriptor to release the lock
-    close(m_inhibitFd);
+    ::close(m_inhibitFd);
     m_inhibitFd = -1;
-    
-    LOG_INFO("Inhibitor lock released");
     return true;
 }
 
-void DBusMonitor::eventLoop() {
-    LOG_INFO("sd-bus D-Bus monitor thread started");
-    
-    while (m_running) {
-        int bus_fd;
-        {
-            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-            if (!m_bus) break;
-            bus_fd = sd_bus_get_fd(m_bus);
-            if (bus_fd < 0) {
-                LOG_ERROR("Failed to get bus file descriptor: ", busErrorToString(bus_fd));
-                break;
-            }
-        }
-
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(bus_fd, &readfds);
-        FD_SET(m_shutdownPipe[0], &readfds);
-        int max_fd = (bus_fd > m_shutdownPipe[0]) ? bus_fd : m_shutdownPipe[0];
-        
-        // Wait for events indefinitely until a signal is received
-        int select_result = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
-        
-        if (select_result < 0) {
-            if (errno == EINTR) continue;
-            LOG_ERROR("select() failed: ", strerror(errno));
-            break;
-        }
-        
-        // Check for shutdown signal
-        if (FD_ISSET(m_shutdownPipe[0], &readfds)) {
-            LOG_DEBUG("Received shutdown signal");
-            break;
-        }
-        
-        // Process D-Bus events if ready
-        if (m_running && FD_ISSET(bus_fd, &readfds)) {
-            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-            if (!m_bus) break;
-
-            int r;
-            do {
-                r = sd_bus_process(m_bus, nullptr);
-                if (r < 0) {
-                    LOG_ERROR("Failed to process D-Bus events: ", busErrorToString(r));
-                    break;
-                }
-            } while (r > 0 && m_running);
-        }
-        
-        // Handle any pending D-Bus operations
-        if (m_running) {
-            std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-            if (!m_bus) break;
-            
-            int r = sd_bus_flush(m_bus);
-            if (r < 0 && r != -ENOTCONN) {
-                LOG_WARNING("Failed to flush D-Bus connection: ", busErrorToString(r));
-            }
-        }
-    }
-    
-    LOG_INFO("sd-bus D-Bus monitor thread exiting");
-}
-
-int DBusMonitor::onPrepareForSleep(sd_bus_message* msg, void* userdata, sd_bus_error* /*ret_error*/) {
-    DBusMonitor* monitor = static_cast<DBusMonitor*>(userdata);
-    if (!monitor) {
-        LOG_ERROR("Invalid userdata in PrepareForSleep callback");
-        return 0;
-    }
-    
-    int sleeping = 0;
-    int r = sd_bus_message_read(msg, "b", &sleeping);
-    if (r < 0) {
-        LOG_ERROR("Failed to read PrepareForSleep signal parameter: ", monitor->busErrorToString(r));
-        return 0;
-    }
-    
-    if (!monitor->m_callback) {
-        LOG_WARNING("No callback registered for power state changes");
-        return 0;
-    }
-    
-    if (sleeping) {
-        LOG_INFO("System is preparing to sleep");
-        
-        // Verify we have an inhibit lock
-        if (monitor->m_inhibitFd < 0) {
-            LOG_WARNING("No inhibit lock when preparing for sleep, trying to get one now");
-            monitor->takeInhibitLock();
-        }
-        
-        // Notify daemon about suspend
-        monitor->m_callback(PowerState::Suspending);
-    } else {
-        LOG_INFO("System is waking up");
-        
-        // Notify daemon about resume
-        monitor->m_callback(PowerState::Resuming);
-        
-        // Ensure we have an inhibit lock for future sleep events
-        if (monitor->m_inhibitFd < 0) {
-            monitor->takeInhibitLock();
-        }
-    }
-    
-    return 0;
-}
-
 bool DBusMonitor::suspendSystem() {
-    std::lock_guard<std::recursive_mutex> lock(m_busMutex);
-
     if (!m_bus) {
         LOG_ERROR("D-Bus connection not initialized");
         return false;
     }
-    
+
     LOG_INFO("Initiating system suspend via D-Bus");
-    
+
     sd_bus_message* reply = nullptr;
     sd_bus_error error = SD_BUS_ERROR_NULL;
     int r = sd_bus_call_method(m_bus,
-        "org.freedesktop.login1",           // destination
-        "/org/freedesktop/login1",          // path
-        "org.freedesktop.login1.Manager",   // interface
-        "Suspend",                          // method
-        &error,                             // error
-        &reply,                             // reply
-        "b",                                // signature
-        1);                                 // interactive=true
-    
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "Suspend",
+        &error,
+        &reply,
+        "b",
+        1);  // interactive=true
+
     if (r < 0) {
-        LOG_ERROR("Failed to call Suspend method: ", error.message);
+        LOG_ERROR("Failed to call Suspend method: ",
+                  error.message ? error.message : busErrorToString(r));
         sd_bus_error_free(&error);
         return false;
     }
-    
-    if (reply) {
-        sd_bus_message_unref(reply);
-    }
-    
+
+    if (reply) sd_bus_message_unref(reply);
+
     LOG_INFO("System suspend initiated successfully via D-Bus");
     return true;
 }
 
-const char* DBusMonitor::busErrorToString(int error) {
-    return strerror(-error);
+void DBusMonitor::processBus() {
+    if (!m_bus) return;
+
+    while (true) {
+        int r = sd_bus_process(m_bus, nullptr);
+        if (r < 0) {
+            LOG_ERROR("sd_bus_process failed: ", busErrorToString(r));
+            break;
+        }
+        if (r == 0) break;  // No more pending events in this pass.
+    }
+
+    // Take a replacement inhibit lock *outside* sd_bus_process so the
+    // nested sd_bus_call_method doesn't reorder bus state against
+    // pending messages.
+    if (m_retakeInhibitOnNextIteration) {
+        m_retakeInhibitOnNextIteration = false;
+        if (m_inhibitFd < 0) {
+            takeInhibitLock();
+        }
+    }
+}
+
+void DBusMonitor::updateLoopRegistration() {
+    if (!m_loop || !m_bus) return;
+
+    const int busFd = sd_bus_get_fd(m_bus);
+    if (busFd < 0) {
+        LOG_ERROR("sd_bus_get_fd failed: ", busErrorToString(busFd));
+        return;
+    }
+
+    if (busFd != m_registeredBusFd) {
+        // sd-bus is not expected to change its fd at runtime, but be
+        // defensive: re-register under the new fd.
+        if (m_registeredBusFd >= 0) m_loop->remove(m_registeredBusFd);
+        m_registeredBusFd = busFd;
+        m_registeredMask = pollToEventMask(sd_bus_get_events(m_bus));
+        if (!m_loop->add(busFd, m_registeredMask,
+                         [this](uint32_t) { this->onBusReadable(); })) {
+            LOG_ERROR("Failed to re-register bus fd after rotation");
+            m_registeredBusFd = -1;
+            return;
+        }
+    } else {
+        const uint32_t newMask = pollToEventMask(sd_bus_get_events(m_bus));
+        if (newMask != m_registeredMask) {
+            if (m_loop->modify(busFd, newMask)) {
+                m_registeredMask = newMask;
+            }
+        }
+    }
+
+    uint64_t absUs = UINT64_MAX;
+    const int r = sd_bus_get_timeout(m_bus, &absUs);
+    if (r < 0) {
+        LOG_WARNING("sd_bus_get_timeout failed: ", busErrorToString(r));
+        m_timer.disarm();
+        return;
+    }
+
+    const auto relMs = relativeFromAbsoluteUs(absUs);
+    if (relMs.count() < 0) {
+        m_timer.disarm();
+    } else {
+        m_timer.armOnce(relMs);
+    }
+}
+
+void DBusMonitor::onBusReadable() {
+    processBus();
+    updateLoopRegistration();
+}
+
+void DBusMonitor::onTimerFire() {
+    m_timer.consume();
+    processBus();
+    updateLoopRegistration();
+}
+
+int DBusMonitor::onPrepareForSleep(sd_bus_message* msg, void* userdata,
+                                   sd_bus_error* /*ret_error*/) {
+    auto* monitor = static_cast<DBusMonitor*>(userdata);
+    if (!monitor) {
+        LOG_ERROR("Invalid userdata in PrepareForSleep callback");
+        return 0;
+    }
+
+    int sleeping = 0;
+    const int r = sd_bus_message_read(msg, "b", &sleeping);
+    if (r < 0) {
+        LOG_ERROR("Failed to read PrepareForSleep signal parameter: ",
+                  monitor->busErrorToString(r));
+        return 0;
+    }
+
+    if (!monitor->m_callback) {
+        LOG_WARNING("No callback registered for power state changes");
+        return 0;
+    }
+
+    if (sleeping) {
+        LOG_INFO("System is preparing to sleep");
+        monitor->m_callback(PowerState::Suspending);
+    } else {
+        LOG_INFO("System is waking up");
+        monitor->m_callback(PowerState::Resuming);
+        // Queue a replacement inhibit lock; the actual sd_bus_call
+        // happens after processBus() returns so we are not nested
+        // inside sd_bus_process when it runs.
+        monitor->m_retakeInhibitOnNextIteration = true;
+    }
+
+    return 0;
+}
+
+const char* DBusMonitor::busErrorToString(int error) noexcept {
+    return std::strerror(-error);
 }
 
 } // namespace cec_control

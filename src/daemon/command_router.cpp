@@ -217,6 +217,9 @@ bool CommandRouter::initialize() {
 
 void CommandRouter::shutdown() {
     std::lock_guard<std::mutex> lock(m_routerMutex);
+    if (m_shutdownComplete) return;
+    m_shutdownComplete = true;
+
     LOG_INFO("Shutting down CEC command router");
     m_adapter.closeConnection();
     if (!m_queuedCommands.empty()) {

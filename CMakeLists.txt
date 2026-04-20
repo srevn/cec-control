@@ -45,6 +45,10 @@ set(COMMON_SOURCES
     src/common/system_paths.cpp
     src/common/systemd_env.cpp
     src/common/event_poller.cpp
+    src/common/event_loop.cpp
+    src/common/main_thread_work.cpp
+    src/common/signal_source.cpp
+    src/common/timer_source.cpp
     src/common/command_registry.cpp
     src/common/argument_parser.cpp
     src/common/help_printer.cpp
