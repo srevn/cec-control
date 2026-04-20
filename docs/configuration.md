@@ -4,22 +4,24 @@ CEC Control uses an INI-style configuration file for customizing its behavior. T
 
 ## Specifying an Alternative Configuration File
 
-### For the daemon:
+The configuration file is read by the daemon only. Specify it with `-c` or
+`--config`:
 
 ```bash
-cec-control --daemon -c /path/to/custom/config.conf
+cec-control daemon -c /path/to/custom/config.conf
 ```
 
-or 
+or
 
 ```bash
-cec-control --daemon --config /path/to/custom/config.conf
+cec-control daemon --config /path/to/custom/config.conf
 ```
 
-### For the client:
+The client reads no configuration file. To talk to a daemon listening on a
+non-default socket, pass `--socket-path=PATH` after the client command:
 
 ```bash
-cec-control --config=/path/to/custom/config.conf power on 0
+cec-control power on 0 --socket-path=/run/cec-control/socket
 ```
 
 ## Available Configuration Options

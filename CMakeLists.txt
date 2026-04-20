@@ -44,7 +44,7 @@ set(COMMON_SOURCES
     src/common/config_manager.cpp
     src/common/system_paths.cpp
     src/common/event_poller.cpp
-    src/common/application_mode.cpp
+    src/common/command_registry.cpp
     src/common/argument_parser.cpp
     src/common/help_printer.cpp
 )
@@ -66,7 +66,7 @@ set(DAEMON_SOURCES
 
 set(CLIENT_SOURCES
     src/client/cec_client.cpp
-    src/client/command_mapper.cpp
+    src/client/client_runner.cpp
     src/client/socket_client.cpp
 )
 

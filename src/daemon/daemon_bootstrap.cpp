@@ -55,17 +55,23 @@ CEC::cec_logical_addresses parseLogicalAddressList(const std::string& input,
 
 } // namespace
 
-int DaemonBootstrap::runDaemon(const ArgumentParser::ParseResult& parseResult) {
+int DaemonBootstrap::runDaemon(const RunDaemon& action) {
+    // Resolve any unset path knobs to their system defaults exactly once,
+    // here at the top, so the rest of the bootstrap doesn't need to carry
+    // around "empty means default" branching.
+    const std::string logFile    = action.logFile.empty()    ? SystemPaths::getLogPath()    : action.logFile;
+    const std::string socketPath = SystemPaths::getSocketPath();
+
     // Provision system directories the daemon will write into. Done before
     // logging is set up, since the logger opens the log file by path.
-    SystemPaths::ensureParentDirExists(parseResult.logFile);
-    SystemPaths::ensureParentDirExists(parseResult.socketPath);
+    SystemPaths::ensureParentDirExists(logFile);
+    SystemPaths::ensureParentDirExists(socketPath);
 
-    setupLogging(parseResult);
+    setupLogging(action);
 
     // Configuration is a local value; once we've extracted the option structs
     // it falls out of scope. No ambient/singleton access after this point.
-    ConfigManager configManager(parseResult.configFile);
+    ConfigManager configManager(action.configFile);
     if (!configManager.load()) {
         LOG_WARNING("Failed to load configuration file, using defaults");
     }
@@ -73,7 +79,7 @@ int DaemonBootstrap::runDaemon(const ArgumentParser::ParseResult& parseResult) {
     DaemonAllOptions options = loadAllOptions(configManager);
 
     // Setup the process (daemonization, service mode, etc.)
-    if (!setupProcess(parseResult.runAsDaemon)) {
+    if (!setupProcess(/*runAsDaemon=*/!action.foreground)) {
         LOG_FATAL("Failed to setup daemon process");
         return EXIT_FAILURE;
     }
@@ -214,7 +220,7 @@ bool DaemonBootstrap::daemonize() {
     return true; // We're the daemon process
 }
 
-void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResult) {
+void DaemonBootstrap::setupLogging(const RunDaemon& action) {
     // Daemon logging routes by severity:
     //   - INFO/DEBUG/TRAFFIC -> stdout (journald captures as PRIORITY=info)
     //   - WARNING/ERROR/FATAL -> stderr (journald captures as PRIORITY=err)
@@ -222,15 +228,17 @@ void DaemonBootstrap::setupLogging(const ArgumentParser::ParseResult& parseResul
     // foreground operator (or a deployment without journald) still has a
     // durable log even if the standard streams are redirected to /dev/null
     // by daemonize().
+    const std::string logFile = action.logFile.empty() ? SystemPaths::getLogPath()
+                                                       : action.logFile;
     LogConfig cfg;
     cfg.lowLevelSink  = LogSink::Stdout;
     cfg.highLevelSink = LogSink::Stderr;
-    cfg.filePath      = parseResult.logFile;
-    cfg.minLevel      = parseResult.verboseMode ? LogLevel::DEBUG : LogLevel::INFO;
+    cfg.filePath      = logFile;
+    cfg.minLevel      = action.verbose ? LogLevel::DEBUG : LogLevel::INFO;
     Logger::getInstance().configure(cfg);
 
-    LOG_INFO("Logging initialised; file=", parseResult.logFile,
-             ", level=", parseResult.verboseMode ? "DEBUG" : "INFO");
+    LOG_INFO("Logging initialised; file=", logFile,
+             ", level=", action.verbose ? "DEBUG" : "INFO");
 }
 
 DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {

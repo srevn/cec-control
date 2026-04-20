@@ -1,93 +1,66 @@
 #pragma once
 
-#include "application_mode.h"
 #include "messages.h"
-#include "system_paths.h"
+
 #include <string>
-#include <optional>
+#include <variant>
 
 namespace cec_control {
+
+/** Selector for HelpPrinter; an ordinary enum, not a heuristic flag. */
+enum class HelpTarget {
+    General,
+    Client,
+    Daemon
+};
+
+/** Parsing failed; @c message is suitable for printing to stderr verbatim. */
+struct ParseError {
+    std::string message;
+};
+
+/** Show help and exit successfully. */
+struct ShowHelp {
+    HelpTarget target = HelpTarget::General;
+};
+
+/**
+ * Run a single client command against the daemon and exit. @c command is the
+ * fully-built wire message; @c socketPathOverride is empty when the caller
+ * did not pass --socket-path= (the SocketClient then resolves the default
+ * via SystemPaths).
+ */
+struct RunClient {
+    Message     command;
+    std::string socketPathOverride;
+};
+
+/**
+ * Run the daemon with the given lifecycle options. Empty file paths mean
+ * "use SystemPaths defaults"; the bootstrap layer materialises them.
+ */
+struct RunDaemon {
+    bool        verbose    = false;
+    bool        foreground = false;
+    std::string logFile;
+    std::string configFile;
+};
+
+/**
+ * Result of parsing argv. Exhaustive: every successful or unsuccessful path
+ * lands in exactly one of these alternatives. main() dispatches via
+ * std::visit, which makes the four control-flow branches an exhaustive
+ * match the compiler can check.
+ */
+using Action = std::variant<ParseError, ShowHelp, RunClient, RunDaemon>;
 
 class ArgumentParser {
 public:
     /**
-     * Result of argument parsing containing all necessary information
+     * Parse argv[1..argc) and return the resulting Action. argv[0] is
+     * ignored (the program name belongs to the caller, not the parser).
      */
-    struct ParseResult {
-        ApplicationMode mode;
-        bool showHelp;
-        std::string errorMessage;
-        bool hasError;
-        
-        // Client-specific fields
-        std::optional<Message> clientCommand;
-        std::string socketPath;
-        
-        // Daemon-specific fields  
-        bool verboseMode;
-        bool runAsDaemon;
-        std::string logFile;
-        std::string configFile;
-        
-        ParseResult() 
-            : mode(ApplicationMode::HELP_GENERAL),
-              showHelp(false),
-              hasError(false),
-              socketPath(SystemPaths::getSocketPath()),
-              verboseMode(false),
-              runAsDaemon(true),
-              logFile(SystemPaths::getLogPath()),
-              configFile("") {}
-    };
-    
-    /**
-     * Parse command line arguments and return complete result
-     * @param argc Argument count
-     * @param argv Argument vector  
-     * @return ParseResult with all parsed information
-     */
-    static ParseResult parse(int argc, char* argv[]);
-    
-private:
-    /**
-     * Parse arguments when in client mode
-     * @param argc Argument count
-     * @param argv Argument vector
-     * @return ParseResult for client mode
-     */
-    static ParseResult parseClientArgs(int argc, char* argv[]);
-    
-    /**
-     * Parse arguments when in daemon mode
-     * @param argc Argument count
-     * @param argv Argument vector
-     * @return ParseResult for daemon mode
-     */
-    static ParseResult parseDaemonArgs(int argc, char* argv[]);
-    
-    /**
-     * Parse arguments when help is requested
-     * @param mode The specific help mode requested
-     * @return ParseResult for help display
-     */
-    static ParseResult parseHelpArgs(ApplicationMode mode);
-    
-    /**
-     * Validate that argument count is sufficient for a command
-     * @param argc Current argument count
-     * @param expectedCount Expected minimum count
-     * @param commandName Name of the command for error messages
-     * @return true if valid, false otherwise
-     */
-    static bool validateArgCount(int argc, int expectedCount, const std::string& commandName, std::string& errorMsg);
-    
-    /**
-     * Extract socket path override from arguments
-     * @param argc Argument count
-     * @param argv Argument vector
-     * @param socketPath Reference to socketPath to update
-     */
-    static void extractSocketPath(int argc, char* argv[], std::string& socketPath);
+    static Action parse(int argc, char* const argv[]);
 };
 
 } // namespace cec_control

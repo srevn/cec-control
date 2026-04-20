@@ -23,11 +23,11 @@ struct DaemonAllOptions {
 class DaemonBootstrap {
 public:
     /**
-     * Initialize and run the CEC daemon with the given configuration
-     * @param parseResult Parsed command line arguments and configuration
+     * Initialize and run the CEC daemon described by @p action. Catches
+     * std::exception so main() does not need to.
      * @return Exit code (EXIT_SUCCESS or EXIT_FAILURE)
      */
-    static int runDaemon(const ArgumentParser::ParseResult& parseResult);
+    static int runDaemon(const RunDaemon& action);
 
 private:
     /** Setup the process (daemonization, service mode, etc.). */
@@ -40,7 +40,7 @@ private:
     static bool daemonize();
 
     /** Initialize logging with the given configuration. */
-    static void setupLogging(const ArgumentParser::ParseResult& parseResult);
+    static void setupLogging(const RunDaemon& action);
 
     /**
      * Read every tunable from @p cfg and package it into the option structs

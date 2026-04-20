@@ -1,170 +1,183 @@
 #include "argument_parser.h"
-#include "../client/command_mapper.h"
-#include <iostream>
+
+#include "command_registry.h"
+
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace cec_control {
 
-ArgumentParser::ParseResult ArgumentParser::parse(int argc, char* argv[]) {
-    // Detect the application mode first
-    ApplicationMode mode = ModeDetector::detectMode(argc, argv);
-    
-    // Handle help modes
-    if (mode == ApplicationMode::HELP_GENERAL || 
-        mode == ApplicationMode::HELP_CLIENT || 
-        mode == ApplicationMode::HELP_DAEMON) {
-        return parseHelpArgs(mode);
-    }
-    
-    // Parse based on detected mode
-    if (mode == ApplicationMode::CLIENT) {
-        return parseClientArgs(argc, argv);
-    } else {
-        return parseDaemonArgs(argc, argv);
-    }
+namespace {
+
+constexpr std::string_view kSocketPathPrefix = "--socket-path=";
+
+bool isHelpFlag(std::string_view arg) noexcept {
+    return arg == "--help" || arg == "-h";
 }
 
-ArgumentParser::ParseResult ArgumentParser::parseClientArgs(int argc, char* argv[]) {
-    ParseResult result;
-    result.mode = ApplicationMode::CLIENT;
-    
-    // Extract socket path override if present
-    extractSocketPath(argc, argv, result.socketPath);
-    
-    // Parse the command (first argument)
-    std::string command = argv[1];
-    
-    // Validate and map commands using the same logic as CECClient
-    if (command == "volume") {
-        if (!validateArgCount(argc, 4, command, result.errorMessage)) {
-            result.hasError = true;
-            return result;
-        }
-        result.clientCommand = CommandMapper::mapVolumeCommand(argv[2], argv[3]);
-    }
-    else if (command == "power") {
-        if (!validateArgCount(argc, 4, command, result.errorMessage)) {
-            result.hasError = true;
-            return result;
-        }
-        result.clientCommand = CommandMapper::mapPowerCommand(argv[2], argv[3]);
-    }
-    else if (command == "source") {
-        if (!validateArgCount(argc, 4, command, result.errorMessage)) {
-            result.hasError = true;
-            return result;
-        }
-        result.clientCommand = CommandMapper::mapSourceCommand(argv[2], argv[3]);
-    }
-    else if (command == "auto-standby") {
-        if (!validateArgCount(argc, 3, command, result.errorMessage)) {
-            result.hasError = true;
-            return result;
-        }
-        result.clientCommand = CommandMapper::mapAutoStandbyCommand(argv[2]);
-    }
-    else if (command == "restart") {
-        result.clientCommand = CommandMapper::mapRestartCommand();
-    }
-    else if (command == "suspend") {
-        result.clientCommand = CommandMapper::mapSuspendCommand();
-    }
-    else if (command == "resume") {
-        result.clientCommand = CommandMapper::mapResumeCommand();
-    }
-    else {
-        result.hasError = true;
-        result.errorMessage = "Error: Unknown command: " + command;
-        return result;
-    }
-    
-    // Check if command mapping failed
-    if (!result.clientCommand.has_value()) {
-        result.hasError = true;
-        result.errorMessage = "Error: Failed to parse command arguments";
-        return result;
-    }
-    
-    return result;
+/** Map a `help <X>` token to the matching target; unknown tokens fall back to General. */
+HelpTarget helpTargetFromToken(std::string_view token) noexcept {
+    if (token == "client") return HelpTarget::Client;
+    if (token == "daemon") return HelpTarget::Daemon;
+    return HelpTarget::General;
 }
 
-ArgumentParser::ParseResult ArgumentParser::parseDaemonArgs(int argc, char* argv[]) {
-    ParseResult result;
-    result.mode = ApplicationMode::DAEMON;
-    
-    // Process daemon arguments using the same logic as daemon/main.cpp
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        
+/**
+ * Parse the daemon's option set. The args vector is whatever follows the
+ * `daemon` subcommand. Recognises --help/-h as a request to render daemon
+ * help.
+ */
+Action parseDaemonOptions(const std::vector<std::string_view>& args) {
+    RunDaemon out;
+
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+
         if (arg == "--verbose" || arg == "-v") {
-            result.verboseMode = true;
-        }
-        else if (arg == "--foreground" || arg == "-f") {
-            result.runAsDaemon = false;
-        }
-        else if ((arg == "--log" || arg == "-l") && i + 1 < argc) {
-            result.logFile = argv[++i];
-            
-            // Validate log file path
-            if (result.logFile.empty()) {
-                result.hasError = true;
-                result.errorMessage = "Error: Empty log file path provided";
-                return result;
-            }
-        }
-        else if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
-            result.configFile = argv[++i];
-            
-            // Validate config file path
-            if (result.configFile.empty()) {
-                result.hasError = true;
-                result.errorMessage = "Error: Empty config file path provided";
-                return result;
-            } else if (!SystemPaths::pathExists(result.configFile)) {
-                // This is just a warning, not an error - preserve the same behavior
-                std::cerr << "Warning: Config file does not exist: " << result.configFile << std::endl;
-            }
-        }
-        else if (arg == "--help" || arg == "-h") {
-            result.showHelp = true;
-        }
-        else if (arg == "--daemon" || arg == "-d") {
-            // This is already handled by mode detection, just ignore it here
+            out.verbose = true;
             continue;
         }
-        else {
-            result.hasError = true;
-            result.errorMessage = "Error: Unknown option: " + arg;
-            return result;
+        if (arg == "--foreground" || arg == "-f") {
+            out.foreground = true;
+            continue;
         }
-    }
-    
-    return result;
-}
-
-ArgumentParser::ParseResult ArgumentParser::parseHelpArgs(ApplicationMode mode) {
-    ParseResult result;
-    result.mode = mode;
-    result.showHelp = true;
-    return result;
-}
-
-bool ArgumentParser::validateArgCount(int argc, int expectedCount, const std::string& commandName, std::string& errorMsg) {
-    if (argc < expectedCount) {
-        errorMsg = "Error: " + commandName + " command requires " + std::to_string(expectedCount - 2) + " argument(s)";
-        return false;
-    }
-    return true;
-}
-
-void ArgumentParser::extractSocketPath(int argc, char* argv[], std::string& socketPath) {
-    constexpr std::string_view kPrefix = "--socket-path=";
-    for (int i = 2; i < argc; ++i) {
-        std::string_view arg(argv[i]);
-        if (arg.size() > kPrefix.size() && arg.compare(0, kPrefix.size(), kPrefix) == 0) {
-            socketPath.assign(arg.substr(kPrefix.size()));
-            return;
+        if (arg == "--log" || arg == "-l") {
+            if (i + 1 >= args.size()) {
+                return ParseError{"Error: " + std::string(arg) + " requires a file path"};
+            }
+            const std::string_view value = args[++i];
+            if (value.empty()) {
+                return ParseError{"Error: empty log file path provided"};
+            }
+            out.logFile.assign(value);
+            continue;
         }
+        if (arg == "--config" || arg == "-c") {
+            if (i + 1 >= args.size()) {
+                return ParseError{"Error: " + std::string(arg) + " requires a file path"};
+            }
+            const std::string_view value = args[++i];
+            if (value.empty()) {
+                return ParseError{"Error: empty config file path provided"};
+            }
+            out.configFile.assign(value);
+            continue;
+        }
+        if (isHelpFlag(arg)) {
+            return ShowHelp{HelpTarget::Daemon};
+        }
+        if (!arg.empty() && arg.front() == '-') {
+            return ParseError{"Error: unknown daemon option: " + std::string(arg)};
+        }
+        // Reject positional args explicitly: misuse like
+        // `cec-control daemon power on 0` should fail loudly rather than be
+        // silently absorbed as "unknown option".
+        return ParseError{"Error: daemon takes no positional arguments (got '" +
+                          std::string(arg) + "')"};
     }
+
+    return out;
+}
+
+/**
+ * Strip --socket-path=VALUE flags from @p args, populating @p socketPath. Any
+ * occurrence with an empty value or a duplicate definition is a hard error;
+ * remaining tokens are returned unchanged for the per-command parser.
+ */
+std::variant<std::vector<std::string_view>, ParseError>
+extractClientFlags(const std::vector<std::string_view>& args,
+                   std::string& socketPath) {
+    std::vector<std::string_view> positional;
+    positional.reserve(args.size());
+
+    for (const std::string_view arg : args) {
+        if (arg.size() >= kSocketPathPrefix.size() &&
+            arg.substr(0, kSocketPathPrefix.size()) == kSocketPathPrefix) {
+            const std::string_view value = arg.substr(kSocketPathPrefix.size());
+            if (value.empty()) {
+                return ParseError{"Error: --socket-path= requires a value"};
+            }
+            if (!socketPath.empty()) {
+                return ParseError{"Error: --socket-path= specified multiple times"};
+            }
+            socketPath.assign(value);
+            continue;
+        }
+        positional.push_back(arg);
+    }
+    return positional;
+}
+
+Action parseClientCommand(const CommandSpec& spec,
+                           const std::vector<std::string_view>& argsAfterCommand) {
+    std::string socketPath;
+    auto extracted = extractClientFlags(argsAfterCommand, socketPath);
+    if (auto* err = std::get_if<ParseError>(&extracted)) {
+        return std::move(*err);
+    }
+
+    std::string err;
+    auto cmd = spec.parse(std::get<std::vector<std::string_view>>(extracted), err);
+    if (!cmd) {
+        return ParseError{"Error: " + err};
+    }
+    return RunClient{std::move(*cmd), std::move(socketPath)};
+}
+
+/**
+ * Build a string_view view of argv[1..argc) without copying. The lifetime is
+ * argv's, which outlives the parse() return value (argv lives for the whole
+ * process).
+ */
+std::vector<std::string_view> sliceArgs(int argc, char* const argv[]) {
+    std::vector<std::string_view> out;
+    if (argc <= 1) return out;
+    out.reserve(static_cast<std::size_t>(argc - 1));
+    for (int i = 1; i < argc; ++i) {
+        out.emplace_back(argv[i]);
+    }
+    return out;
+}
+
+} // namespace
+
+Action ArgumentParser::parse(int argc, char* const argv[]) {
+    if (argc < 2) {
+        return ShowHelp{HelpTarget::General};
+    }
+
+    const auto args = sliceArgs(argc, argv);
+    const std::string_view first = args.front();
+
+    if (first == "help") {
+        const HelpTarget target = args.size() >= 2
+            ? helpTargetFromToken(args[1])
+            : HelpTarget::General;
+        return ShowHelp{target};
+    }
+
+    if (first == "daemon") {
+        return parseDaemonOptions(
+            std::vector<std::string_view>(args.begin() + 1, args.end()));
+    }
+
+    if (isHelpFlag(first)) {
+        if (args.size() > 1) {
+            return ParseError{"Error: unexpected argument after " + std::string(first) +
+                              ": '" + std::string(args[1]) + "'"};
+        }
+        return ShowHelp{HelpTarget::General};
+    }
+
+    if (const CommandSpec* spec = findByName(first); spec != nullptr) {
+        return parseClientCommand(*spec,
+            std::vector<std::string_view>(args.begin() + 1, args.end()));
+    }
+
+    return ParseError{"Error: unknown command: '" + std::string(first) +
+                      "'\nRun '" + std::string(argv[0]) + " help' for usage."};
 }
 
 } // namespace cec_control

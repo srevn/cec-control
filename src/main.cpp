@@ -1,66 +1,36 @@
+#include "client/client_runner.h"
 #include "common/argument_parser.h"
 #include "common/help_printer.h"
 #include "daemon/daemon_bootstrap.h"
-#include "client/cec_client.h"
 
-#include <iostream>
 #include <cstdlib>
+#include <iostream>
+#include <type_traits>
+#include <variant>
 
 /**
- * Main entry point for the CEC control application
+ * Entry point: parse argv, then dispatch on the resulting Action variant.
+ * Each runner (ClientRunner / DaemonBootstrap) catches its own exceptions
+ * and returns an exit code; main holds no state and never throws.
  */
 int main(int argc, char* argv[]) {
-    // Parse command line arguments
-    auto parseResult = cec_control::ArgumentParser::parse(argc, argv);
-    
-    // Handle parsing errors
-    if (parseResult.hasError) {
-        std::cerr << parseResult.errorMessage << std::endl;
-        return EXIT_FAILURE;
-    }
-    
-    // Handle help requests
-    if (parseResult.showHelp) {
-        cec_control::HelpPrinter::printHelp(parseResult.mode, argv[0]);
-        return EXIT_SUCCESS;
-    }
-    
-    // Branch execution based on detected mode
-    switch (parseResult.mode) {
-        case cec_control::ApplicationMode::CLIENT: {
-            // The logger defaults to silent (no console, no file). The client
-            // renders every diagnostic through CECClient and never wants stray
-            // LOG_* lines polluting stdout for downstream pipelines, so we
-            // leave the configuration at its default rather than enabling any
-            // sink here.
+    using namespace cec_control;
 
-            if (!parseResult.clientCommand.has_value()) {
-                std::cerr << "Error: No valid command specified\n";
-                return EXIT_FAILURE;
-            }
+    const Action action = ArgumentParser::parse(argc, argv);
+    const char* programName = argv[0];
 
-            try {
-                cec_control::CECClient client(parseResult.socketPath);
-                return client.execute(parseResult.clientCommand.value());
-            } catch (const std::exception& e) {
-                std::cerr << "Error: " << e.what() << '\n';
-                return EXIT_FAILURE;
-            }
+    return std::visit([programName](auto&& a) -> int {
+        using T = std::decay_t<decltype(a)>;
+        if constexpr (std::is_same_v<T, ParseError>) {
+            std::cerr << a.message << '\n';
+            return EXIT_FAILURE;
+        } else if constexpr (std::is_same_v<T, ShowHelp>) {
+            HelpPrinter::printHelp(a.target, programName);
+            return EXIT_SUCCESS;
+        } else if constexpr (std::is_same_v<T, RunClient>) {
+            return ClientRunner::run(a);
+        } else if constexpr (std::is_same_v<T, RunDaemon>) {
+            return DaemonBootstrap::runDaemon(a);
         }
-            
-        case cec_control::ApplicationMode::DAEMON:
-            return cec_control::DaemonBootstrap::runDaemon(parseResult);
-            
-        case cec_control::ApplicationMode::HELP_GENERAL:
-        case cec_control::ApplicationMode::HELP_CLIENT:
-        case cec_control::ApplicationMode::HELP_DAEMON:
-            // Help should have been handled above, but provide fallback
-            cec_control::HelpPrinter::printHelp(parseResult.mode, argv[0]);
-            return EXIT_SUCCESS;
-            
-        default:
-            // Unknown mode - show general help
-            cec_control::HelpPrinter::printHelp(cec_control::ApplicationMode::HELP_GENERAL, argv[0]);
-            return EXIT_SUCCESS;
-    }
+    }, action);
 }
