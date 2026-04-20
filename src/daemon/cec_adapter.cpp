@@ -2,7 +2,6 @@
 #include "../common/logger.h"
 
 #include <thread>
-#include <future>
 #include <unistd.h>
 #include <sys/types.h>
 
@@ -191,37 +190,28 @@ void CECAdapter::closeConnection() {
         return;
     }
 
-    // Set connected to false first to prevent new operations
+    // Flip the flag before taking the lock so any caller probing
+    // isConnected() returns early rather than racing Close() itself.
     m_connected = false;
 
-    // Use a timeout to prevent hanging on adapter close
-    auto closeWithTimeout = [this]() -> bool {
-        std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (!m_adapter) {
+        return;
+    }
 
-        if (m_adapter) {
-            try {
-                LOG_INFO("Setting inactive view before close");
-                m_adapter->SetInactiveView();
-                LOG_INFO("Closing CEC adapter connection");
-                m_adapter->Close();
-                return true;
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("Exception during CEC adapter close: ", e.what());
-                return false;
-            }
-            catch (...) {
-                LOG_ERROR("Unknown exception during CEC adapter close");
-                return false;
-            }
-        }
-        return true;
-    };
-
-    // Execute close with timeout
-    auto closeFuture = std::async(std::launch::async, closeWithTimeout);
-    if (closeFuture.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
-        LOG_WARNING("CEC adapter close operation timed out");
+    // Close is synchronous. A stuck libcec Close() here is caught by the
+    // daemon's suspend-safety timer (inhibit lock is released at 10s) or,
+    // on shutdown, by systemd's TimeoutStopSec / SIGKILL. Spawning a
+    // supervising thread would only leak when Close() truly hangs.
+    try {
+        LOG_INFO("Setting inactive view before close");
+        m_adapter->SetInactiveView();
+        LOG_INFO("Closing CEC adapter connection");
+        m_adapter->Close();
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception during CEC adapter close: ", e.what());
+    } catch (...) {
+        LOG_ERROR("Unknown exception during CEC adapter close");
     }
 
     LOG_INFO("CEC adapter connection closed");
