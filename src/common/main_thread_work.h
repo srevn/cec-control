@@ -15,11 +15,12 @@ namespace cec_control {
  * eventfd — register it with the EventLoop for READ and call drain() from
  * its handler.
  *
- * This is the preferred mechanism for any subsystem thread that needs to
- * influence main-loop state: libCEC callbacks (connection lost, TV
- * standby), thread-pool workers wanting to perform sd-bus calls, and so
- * on. Keeps the main loop the sole owner of sd-bus, signal, and other
- * non-reentrant state without scattering atomic flags across the daemon.
+ * This is the preferred mechanism for any subsystem thread that needs
+ * to influence main-loop state: libCEC callbacks (connection lost, TV
+ * standby), adapter-worker jobs completing back to the main thread,
+ * and so on. Keeps the main loop the sole owner of sd-bus, signal,
+ * and other non-reentrant state without scattering atomic flags
+ * across the daemon.
  */
 class MainThreadWork {
 public:

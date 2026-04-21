@@ -94,8 +94,9 @@ public:
 private:
     /**
      * Internal lifecycle. @c Idle is the rest state; @c Attempting is
-     * "a reopen is in flight on the task pool"; @c WaitingForRetry is
-     * "the retry timer is armed for the next attempt".
+     * "a reopen is in flight on the adapter worker"; @c
+     * WaitingForRetry is "the retry timer is armed for the next
+     * attempt".
      */
     enum class State { Idle, Attempting, WaitingForRetry };
 

@@ -91,7 +91,7 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
 
     try {
-        CECDaemon daemon(options.daemon, std::move(options.router));
+        CECDaemon daemon(std::move(options.daemon), std::move(options.router));
 
         if (!daemon.start()) {
             LOG_FATAL("Failed to start CEC daemon");
@@ -231,50 +231,51 @@ void DaemonBootstrap::setupLogging(const RunDaemon& action) {
 DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
     DaemonAllOptions opts;
 
-    // Daemon-level (lifecycle) knob: only DBus power monitoring lives here.
-    // Suspend-queue policy moved to the router alongside the queue state.
-    opts.daemon.enablePowerMonitor =
+    // Daemon-level knobs: lifecycle plus the adapter configuration the
+    // daemon owns directly. AdapterWorker is now the adapter's owner,
+    // so the options it consumes live alongside the daemon's other
+    // startup decisions rather than on the router.
+    auto& daemon = opts.daemon;
+    daemon.enablePowerMonitor =
         cfg.getBool("Daemon", "EnablePowerMonitor", true);
-
-    // Router top-level knobs
-    auto& router = opts.router;
-    router.scanDevicesAtStartup =
+    daemon.scanDevicesAtStartup =
         cfg.getBool("Daemon", "ScanDevicesAtStartup", false);
-    router.queueCommandsDuringSuspend =
-        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
-    // PowerOffOnStandby is the auto-standby policy gate — the router acts on
-    // it, not libcec. See the LibCecAdapter constructor for the rationale on
-    // not mirroring this into m_config.bPowerOffOnStandby.
-    router.autoStandbyEnabled =
-        cfg.getBool("Adapter", "PowerOffOnStandby", false);
 
-    // Adapter sub-options
-    auto& adapter = router.adapter;
+    auto& adapter = daemon.adapter;
     adapter.deviceName      = cfg.getString("Adapter", "DeviceName", "CEC Controller");
     adapter.autoPowerOn     = cfg.getBool("Adapter", "AutoPowerOn", false);
     adapter.autoWakeAVR     = cfg.getBool("Adapter", "AutoWakeAVR", false);
     adapter.activateSource  = cfg.getBool("Adapter", "ActivateSource", false);
     adapter.systemAudioMode = cfg.getBool("Adapter", "SystemAudioMode", false);
-
     adapter.wakeDevices     = parseLogicalAddressList(
         cfg.getString("Adapter", "WakeDevices", ""), "WakeDevices");
     adapter.powerOffDevices = parseLogicalAddressList(
         cfg.getString("Adapter", "PowerOffDevices", ""), "PowerOffDevices");
 
-    // Throttler sub-options
+    // Router-level knobs: queueability policy, auto-standby gate, and
+    // the throttler tuning. PowerOffOnStandby is the auto-standby
+    // policy gate — the router acts on it, not libcec. See the
+    // LibCecAdapter constructor for the rationale on not mirroring
+    // this into m_config.bPowerOffOnStandby.
+    auto& router = opts.router;
+    router.queueCommandsDuringSuspend =
+        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+    router.autoStandbyEnabled =
+        cfg.getBool("Adapter", "PowerOffOnStandby", false);
+
     auto& throttler = router.throttler;
     throttler.baseIntervalMs   = cfg.getInt("Throttler", "BaseIntervalMs", 200);
     throttler.maxIntervalMs    = cfg.getInt("Throttler", "MaxIntervalMs", 1000);
     throttler.maxRetryAttempts = cfg.getInt("Throttler", "MaxRetryAttempts", 3);
 
     LOG_INFO("Configuration: ScanDevicesAtStartup = ",
-             (opts.router.scanDevicesAtStartup ? "true" : "false"));
+             (daemon.scanDevicesAtStartup ? "true" : "false"));
     LOG_INFO("Configuration: QueueCommandsDuringSuspend = ",
-             (opts.router.queueCommandsDuringSuspend ? "true" : "false"));
+             (router.queueCommandsDuringSuspend ? "true" : "false"));
     LOG_INFO("Configuration: EnablePowerMonitor = ",
-             (opts.daemon.enablePowerMonitor ? "true" : "false"));
+             (daemon.enablePowerMonitor ? "true" : "false"));
     LOG_INFO("Configuration: PowerOffOnStandby = ",
-             (opts.router.autoStandbyEnabled ? "true" : "false"));
+             (router.autoStandbyEnabled ? "true" : "false"));
 
     return opts;
 }

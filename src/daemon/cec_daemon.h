@@ -8,68 +8,88 @@
 #include "../common/main_thread_work.h"
 #include "../common/signal_source.h"
 #include "../common/timer_source.h"
+#include "cec/adapter_worker.h"
+#include "cec/libcec_adapter.h"
 #include "command_router.h"
 #include "dbus_monitor.h"
 #include "power/adapter_reconnect.h"
 #include "power/power_lifecycle.h"
 #include "socket_server.h"
-#include "thread_pool.h"
 
 namespace cec_control {
 
 /**
  * @class CECDaemon
  * @brief Top-level orchestrator: owns the unified event loop and wires
- *        every event source (signals, work queue, sockets, DBus, timers)
- *        into it. All long-running work is delegated to the thread pool
- *        so the main loop itself stays responsive.
+ *        every event source (signals, work queue, sockets, DBus,
+ *        timers) into it. Blocking CEC work runs on a dedicated
+ *        @c AdapterWorker thread so the main loop stays responsive.
  *
- * After Phase E the daemon carries no singleton, no C-style signal
- * handler, and no cross-thread atomic flags. Shutdown is triggered by
- * SignalSource, which calls m_loop.stop(); teardown runs in stop() on
- * return from run(). A third SIGTERM during a stuck teardown does not
- * self-escalate to _exit — systemd's TimeoutStopSec plus SIGKILL is
- * the operator escape hatch.
+ * The daemon owns the adapter lifecycle: it constructs the
+ * @c LibCecAdapter on the main thread, transfers it to
+ * @c AdapterWorker, then builds the @c CommandRouter with a reference
+ * to both the worker and the main-thread work queue. libcec's
+ * internal threads are spawned only once the worker is observable —
+ * @c openConnection is submitted as the worker's first job — so
+ * callback forwarders always see a fully-wired daemon.
+ *
+ * Shutdown drives a strict ordering so no thread observes a destroyed
+ * subsystem: the socket server stops before the router's shutdown
+ * flag is flipped, the worker stops (closing the adapter on its
+ * exit path) before subsystems are released, and destruction runs in
+ * reverse construction order.
  */
 class CECDaemon {
 public:
     /**
-     * Daemon-level lifecycle knobs. CEC-specific options live on
-     * CommandRouter::Options.
+     * Daemon-level knobs: what the daemon process enables plus the
+     * adapter configuration it owns directly. Command-router tunables
+     * stay on @c CommandRouter::Options; this split mirrors the fact
+     * that the daemon constructs the adapter now that it owns the
+     * worker.
      */
     struct Options {
-        bool enablePowerMonitor = true;
+        bool                   enablePowerMonitor   = true;
+        bool                   scanDevicesAtStartup = false;
+        LibCecAdapter::Options adapter;
     };
 
     CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions);
     ~CECDaemon();
 
-    CECDaemon(const CECDaemon&) = delete;
+    CECDaemon(const CECDaemon&)            = delete;
     CECDaemon& operator=(const CECDaemon&) = delete;
 
-    /** Bring up pool, router, socket server, DBus monitor, loop sources. */
+    /**
+     * Construct and initialise the adapter, hand it to the worker,
+     * build the router, register every event-loop source, and submit
+     * @c openConnection as the worker's first job. Returns @c true on
+     * success; a failure path leaves the daemon in a state where
+     * @c stop() will tear down whatever partial state was committed.
+     */
     [[nodiscard]] bool start();
 
-    /** Block on the unified event loop until a signal or error exits it. */
+    /** Block on the event loop until a signal or error exits it. */
     void run();
 
-    /** Tear everything down. Idempotent; safe to call after a failed start(). */
+    /** Tear everything down. Idempotent; safe after a failed @c start(). */
     void stop();
 
 private:
     /**
-     * Main-thread continuation posted from the suspend pool worker.
-     * Feeds the lifecycle FSM; on a DBus-sourced cycle the emitted
-     * Lock::Release drops the inhibit lock, unless the safety timer
-     * already claimed that obligation.
+     * Continuation fired by @c CommandRouter::suspendAsync on the main
+     * thread. Feeds the lifecycle FSM; on a DBus-sourced cycle the
+     * emitted @c Lock::Release drops the inhibit lock unless the
+     * safety timer already claimed that obligation.
      */
     void onSuspendComplete(std::chrono::milliseconds workDuration);
 
     /**
-     * Main-thread continuation posted from the resume pool worker.
-     * Feeds the lifecycle FSM; the emitted Timer::Arm covers the
-     * post-resume USB re-enumeration window, and on a DBus-sourced
-     * cycle the emitted Lock::Take re-installs the inhibit lock.
+     * Continuation fired by @c CommandRouter::resumeAsync on the main
+     * thread. Feeds the lifecycle FSM; the emitted @c Timer::Arm
+     * covers the post-resume USB re-enumeration window, and on a
+     * DBus-sourced cycle the emitted @c Lock::Take re-installs the
+     * inhibit lock.
      */
     void onResumeComplete(bool adapterValid);
 
@@ -83,27 +103,24 @@ private:
     void onResumeRetryTimer();
 
     /**
-     * Main-thread entry point for a libCEC connection-lost alert. Feeds
-     * the reconnect FSM and kicks off the first attempt.
+     * Main-thread entry point for a libcec connection-lost alert.
+     * Feeds the reconnect FSM and kicks off the first attempt.
      */
     void onConnectionLost();
 
-    /**
-     * Run a single reconnect attempt on the thread pool. Results land
-     * back on the main loop via MainThreadWork → onReconnectResult.
-     */
+    /** Submit one reconnect attempt; result lands in @c onReconnectResult. */
     void submitReconnectAttempt();
 
     /**
      * Process the outcome of the most recent reconnect attempt: feed
-     * AttemptSucceeded or AttemptFailed to the reconnect FSM.
+     * @c AttemptSucceeded or @c AttemptFailed to the reconnect FSM.
      */
     void onReconnectResult(bool ok);
 
     /**
      * Handler for the connection-lost retry timer: invoked between
-     * attempts. Feeds the FSM; any staleness (suspend/resume already
-     * closed the cycle) is absorbed as a no-op by the FSM's Idle state.
+     * attempts. Feeds the FSM; any staleness is absorbed as a no-op
+     * by the FSM's @c Idle state.
      */
     void onReconnectRetryTimer();
 
@@ -111,83 +128,97 @@ private:
     void execute(AdapterReconnect::Output out);
 
     /**
-     * Apply an Output emitted by the lifecycle FSM, then drain the next
-     * queued event (if any) via PowerLifecycle::pumpQueue. A single
+     * Apply an @c Output emitted by the lifecycle FSM, then pump any
+     * queued event via @c PowerLifecycle::pumpQueue. A single
      * post-event pump suffices because a successful pump leaves the
      * FSM non-Idle, blocking further pumps.
      */
     void applyLifecycle(PowerLifecycle::Output output);
 
     /**
-     * Flat switch over every axis in the Output. Execution order is
+     * Flat switch over every axis in the @c Output. Execution order is
      * chosen for reviewability: disarm stale timers first, notify the
-     * reconnect FSM, arm new timers (with ArmFailed feedback on
-     * syscall failure), apply lock ops, then submit pool-side work.
+     * reconnect FSM, arm new timers (with @c ArmFailed feedback on
+     * syscall failure), apply lock ops, then kick off adapter work.
      */
     void executeEffects(const PowerLifecycle::Output& output);
 
-    /** Submit router->suspend() to the task pool with timing. */
+    /** Kick off @c router->suspendAsync with timing and completion wiring. */
     void submitSuspendWork();
 
-    /** Submit router->resume() to the task pool. */
+    /** Kick off @c router->resumeAsync with completion wiring. */
     void submitResumeWork();
 
     /**
      * Fire-and-forget reconnect attempt triggered by the post-resume
-     * retry timer. Separate from the AdapterReconnect cycle: covers
-     * the specific USB-reenumeration race after wake.
+     * retry timer. Separate from the @c AdapterReconnect cycle: covers
+     * the specific USB re-enumeration race after wake.
      */
     void submitLateReconnect();
 
     /**
-     * Route an incoming wire command. Runs on the main thread. Suspend
-     * and resume feed the lifecycle FSM synchronously and reply inline;
-     * every other command hops to the task pool, with the completion
-     * posted back through @c m_work so @p reply is always invoked on
-     * the main thread.
+     * Route an incoming wire command. Runs on the main thread.
+     * Suspend and resume feed the lifecycle FSM synchronously and
+     * reply inline; everything else is forwarded to the router whose
+     * @c dispatch chooses between an inline reply and a worker hop.
      */
     void handleCommand(Message command, SocketServer::ResponseSink reply);
 
-    /** Ensure a DBus monitor is up; returns true on success, false on
-     *  initialization failure (logged). */
+    /**
+     * Adapter callback forwarder: TV standby. Fires on libcec's
+     * command thread; delegates to the router (which reads an atomic
+     * and, if enabled, fires the suspend-request callback). The
+     * daemon owns the forwarder rather than wiring libcec directly to
+     * the router so that the callback target is stable across
+     * router/adapter construction order.
+     */
+    void onAdapterTvStandby();
+
+    /**
+     * Adapter callback forwarder: connection lost. Fires on libcec's
+     * alert thread; hops the observation through @c m_work so the
+     * reconnect FSM transition runs on the main thread.
+     */
+    void onAdapterConnectionLost();
+
+    /** Ensure a DBus monitor is up; returns @c true on success. */
     [[nodiscard]] bool setupPowerMonitor();
 
-    // Event loop and single-threaded primitives. Declared first so they
-    // outlive every subsystem that might register handlers against them.
-    // SignalSource must be constructed on the main thread before any worker
-    // threads are spawned — it masks the relevant signals on the current
-    // thread, and workers inherit the mask via thread creation.
-    SignalSource      m_signals;
-    MainThreadWork    m_work;
-    EventLoop         m_loop;
-    TimerSource       m_suspendSafetyTimer;
-    TimerSource       m_resumeRetryTimer;
-    TimerSource       m_reconnectRetryTimer;
+    // Event loop and single-threaded primitives. Declared first so
+    // they outlive every subsystem that might register handlers
+    // against them. SignalSource must be constructed on the main
+    // thread before any worker threads are spawned — it masks the
+    // relevant signals on the current thread, and workers inherit the
+    // mask via thread creation.
+    SignalSource m_signals;
+    MainThreadWork m_work;
+    EventLoop      m_loop;
+    TimerSource    m_suspendSafetyTimer;
+    TimerSource    m_resumeRetryTimer;
+    TimerSource    m_reconnectRetryTimer;
 
-    // Cross-thread worker pool for CEC-side blocking work. Must outlive
-    // the router and socket server.
-    //
-    // Dispatch, suspend, resume, reconnect, and adapter restart all hop
-    // through this pool so the main loop stays responsive while libcec
-    // performs multi-second synchronous operations. The router mutex
-    // serialises every task, so one worker would suffice; two gives
-    // headroom against a rare pathology (e.g. libcec wedged inside a
-    // reopen) monopolising the queue.
-    std::shared_ptr<ThreadPool> m_taskPool;
+    // CEC adapter actor. Owns the libcec handle and the single thread
+    // that is allowed to touch it. Built before the router so the
+    // router can capture a reference; the adapter itself is handed
+    // into the worker at construction. Destroyed in @c stop(), which
+    // joins the worker thread and closes the adapter on its exit path.
+    std::unique_ptr<AdapterWorker> m_worker;
 
     // Domain subsystems.
-    std::unique_ptr<CommandRouter>  m_router;
-    std::unique_ptr<SocketServer>   m_socketServer;
-    std::unique_ptr<DBusMonitor>    m_dbusMonitor;
+    std::unique_ptr<CommandRouter> m_router;
+    std::unique_ptr<SocketServer>  m_socketServer;
+    std::unique_ptr<DBusMonitor>   m_dbusMonitor;
 
-    // Staged options. Router consumes them on initialize().
+    // Staged options. Router consumes them at construction in start();
+    // adapter options are read out of m_options before the adapter is
+    // built.
     CommandRouter::Options m_routerOptions;
 
     // Pure decision types driving suspend/resume arbitration and the
     // connection-lost reconnect cycle. Both main-thread only; no
     // atomics or mutexes. Side effects are carried out by the daemon's
-    // fd handlers and pool submissions.
-    PowerLifecycle m_lifecycle;
+    // fd handlers and worker submissions.
+    PowerLifecycle   m_lifecycle;
     AdapterReconnect m_adapterReconnect{BackoffSchedule{
         std::chrono::seconds(5),
         std::chrono::seconds(10),
@@ -197,7 +228,7 @@ private:
     // Daemon-level lifecycle options.
     Options m_options;
 
-    int  m_terminationSignalCount = 0;
+    int m_terminationSignalCount = 0;
 
     // True between start() returning success and stop() completing.
     bool m_started = false;

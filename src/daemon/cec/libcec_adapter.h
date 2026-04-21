@@ -3,7 +3,6 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include <libcec/cec.h>
@@ -18,32 +17,51 @@ namespace cec_control {
  * @brief Concrete @c ICecAdapter implementation backed by libcec.
  *
  * Every libcec API surface (the @c CEC::ICECAdapter handle, the
- * @c ICECCallbacks struct, the @c libcec_configuration) is confined to
- * this class. Consumers elsewhere in the daemon talk to
+ * @c ICECCallbacks struct, the @c libcec_configuration) is confined
+ * to this class. Consumers elsewhere in the daemon talk to
  * @c ICecAdapter and never see libcec directly.
+ *
+ * ## Threading contract
+ *
+ * Exactly one thread — the @c AdapterWorker thread that owns this
+ * instance — is allowed to invoke the public lifecycle / command /
+ * query methods. There is no internal lock. The only cross-thread
+ * field is @c m_connected, written by libcec's alert thread in the
+ * @c CEC_ALERT_CONNECTION_LOST path and read as a cheap hint by the
+ * worker via @c isConnected. An atomic suffices.
+ *
+ * ## Callback threads
+ *
+ * The three libcec callbacks (log, command-received, alert) fire on
+ * libcec's internal threads, not on the owning worker. They must be
+ * thread-safe and non-blocking; the implementations here only log,
+ * invoke thread-safe user-supplied callbacks (install-once at
+ * construction, never reassigned), or write the atomic
+ * @c m_connected. They MUST NOT call back into any other public
+ * member of this class.
  */
 class LibCecAdapter final : public ICecAdapter {
 public:
     /**
      * Configuration options for the libcec backend. Consumed once at
      * construction and immutable thereafter; runtime-mutable knobs
-     * (like auto-standby) live on @c CommandRouter.
+     * (auto-standby) live on @c CommandRouter.
      */
     struct Options {
         std::string deviceName;
-        bool autoPowerOn;
-        bool autoWakeAVR;
-        bool activateSource;
-        bool systemAudioMode;
+        bool        autoPowerOn;
+        bool        autoWakeAVR;
+        bool        activateSource;
+        bool        systemAudioMode;
         CEC::cec_logical_addresses wakeDevices;
         CEC::cec_logical_addresses powerOffDevices;
 
-        Options() :
-            deviceName("CEC Control"),
-            autoPowerOn(false),
-            autoWakeAVR(false),
-            activateSource(false),
-            systemAudioMode(false) {
+        Options()
+            : deviceName("CEC Control"),
+              autoPowerOn(false),
+              autoWakeAVR(false),
+              activateSource(false),
+              systemAudioMode(false) {
             wakeDevices.Clear();
             powerOffDevices.Clear();
         }
@@ -56,7 +74,7 @@ public:
     LibCecAdapter(Options options, Callbacks callbacks);
     ~LibCecAdapter() override;
 
-    LibCecAdapter(const LibCecAdapter&) = delete;
+    LibCecAdapter(const LibCecAdapter&)            = delete;
     LibCecAdapter& operator=(const LibCecAdapter&) = delete;
 
     // Lifecycle ---------------------------------------------------------
@@ -96,10 +114,10 @@ public:
         CEC::cec_logical_address address = CEC::CECDEVICE_BROADCAST) override;
 
 private:
-    // libCEC owns the ICECAdapter instance; ownership is released back to it
-    // via CECDestroy() rather than `delete`. Using the default unique_ptr
-    // deleter would invoke `delete` on a libCEC-allocated object, which is
-    // outside the documented API contract.
+    // libcec owns the ICECAdapter instance; ownership is released back
+    // to it via CECDestroy() rather than `delete`. Using the default
+    // unique_ptr deleter would invoke `delete` on a libcec-allocated
+    // object, which is outside the documented API contract.
     struct AdapterDeleter {
         void operator()(CEC::ICECAdapter* adapter) const noexcept {
             if (adapter) ::CECDestroy(adapter);
@@ -108,49 +126,42 @@ private:
     using AdapterPtr = std::unique_ptr<CEC::ICECAdapter, AdapterDeleter>;
 
     // Configuration
-    Options m_options;
+    Options     m_options;
     std::string m_portName;
 
-    // libCEC adapter. m_callbacks is a plain non-owning struct whose address
-    // we hand to libcec via m_config.callbacks; libcec treats the pointer as
-    // borrowed (consistent with AdapterDeleter's CECDestroy note — libcec
-    // never free()s anything we hand it). Value-initialised so every function
-    // slot starts out nullptr; setupCallbacks() fills in the ones we use.
-    AdapterPtr m_adapter;
-    CEC::ICECCallbacks m_callbacks{};
-    CEC::libcec_configuration m_config;
+    // libcec adapter. m_callbacks is a plain non-owning struct whose
+    // address we hand to libcec via m_config.callbacks; libcec treats
+    // the pointer as borrowed (consistent with AdapterDeleter's
+    // CECDestroy note — libcec never free()s anything we hand it).
+    // Value-initialised so every function slot starts out nullptr;
+    // the constructor fills in the ones we use.
+    AdapterPtr                 m_adapter;
+    CEC::ICECCallbacks         m_callbacks{};
+    CEC::libcec_configuration  m_config;
 
-    // Coherent connection state. Every write happens under m_adapterMutex
-    // except the CEC_ALERT_CONNECTION_LOST path inside cecAlertCallback,
-    // which fires on libcec's internal thread and cannot take the mutex
-    // without risking deadlock. That write is an advisory hint; the
-    // authoritative state is always the value observed inside the mutex.
-    // The type is atomic purely to make the unlocked write well-defined.
+    // Cross-thread connection hint. Written by libcec's alert thread
+    // in the CEC_ALERT_CONNECTION_LOST path and by the owning worker
+    // in openConnection/closeConnection/reopenConnection. Read without
+    // synchronisation by callers that want a cheap pre-flight; those
+    // callers treat the value as advisory.
     std::atomic<bool> m_connected;
 
-    // Serialises libcec access and writes to m_connected. A plain mutex
-    // is sufficient: every public member function enters the lock exactly
-    // once, and reopenConnection() inlines its close/destroy sequence
-    // rather than re-entering closeConnection(). If you add a new method
-    // that needs to run under this lock, build a private *Locked() helper
-    // — do not promote the mutex back to std::recursive_mutex.
-    mutable std::mutex m_adapterMutex;
-
-    // Callbacks — install-once at construction; libcec reads them from
-    // its internal threads without a lock. Never reassigned post-ctor.
+    // Callbacks — install-once at construction; libcec reads them
+    // from its internal threads without a lock. Never reassigned.
     const std::function<void()> m_tvStandbyCallback;
     const std::function<void()> m_connectionLostCallback;
 
     /**
-     * @brief Detects available CEC adapter hardware.
-     * @return true if an adapter was found, false otherwise.
+     * Detect available CEC adapter hardware. Caches the first-found
+     * port in @c m_portName.
      */
     bool detectAdapter();
 
-    // CEC callback handlers
-    static void cecLogCallback(void *cbParam, const CEC::cec_log_message* message);
-    static void cecCommandCallback(void *cbParam, const CEC::cec_command* command);
-    static void cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter param);
+    // libcec callback trampolines
+    static void cecLogCallback(void* cbParam, const CEC::cec_log_message* message);
+    static void cecCommandCallback(void* cbParam, const CEC::cec_command* command);
+    static void cecAlertCallback(void* cbParam, const CEC::libcec_alert alert,
+                                 const CEC::libcec_parameter param);
 };
 
 } // namespace cec_control

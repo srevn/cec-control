@@ -1,19 +1,21 @@
 #include "cec_daemon.h"
-#include "../common/logger.h"
-#include "../common/system_paths.h"
-#include "../common/systemd_env.h"
 
 #include <chrono>
 #include <csignal>
+#include <future>
 #include <utility>
+
+#include "../common/logger.h"
+#include "../common/system_paths.h"
+#include "../common/systemd_env.h"
+#include "cec/operations.h"
 
 namespace cec_control {
 
 CECDaemon::CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions)
     : m_signals{SIGINT, SIGTERM, SIGHUP},
-      m_taskPool(std::make_shared<ThreadPool>(2)),
       m_routerOptions(std::move(routerOptions)),
-      m_options(daemonOptions) {}
+      m_options(std::move(daemonOptions)) {}
 
 CECDaemon::~CECDaemon() {
     stop();
@@ -36,50 +38,85 @@ bool CECDaemon::start() {
         return false;
     }
 
-    // Pool workers inherit the main thread's signal mask, which was set in
-    // the SignalSource member's constructor. Start the pool after masking
-    // and before spawning any other threads so SIGINT/SIGTERM/SIGHUP are
-    // only delivered to us via signalfd on the main thread.
-    m_taskPool->start();
-
     try {
-        // Build the router's outbound hooks before construction. Both land
-        // on the main thread via m_work so lifecycle state (FSM, timers)
-        // is only ever touched from one thread, regardless of which
-        // libCEC- or pool-owned thread fires the event.
+        // Build the adapter on the main thread. Callbacks target
+        // daemon forwarders so the wiring does not depend on the
+        // router's construction order, and so libcec-thread entry
+        // points are stable for the lifetime of the adapter.
+        ICecAdapter::Callbacks adapterCallbacks{
+            /*onTvStandby*/      [this]() { this->onAdapterTvStandby(); },
+            /*onConnectionLost*/ [this]() { this->onAdapterConnectionLost(); },
+        };
+        auto adapter = std::make_unique<LibCecAdapter>(
+            std::move(m_options.adapter), std::move(adapterCallbacks));
+
+        // initialize() loads libcec and detects adapter hardware. It
+        // does NOT spawn libcec's command or alert threads — those
+        // start inside openConnection(), which we submit as the
+        // worker's first job once the worker is observable.
+        if (!adapter->initialize()) {
+            LOG_ERROR("Failed to initialize CEC adapter library");
+            return false;
+        }
+
+        m_worker = std::make_unique<AdapterWorker>(std::move(adapter));
+
+        // Router's only outbound hook is the TV-standby-driven system
+        // suspend. Fires on libcec's command thread (via the daemon
+        // forwarder) so it MUST hop through m_work: sd-bus is
+        // main-thread owned.
         CommandRouter::Callbacks routerCallbacks{
-            /*onConnectionLost*/ [this]() {
-                m_work.post([this]() { this->onConnectionLost(); });
-            },
             /*onSuspendRequested*/ [this]() {
-                // Router fires this on a pool worker. sd-bus is
-                // single-owner (main thread), so hop there; the actual
-                // Suspend() success/failure is logged by DBusMonitor,
-                // so this side is fire-and-forget.
                 m_work.post([this]() {
                     if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
                 });
             },
         };
-
         m_router = std::make_unique<CommandRouter>(
-            std::move(m_routerOptions), m_taskPool, std::move(routerCallbacks));
+            std::move(m_routerOptions), *m_worker, m_work,
+            std::move(routerCallbacks));
 
-        if (!m_router->initialize()) {
-            LOG_ERROR("Failed to initialize command router");
+        m_worker->start();
+
+        // Open the adapter on the worker thread. Blocking the main
+        // thread on a one-shot future is acceptable here: we have not
+        // yet entered the event loop, and a hung libcec Open is no
+        // worse than the pre-refactor synchronous call on main. The
+        // promise is heap-allocated via shared_ptr so the job lambda
+        // remains copy-constructible for std::function.
+        auto openPromise = std::make_shared<std::promise<bool>>();
+        auto openFuture  = openPromise->get_future();
+        m_worker->submit([promise = openPromise](ICecAdapter& adapter) {
+            try {
+                promise->set_value(adapter.openConnection());
+            } catch (...) {
+                // Propagate the exception through the future so the
+                // waiting thread can surface a useful message.
+                promise->set_exception(std::current_exception());
+            }
+        });
+        if (!openFuture.get()) {
+            LOG_ERROR("Failed to open CEC adapter connection");
             return false;
+        }
+
+        if (m_options.scanDevicesAtStartup) {
+            LOG_INFO("Scanning for CEC devices...");
+            m_worker->submit([](ICecAdapter& adapter) {
+                ops::logDeviceSnapshot(adapter);
+            });
+        } else {
+            LOG_INFO("Skipping device scanning");
         }
 
         m_socketServer = std::make_unique<SocketServer>(
             m_loop, SystemPaths::getSocketPath());
         m_socketServer->setCommandHandler(
-            [this](Message cmd, SocketServer::ResponseSink reply) {
-                this->handleCommand(std::move(cmd), std::move(reply));
+            [this](Message command, SocketServer::ResponseSink reply) {
+                this->handleCommand(std::move(command), std::move(reply));
             });
-
         if (!m_socketServer->start()) {
             LOG_ERROR("Failed to start socket server");
-            m_router->shutdown();
             return false;
         }
 
@@ -93,9 +130,9 @@ bool CECDaemon::start() {
                      "Suspend/resume operations will require manual commands.");
         }
 
-        // Register every fd source with the loop. Any failure here leaves
-        // earlier-registered sources in place; stop() will tear them down
-        // cleanly via EventLoop destruction.
+        // Register every fd source with the loop. Any failure here
+        // leaves earlier-registered sources in place; stop() tears
+        // them down cleanly via EventLoop destruction.
         const auto READ = static_cast<uint32_t>(EventPoller::Event::READ);
 
         if (!m_loop.add(m_signals.fd(), READ,
@@ -159,25 +196,21 @@ void CECDaemon::stop() {
         LOG_INFO("Stopping daemon under systemd control");
     }
 
-    // Ordered teardown. The invariant is that no pool worker ever observes
-    // a destroyed subsystem: we therefore drain the pool *before* releasing
-    // the unique_ptrs whose members the captured lambdas reach into.
+    // Ordered teardown. The invariant is that no thread ever observes
+    // a destroyed subsystem:
     //
     //   1. detach DBusMonitor so no further bus events reach us
-    //   2. stop the socket server: close the listener and every session
-    //      fd, so no new requests enter handleCommand
-    //   3. soft-close the router (m_shutdownComplete = true, adapter
-    //      closed, queue cleared) while it is still alive
-    //   4. drain the task pool: any queued dispatch/lifecycle lambda
-    //      observes m_shutdownComplete and becomes a no-op; reply
-    //      closures posted back to m_work after this point sit in its
-    //      queue and are destructed unexecuted with CECDaemon
+    //   2. stop the socket server: close the listener and every
+    //      session fd, so no new requests enter handleCommand
+    //   3. flip the router's shutdown gate and drop queued commands
+    //      (main-thread only; no adapter touch — the worker owns it)
+    //   4. stop the worker: finishes the in-flight job, drops
+    //      pending, closes the adapter on its exit path, joins. After
+    //      this returns, libcec's internal threads are quiet and
+    //      cannot reach any daemon forwarder
     //   5. stop DBusMonitor (bus was detached at step 1)
-    //   6. destroy subsystems and the pool in dependency order
+    //   6. destroy subsystems in reverse construction order
     try {
-        // Each subsystem logs its own "Stopping" / "Stopped" lifecycle; the
-        // daemon adds wall-clock timing so slow teardowns surface at a
-        // glance without double-logging the transitions themselves.
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
         }
@@ -191,15 +224,15 @@ void CECDaemon::stop() {
         }
 
         if (m_router) {
-            const auto t0 = std::chrono::steady_clock::now();
             m_router->shutdown();
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t0).count();
-            LOG_INFO("Command router teardown: ", ms, "ms");
         }
 
-        if (m_taskPool) {
-            m_taskPool->shutdown();
+        if (m_worker) {
+            const auto t0 = std::chrono::steady_clock::now();
+            m_worker->stop();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            LOG_INFO("Adapter worker teardown: ", ms, "ms");
         }
 
         if (m_dbusMonitor) {
@@ -209,13 +242,16 @@ void CECDaemon::stop() {
         LOG_ERROR("Exception during daemon shutdown: ", e.what());
     }
 
-    // No thread remains that can touch any subsystem. Destroy in reverse
-    // dependency order: domain subsystems first, then the pool that
-    // ultimately ran their closures.
+    // Destroy in reverse construction order: domain subsystems first,
+    // then the worker whose thread their continuations might have
+    // posted against. The router holds an AdapterWorker&; reset it
+    // before the worker so the reference is valid right up to
+    // router destruction even though the router's destructor does
+    // not reach through it.
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_router.reset();
-    m_taskPool.reset();
+    m_worker.reset();
 
     LOG_INFO("Shutdown sequence complete");
 }
@@ -224,11 +260,12 @@ void CECDaemon::onSignalReadable() {
     while (auto info = m_signals.readOne()) {
         const int signum = static_cast<int>(info->ssi_signo);
         ++m_terminationSignalCount;
-        LOG_INFO("Received signal ", signum, " (count=", m_terminationSignalCount, ")");
+        LOG_INFO("Received signal ", signum,
+                 " (count=", m_terminationSignalCount, ")");
 
         // First signal requests a clean shutdown. Further signals are
-        // visible in the log but the loop has already been asked to exit;
-        // a truly stuck shutdown is resolved by systemd's TimeoutStopSec
+        // logged but the loop has already been asked to exit; a truly
+        // stuck shutdown is resolved by systemd's TimeoutStopSec
         // (which ultimately delivers SIGKILL).
         m_loop.stop();
     }
@@ -240,13 +277,14 @@ void CECDaemon::applyLifecycle(PowerLifecycle::Output output) {
 }
 
 void CECDaemon::executeEffects(const PowerLifecycle::Output& out) {
-    using Timer = PowerLifecycle::Output::Timer;
-    using Work  = PowerLifecycle::Output::Work;
-    using Lock  = PowerLifecycle::Output::Lock;
+    using Timer  = PowerLifecycle::Output::Timer;
+    using Work   = PowerLifecycle::Output::Work;
+    using Lock   = PowerLifecycle::Output::Lock;
     using Notify = PowerLifecycle::Output::Notify;
 
     // Entry banner for a new cycle. Emitted before any other effect so
-    // a concurrent timer-arm warning lands *after* "starting X" in the log.
+    // a concurrent timer-arm warning lands after "starting X" in the
+    // log.
     switch (out.work) {
     case Work::StartSuspend:
         LOG_INFO("System suspending, preparing CEC adapter");
@@ -278,8 +316,9 @@ void CECDaemon::executeEffects(const PowerLifecycle::Output& out) {
     }
 
     // Arm new timers. On syscall failure, feed back to the FSM so its
-    // internal armed flags stay accurate; the returned Output is always
-    // inert for these feedback events, so no further dispatch is needed.
+    // internal armed flags stay accurate; the returned Output is
+    // always inert for these feedback events, so no further dispatch
+    // is needed.
     if (out.safetyTimer == Timer::Arm) {
         if (!m_suspendSafetyTimer.armOnce(out.safetyDelay)) {
             LOG_WARNING("Could not arm suspend-safety timer; "
@@ -305,7 +344,7 @@ void CECDaemon::executeEffects(const PowerLifecycle::Output& out) {
         }
     }
 
-    // Pool-side work.
+    // Adapter-side work.
     switch (out.work) {
     case Work::StartSuspend: submitSuspendWork(); break;
     case Work::StartResume:  submitResumeWork();  break;
@@ -324,18 +363,8 @@ void CECDaemon::submitSuspendWork() {
         });
         return;
     }
-    // Run the CEC-side suspend on a pool worker so the main loop continues
-    // to service signals, sockets, and DBus while we wait.
-    m_taskPool->submit([this]() {
-        const auto t0 = std::chrono::steady_clock::now();
-        try {
-            m_router->suspend();
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception during suspend: ", e.what());
-        }
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0);
-        m_work.post([this, elapsed]() { this->onSuspendComplete(elapsed); });
+    m_router->suspendAsync([this](std::chrono::milliseconds elapsed) {
+        this->onSuspendComplete(elapsed);
     });
 }
 
@@ -344,31 +373,22 @@ void CECDaemon::submitResumeWork() {
         m_work.post([this]() { this->onResumeComplete(false); });
         return;
     }
-    m_taskPool->submit([this]() {
-        try {
-            m_router->resume();
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception during resume: ", e.what());
-        }
-        const bool adapterValid = m_router->isAdapterValid();
-        m_work.post([this, adapterValid]() {
-            this->onResumeComplete(adapterValid);
-        });
+    m_router->resumeAsync([this](bool adapterValid) {
+        this->onResumeComplete(adapterValid);
     });
 }
 
 void CECDaemon::submitLateReconnect() {
-    m_taskPool->submit([this]() {
-        if (!m_router) return;
-        if (m_router->isAdapterValid() || m_router->isSuspended()) return;
-        LOG_INFO("Performing delayed reconnection attempt");
-        (void)m_router->reconnect();
-    });
+    if (!m_router || !m_worker) return;
+    if (m_worker->isAdapterConnected() || m_router->isSuspended()) return;
+    LOG_INFO("Performing delayed reconnection attempt");
+    m_router->reconnectAsync(/*onDone*/ {});
 }
 
 void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
-    // Whichever path (completion vs. safety timer) fires first discharges
-    // the inhibit-lock release; the other path takes the overrun branch.
+    // Whichever path (completion vs. safety timer) fires first
+    // discharges the inhibit-lock release; the other path takes the
+    // overrun branch.
     auto out = m_lifecycle.onSuspendCompleted();
     if (out.safetyOverrun) {
         LOG_WARNING("CEC suspend completed in ", workDuration.count(),
@@ -411,9 +431,12 @@ void CECDaemon::onConnectionLost() {
 }
 
 void CECDaemon::submitReconnectAttempt() {
-    m_taskPool->submit([this]() {
-        const bool ok = m_router && m_router->reconnect();
-        m_work.post([this, ok]() { this->onReconnectResult(ok); });
+    if (!m_router) {
+        m_work.post([this]() { this->onReconnectResult(false); });
+        return;
+    }
+    m_router->reconnectAsync([this](bool ok) {
+        this->onReconnectResult(ok);
     });
 }
 
@@ -476,8 +499,9 @@ bool CECDaemon::setupPowerMonitor() {
             return false;
         }
         m_dbusMonitor->setCallback([this](DBusMonitor::PowerState state) {
-            // Runs inline inside sd_bus_process; hop through m_work so the
-            // sequencer never executes nested in the bus dispatch stack.
+            // Runs inline inside sd_bus_process; hop through m_work so
+            // the sequencer never executes nested in the bus dispatch
+            // stack.
             m_work.post([this, state]() {
                 auto out = (state == DBusMonitor::PowerState::Suspending)
                     ? m_lifecycle.onSuspendRequested(PowerLifecycle::Source::DBus)
@@ -498,10 +522,10 @@ void CECDaemon::handleCommand(Message command, SocketServer::ResponseSink reply)
     LOG_DEBUG("Received command: type=", static_cast<int>(command.type),
               ", deviceId=", static_cast<int>(command.deviceId));
 
-    // Suspend and resume mutate main-thread-only FSM state. We are already
-    // on the main thread here (SocketServer dispatches synchronously from
-    // the event loop), so feed the lifecycle FSM directly and acknowledge
-    // inline.
+    // Suspend and resume mutate main-thread-only FSM state. We are
+    // already on the main thread here (SocketServer dispatches
+    // synchronously from the event loop), so feed the lifecycle FSM
+    // directly and acknowledge inline.
     switch (command.type) {
     case MessageType::CMD_SUSPEND:
         LOG_INFO("Processing suspend command");
@@ -523,22 +547,27 @@ void CECDaemon::handleCommand(Message command, SocketServer::ResponseSink reply)
         return;
     }
 
-    // CEC work runs on a task-pool worker so the main loop stays responsive
-    // during multi-second libcec operations. The completion hops back
-    // through m_work so @p reply is always invoked on the main thread.
-    m_taskPool->submit([this, cmd = std::move(command),
-                        reply = std::move(reply)]() mutable {
-        Message resp(MessageType::RESP_ERROR);
-        try {
-            resp = m_router->dispatch(cmd);
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception during dispatch: ", e.what());
-        }
-        m_work.post([reply = std::move(reply),
-                     resp = std::move(resp)]() mutable {
-            reply(std::move(resp));
-        });
-    });
+    // The router internally chooses between an inline main-thread
+    // reply (gate-only, state-only paths) and a worker hop with the
+    // reply posted back via m_work.
+    m_router->dispatch(std::move(command), std::move(reply));
+}
+
+void CECDaemon::onAdapterTvStandby() {
+    // Fires on libcec's command thread. m_router is set before the
+    // worker's first job (openConnection) runs; libcec's internal
+    // threads are spawned only inside that Open call. The null check
+    // here is defense-in-depth for any future change that might
+    // breach that ordering.
+    if (auto* router = m_router.get()) {
+        router->onTvStandby();
+    }
+}
+
+void CECDaemon::onAdapterConnectionLost() {
+    // Fires on libcec's alert thread. Hop to main so the reconnect
+    // FSM transition runs single-threaded.
+    m_work.post([this]() { this->onConnectionLost(); });
 }
 
 } // namespace cec_control

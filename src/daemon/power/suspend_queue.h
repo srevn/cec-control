@@ -36,18 +36,16 @@ namespace cec_control {
  * ## Thread-safety
  *
  *  - @c isSuspended is a lock-free acquire load on an internal
- *    atomic. Callers on non-main threads (notably the daemon's
- *    late-reconnect task on the thread pool) can observe the flag
- *    without taking the router's state mutex.
- *  - @c enterSuspended, @c exitSuspended, @c tryPush and @c drain
- *    are NOT internally synchronised. The caller must hold an
- *    external lock across them so the flag flip and the vector
- *    mutation remain coherent: a dispatch that observes
- *    @c isSuspended() == true and then calls @c tryPush must not
- *    race an @c exitSuspended that drops the queue.
- *
- * @c CommandRouter holds @c m_stateMutex for every path that
- * mutates here, which satisfies the contract.
+ *    atomic. The atomic is kept because the flag is read from
+ *    libcec-thread-adjacent paths (e.g. @c CommandRouter::onTvStandby
+ *    queries it transitively) without coordinating with the main
+ *    thread.
+ *  - @c enterSuspended, @c exitSuspended, @c tryPush, and @c drain
+ *    are NOT internally synchronised. The only caller is
+ *    @c CommandRouter, which invokes them on the main thread as part
+ *    of @c dispatch, @c suspendAsync's phase-1, and
+ *    @c onResumeWorkerComplete. That single-threaded access provides
+ *    the required ordering for free.
  */
 class SuspendQueue {
 public:

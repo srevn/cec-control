@@ -1,274 +1,248 @@
 #include "command_router.h"
+
+#include <chrono>
+#include <utility>
+
 #include "../common/command_registry.h"
 #include "../common/logger.h"
+#include "../common/main_thread_work.h"
+#include "cec/adapter_interface.h"
+#include "cec/adapter_worker.h"
 #include "cec/operations.h"
-
-#include <utility>
 
 namespace cec_control {
 
-CommandRouter::CommandRouter(Options options,
-                             std::shared_ptr<ThreadPool> threadPool,
-                             Callbacks callbacks)
-    // TV standby always lifts to our onTvStandby hook; policy (whether to
-    // suspend the PC) lives here in the router, not in the adapter. That
-    // way CMD_AUTO_STANDBY toggles a single flag with no libcec config
-    // touch. The [this] capture is legal during initializer-list
-    // evaluation — the lambda stores the pointer, it does not invoke
-    // onTvStandby until libcec fires a callback long after construction.
-    // The concrete adapter choice (libcec) is baked in here; the rest of
-    // the router talks to ICecAdapter through the unique_ptr member.
-    : m_adapter(std::make_unique<LibCecAdapter>(
-          options.adapter,
-          ICecAdapter::Callbacks{
-              /*onTvStandby*/      [this]() { onTvStandby(); },
-              /*onConnectionLost*/ std::move(callbacks.onConnectionLost),
-          })),
+CommandRouter::CommandRouter(Options        options,
+                             AdapterWorker& worker,
+                             MainThreadWork& work,
+                             Callbacks      callbacks)
+    : m_worker(worker),
+      m_work(work),
       m_throttler(options.throttler),
       m_options(std::move(options)),
-      m_threadPool(std::move(threadPool)),
       m_autoStandbyEnabled(m_options.autoStandbyEnabled),
       m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
-CommandRouter::~CommandRouter() {
-    shutdown();
-}
-
-bool CommandRouter::initialize() {
-    // Single-threaded context: the daemon calls initialize() before any
-    // event source is attached, so no dispatch or lifecycle event can
-    // race us. The state mutex is deliberately not taken.
-    LOG_INFO("Initializing CEC command router");
-
-    if (!m_adapter->initialize()) {
-        LOG_ERROR("Failed to initialize CEC adapter library");
-        return false;
-    }
-    if (!m_adapter->openConnection()) {
-        LOG_ERROR("Failed to open CEC adapter connection");
-        return false;
-    }
-
-    if (m_options.scanDevicesAtStartup) {
-        LOG_INFO("Scanning for CEC devices...");
-        ops::logDeviceSnapshot(*m_adapter);
-    } else {
-        LOG_INFO("Skipping device scanning");
-    }
-
-    LOG_INFO("CEC command router initialized successfully");
-    return true;
-}
-
 void CommandRouter::shutdown() {
-    // Flip the shutdown flag and take ownership of the queue under the
-    // state lock; everything that touches the adapter runs outside.
-    // The suspend flag is deliberately left as-is: m_shutdownComplete
-    // gates every caller before the suspended check is reached.
-    std::vector<Message> toDiscard;
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_shutdownComplete.load(std::memory_order_relaxed)) return;
-        m_shutdownComplete.store(true, std::memory_order_release);
-        toDiscard = m_suspendQueue.drain();
-    }
+    if (m_shutdownComplete.load(std::memory_order_relaxed)) return;
+    m_shutdownComplete.store(true, std::memory_order_release);
+
+    auto toDiscard = m_suspendQueue.drain();
 
     LOG_INFO("Shutting down CEC command router");
-    m_adapter->closeConnection();
     if (!toDiscard.empty()) {
         LOG_INFO("Discarding ", toDiscard.size(),
                  " queued commands on shutdown");
     }
 }
 
-bool CommandRouter::reconnect() {
-    // State check under the lock, adapter work outside. Between the
-    // check and the reopen, a DBus suspend or an outer stop() may land;
-    // the resulting reopen-then-close pair is harmless (the adapter
-    // mutex serialises them) and was already accepted as the cost of
-    // not holding a multi-second reopen under a router lock.
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_shutdownComplete.load(std::memory_order_relaxed)) {
-            LOG_DEBUG("reconnect() called after shutdown; ignoring");
-            return false;
-        }
-        if (m_suspendQueue.isSuspended()) {
-            // The adapter is intentionally closed during suspend; libCEC
-            // won't see a connection-lost event here, so this branch
-            // mostly fires when a stray alert lands between suspend()
-            // and the kernel actually suspending. No-op and wait for
-            // resume() to reopen.
-            LOG_DEBUG("reconnect() called while suspended; ignoring");
-            return false;
-        }
-    }
+void CommandRouter::dispatch(Message command, ResponseSink reply) {
+    // Every branch below is responsible for invoking @p reply exactly
+    // once. Adapter-driven commands hand the sink to a worker job that
+    // posts the invocation back through MainThreadWork; every other
+    // branch replies synchronously on the main thread.
+    if (!reply) return;  // defensive: a caller without a sink is malformed
 
-    if (m_adapter->isConnected()) {
-        LOG_DEBUG("reconnect(): adapter already connected");
-        return true;
-    }
-
-    LOG_INFO("Attempting to reconnect to CEC adapter");
-    if (!m_adapter->reopenConnection()) {
-        LOG_ERROR("Failed to reconnect CEC adapter");
-        return false;
-    }
-    LOG_INFO("CEC adapter reconnected successfully");
-    return true;
-}
-
-void CommandRouter::suspend() {
-    // Phase 1: flip the flag under m_stateMutex so any dispatch picking
-    // up the lock after us sees the suspended state. New arrivals will
-    // enter handleSuspendedLocked (queue or reject); in-flight phase-2
-    // dispatches that already passed their phase-1 check complete
-    // against the adapter concurrently with our closeConnection below.
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_shutdownComplete.load(std::memory_order_relaxed)) {
-            // shutdown() already closed the adapter and cleared the
-            // queue; re-running the suspend sequence would only churn
-            // flags.
-            LOG_DEBUG("suspend() called after shutdown; ignoring");
-            return;
-        }
-        if (m_suspendQueue.isSuspended()) {
-            LOG_DEBUG("suspend() called while already suspended");
-            return;
-        }
-        m_suspendQueue.enterSuspended();
-    }
-
-    // Phase 2: drive libcec outside the state lock. closeConnection
-    // takes the adapter mutex internally and therefore waits briefly
-    // (ms-granularity) for an in-flight libcec call to finish, but
-    // does NOT wait on a throttler retry — those run lock-free now.
-    LOG_INFO("Preparing CEC adapter for system sleep");
-    if (m_adapter->isConnected()) {
-        try {
-            (void)m_adapter->standbyDevices(CEC::CECDEVICE_BROADCAST);
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception sending standby commands: ", e.what());
-        }
-    }
-    m_adapter->closeConnection();
-    LOG_INFO("CEC adapter closed for suspend");
-}
-
-void CommandRouter::resume() {
-    // Phase 1: verify we are actually in the suspended state. Keep the
-    // suspend flag set across the reopen below so new dispatches
-    // continue to queue rather than race the half-open adapter.
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_shutdownComplete.load(std::memory_order_relaxed)) {
-            // resume() would reopen an adapter shutdown() just destroyed.
-            LOG_DEBUG("resume() called after shutdown; ignoring");
-            return;
-        }
-        if (!m_suspendQueue.isSuspended()) {
-            LOG_DEBUG("resume() called while not suspended");
-            return;
-        }
-    }
-
-    LOG_INFO("Reinitializing CEC adapter after resume");
-    const bool reconnected = m_adapter->reopenConnection();
-    if (reconnected) {
-        LOG_INFO("CEC adapter reconnected successfully on resume");
-        try {
-            (void)m_adapter->powerOnDevices(CEC::CECDEVICE_BROADCAST);
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception sending power-on commands: ", e.what());
-        }
-    } else {
-        LOG_ERROR("Failed to reconnect CEC adapter on resume");
-    }
-
-    // Flip the flag and take ownership of any commands that queued
-    // during the reopen. After exitSuspended() below, new dispatches
-    // will fall through to phase 2 and may interleave with our drain.
-    std::vector<Message> drained;
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        drained = m_suspendQueue.drain();
-        m_suspendQueue.exitSuspended();
-    }
-
-    if (!reconnected) {
-        // Queued commands already got RESP_SUCCESS when accepted
-        // ("accepted for post-resume"). We cannot deliver on that
-        // promise, so log and drop.
-        if (!drained.empty()) {
-            LOG_WARNING("Discarding ", drained.size(),
-                        " queued commands: reconnect failed");
-        }
+    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+        reply(Message(MessageType::RESP_ERROR));
         return;
     }
 
-    if (drained.empty()) return;
-
-    LOG_INFO("Processing ", drained.size(), " queued commands");
-    for (const auto& cmd : drained) {
-        try {
-            (void)executeCommand(cmd);
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception processing queued command: ", e.what());
-        }
-    }
-}
-
-Message CommandRouter::dispatch(const Message& command) {
-    // Phase 1: state decisions under m_stateMutex. Brief — no libcec
-    // calls, no sleeps, no pool submits beyond scheduleRestart's
-    // fire-and-forget.
-    {
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_shutdownComplete.load(std::memory_order_relaxed)) {
-            return Message(MessageType::RESP_ERROR);
-        }
-        if (command.type == MessageType::CMD_RESTART_ADAPTER) {
-            return handleRestartLocked(command);
-        }
+    if (command.type == MessageType::CMD_RESTART_ADAPTER) {
         if (m_suspendQueue.isSuspended()) {
-            return handleSuspendedLocked(command);
+            LOG_WARNING("CMD_RESTART_ADAPTER rejected: router is suspended");
+            reply(Message(MessageType::RESP_ERROR));
+            return;
         }
+        LOG_INFO("Scheduling adapter restart");
+        m_worker.submit([](ICecAdapter& adapter) {
+            if (adapter.reopenConnection()) {
+                LOG_INFO("Adapter restart completed successfully");
+            } else {
+                LOG_ERROR("Failed to restart adapter");
+            }
+        });
+        reply(Message(MessageType::RESP_SUCCESS));
+        return;
     }
 
-    // Phase 2: execute with no router lock held. The adapter mutex
-    // serialises libcec calls; the throttler serialises its own state
-    // via atomics. A concurrent suspend() between the state check and
-    // here will race us on the adapter mutex — we either complete our
-    // call first (adapter still open) or find the adapter closed and
-    // fall through to the RESP_ERROR path.
-    if (!m_adapter->isConnected()) {
-        LOG_ERROR("Cannot process command: CEC adapter not connected");
-        return Message(MessageType::RESP_ERROR);
+    if (m_suspendQueue.isSuspended()) {
+        reply(handleSuspendedInline(command));
+        return;
     }
-    return executeCommand(command);
+
+    if (command.type == MessageType::CMD_AUTO_STANDBY) {
+        reply(applyAutoStandbyInline(command));
+        return;
+    }
+
+    // Adapter-driven. Submit and hop back through m_work so the sink
+    // is always invoked on the main thread.
+    m_worker.submit([this, command = std::move(command),
+                     reply = std::move(reply)](ICecAdapter& adapter) mutable {
+        Message response(MessageType::RESP_ERROR);
+        try {
+            if (adapter.isConnected()) {
+                response = executeOnAdapter(adapter, command);
+            } else {
+                LOG_ERROR("Cannot process command: CEC adapter not connected");
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("Exception during dispatch: ", e.what());
+        }
+        m_work.post([reply = std::move(reply),
+                     response = std::move(response)]() mutable {
+            reply(std::move(response));
+        });
+    });
 }
 
-Message CommandRouter::handleRestartLocked(const Message& /*command*/) {
-    // Shutdown was ruled out by the outer dispatch() check; we only
-    // need to guard against the suspended case. Reopening mid-suspend
-    // races libcec against USB suspend and must be refused.
+void CommandRouter::suspendAsync(std::function<void(std::chrono::milliseconds)> onDone) {
+    // Main-thread phase-1: flip the flag so dispatches arriving during
+    // the worker-side close enter handleSuspendedInline.
+    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+        LOG_DEBUG("suspend() called after shutdown; ignoring");
+        if (onDone) onDone(std::chrono::milliseconds(0));
+        return;
+    }
     if (m_suspendQueue.isSuspended()) {
-        LOG_WARNING("CMD_RESTART_ADAPTER rejected: router is suspended");
+        LOG_DEBUG("suspend() called while already suspended");
+        if (onDone) onDone(std::chrono::milliseconds(0));
+        return;
+    }
+    m_suspendQueue.enterSuspended();
+
+    LOG_INFO("Preparing CEC adapter for system sleep");
+    const auto submittedAt = std::chrono::steady_clock::now();
+    m_worker.submit([this, onDone = std::move(onDone),
+                     submittedAt](ICecAdapter& adapter) mutable {
+        if (adapter.isConnected()) {
+            try {
+                (void)adapter.standbyDevices(CEC::CECDEVICE_BROADCAST);
+            } catch (const std::exception& e) {
+                LOG_ERROR("Exception sending standby commands: ", e.what());
+            }
+        }
+        adapter.closeConnection();
+        LOG_INFO("CEC adapter closed for suspend");
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - submittedAt);
+        m_work.post([onDone = std::move(onDone), elapsed]() mutable {
+            if (onDone) onDone(elapsed);
+        });
+    });
+}
+
+void CommandRouter::resumeAsync(std::function<void(bool)> onDone) {
+    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+        LOG_DEBUG("resume() called after shutdown; ignoring");
+        if (onDone) onDone(false);
+        return;
+    }
+    if (!m_suspendQueue.isSuspended()) {
+        LOG_DEBUG("resume() called while not suspended");
+        if (onDone) onDone(false);
+        return;
+    }
+
+    LOG_INFO("Reinitializing CEC adapter after resume");
+    m_worker.submit([this, onDone = std::move(onDone)](ICecAdapter& adapter) mutable {
+        const bool reconnected = adapter.reopenConnection();
+        if (reconnected) {
+            LOG_INFO("CEC adapter reconnected successfully on resume");
+            try {
+                (void)adapter.powerOnDevices(CEC::CECDEVICE_BROADCAST);
+            } catch (const std::exception& e) {
+                LOG_ERROR("Exception sending power-on commands: ", e.what());
+            }
+        } else {
+            LOG_ERROR("Failed to reconnect CEC adapter on resume");
+        }
+        // Re-read the connection hint after powerOnDevices; the
+        // lifecycle FSM uses this to decide whether to arm the
+        // post-resume retry timer, so prefer the adapter's own
+        // up-to-date view over @c reconnected.
+        const bool adapterValid = adapter.isConnected();
+        m_work.post([this, onDone = std::move(onDone),
+                     adapterValid]() mutable {
+            onResumeWorkerComplete(adapterValid, std::move(onDone));
+        });
+    });
+}
+
+void CommandRouter::reconnectAsync(std::function<void(bool)> onDone) {
+    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+        LOG_DEBUG("reconnect() called after shutdown; ignoring");
+        if (onDone) onDone(false);
+        return;
+    }
+    if (m_suspendQueue.isSuspended()) {
+        // The adapter is intentionally closed during suspend. A stray
+        // alert arriving between suspend() and kernel sleep is the
+        // typical trigger — drop it and wait for resume to reopen.
+        LOG_DEBUG("reconnect() called while suspended; ignoring");
+        if (onDone) onDone(false);
+        return;
+    }
+    if (m_worker.isAdapterConnected()) {
+        LOG_DEBUG("reconnect(): adapter already connected");
+        if (onDone) onDone(true);
+        return;
+    }
+
+    LOG_INFO("Attempting to reconnect to CEC adapter");
+    m_worker.submit([this, onDone = std::move(onDone)](ICecAdapter& adapter) mutable {
+        const bool ok = adapter.reopenConnection();
+        if (ok) {
+            LOG_INFO("CEC adapter reconnected successfully");
+        } else {
+            LOG_ERROR("Failed to reconnect CEC adapter");
+        }
+        m_work.post([onDone = std::move(onDone), ok]() mutable {
+            if (onDone) onDone(ok);
+        });
+    });
+}
+
+bool CommandRouter::isSuspended() const noexcept {
+    return m_suspendQueue.isSuspended();
+}
+
+void CommandRouter::onTvStandby() {
+    // Runs on libcec's command thread. m_autoStandbyEnabled is atomic;
+    // m_suspendCallback is install-once at construction and never
+    // reassigned, so calling it without a lock is safe.
+    if (!m_autoStandbyEnabled.load(std::memory_order_acquire)) {
+        LOG_DEBUG("TV standby observed; auto-standby disabled - ignoring");
+        return;
+    }
+    if (!m_suspendCallback) {
+        LOG_WARNING("TV standby observed but no suspend callback wired");
+        return;
+    }
+    LOG_INFO("TV standby observed with auto-standby enabled; "
+             "initiating system suspend");
+    m_suspendCallback();
+}
+
+Message CommandRouter::applyAutoStandbyInline(const Message& command) {
+    if (command.data.empty()) {
         return Message(MessageType::RESP_ERROR);
     }
-    LOG_INFO("Scheduling adapter restart");
-    scheduleRestart();
+    const bool enabled = command.data[0] > 0;
+    m_autoStandbyEnabled.store(enabled, std::memory_order_release);
+    LOG_INFO("Auto-standby ", enabled ? "enabled" : "disabled");
     return Message(MessageType::RESP_SUCCESS);
 }
 
-Message CommandRouter::handleSuspendedLocked(const Message& command) {
+Message CommandRouter::handleSuspendedInline(const Message& command) {
     const auto* spec = findByType(command.type);
     if (m_options.queueCommandsDuringSuspend &&
         spec && spec->queueableWhileSuspended) {
-        // dispatch()'s phase-1 just observed m_suspendQueue.isSuspended()
-        // under the same m_stateMutex we still hold, so tryPush is
-        // guaranteed to append. The cast silences [[nodiscard]].
+        // We observed isSuspended() true a moment ago on the same
+        // (main) thread, so the append is guaranteed; the cast
+        // silences [[nodiscard]].
         (void)m_suspendQueue.tryPush(command);
         LOG_INFO("Queued command type=", static_cast<int>(command.type),
                  " for execution after resume");
@@ -279,98 +253,76 @@ Message CommandRouter::handleSuspendedLocked(const Message& command) {
     return Message(MessageType::RESP_ERROR);
 }
 
-Message CommandRouter::executeCommand(const Message& command) {
+Message CommandRouter::executeOnAdapter(ICecAdapter& adapter,
+                                         const Message& command) {
     bool success = false;
     switch (command.type) {
-        case MessageType::CMD_VOLUME_UP:
-            success = ops::setVolume(*m_adapter, m_throttler, command.deviceId, true);
-            break;
-        case MessageType::CMD_VOLUME_DOWN:
-            success = ops::setVolume(*m_adapter, m_throttler, command.deviceId, false);
-            break;
-        case MessageType::CMD_VOLUME_MUTE:
-            success = ops::setMute(*m_adapter, m_throttler, command.deviceId, true);
-            break;
-        case MessageType::CMD_POWER_ON:
-            success = ops::powerOnDevice(*m_adapter, m_throttler, command.deviceId);
-            break;
-        case MessageType::CMD_POWER_OFF:
-            success = ops::powerOffDevice(*m_adapter, m_throttler, command.deviceId);
-            break;
-        case MessageType::CMD_CHANGE_SOURCE:
-            if (!command.data.empty()) {
-                success = ops::setSource(*m_adapter, m_throttler, command.data[0]);
-            }
-            break;
-        case MessageType::CMD_AUTO_STANDBY:
-            if (!command.data.empty()) {
-                const bool enabled = command.data[0] > 0;
-                m_autoStandbyEnabled.store(enabled, std::memory_order_release);
-                LOG_INFO("Auto-standby ", enabled ? "enabled" : "disabled");
-                success = true;
-            }
-            break;
-        default:
-            LOG_ERROR("Unknown command type: ", static_cast<int>(command.type));
-            return Message(MessageType::RESP_ERROR);
+    case MessageType::CMD_VOLUME_UP:
+        success = ops::setVolume(adapter, m_throttler, command.deviceId, true);
+        break;
+    case MessageType::CMD_VOLUME_DOWN:
+        success = ops::setVolume(adapter, m_throttler, command.deviceId, false);
+        break;
+    case MessageType::CMD_VOLUME_MUTE:
+        success = ops::setMute(adapter, m_throttler, command.deviceId, true);
+        break;
+    case MessageType::CMD_POWER_ON:
+        success = ops::powerOnDevice(adapter, m_throttler, command.deviceId);
+        break;
+    case MessageType::CMD_POWER_OFF:
+        success = ops::powerOffDevice(adapter, m_throttler, command.deviceId);
+        break;
+    case MessageType::CMD_CHANGE_SOURCE:
+        if (!command.data.empty()) {
+            success = ops::setSource(adapter, m_throttler, command.data[0]);
+        }
+        break;
+    default:
+        LOG_ERROR("Unknown command type: ", static_cast<int>(command.type));
+        return Message(MessageType::RESP_ERROR);
     }
 
     return success ? Message(MessageType::RESP_SUCCESS)
                    : Message(MessageType::RESP_ERROR);
 }
 
-void CommandRouter::scheduleRestart() {
-    m_threadPool->submit([this]() {
-        // State check under m_stateMutex, reopen outside. A concurrent
-        // suspend/shutdown that lands between the check and the reopen
-        // is tolerated — see scheduleRestart doc-comment in the header.
-        {
-            std::lock_guard<std::mutex> lock(m_stateMutex);
-            const bool shuttingDown =
-                m_shutdownComplete.load(std::memory_order_relaxed);
-            const bool suspended = m_suspendQueue.isSuspended();
-            if (shuttingDown || suspended) {
-                LOG_INFO("Adapter restart skipped: router is ",
-                         shuttingDown ? "shut down" : "suspended");
-                return;
-            }
-        }
-        if (m_adapter->reopenConnection()) {
-            LOG_INFO("Adapter restart completed successfully");
-        } else {
-            LOG_ERROR("Failed to restart adapter");
-        }
-    });
-}
+void CommandRouter::onResumeWorkerComplete(
+        bool adapterValid,
+        std::function<void(bool)> onDone) {
+    // Drain before flipping: any dispatch arriving on a later loop
+    // iteration (after exitSuspended) is free to fall through to the
+    // worker queue, racing these replays only at adapter-call
+    // granularity — the exact property the pre-refactor code also had.
+    std::vector<Message> drained = m_suspendQueue.drain();
+    m_suspendQueue.exitSuspended();
 
-void CommandRouter::onTvStandby() {
-    // Runs on libCEC's internal thread. Must not touch m_stateMutex —
-    // the mutex is brief but taking it from a libcec callback would
-    // still risk subtle ordering hazards with the dispatch path.
-    if (!m_autoStandbyEnabled.load(std::memory_order_acquire)) {
-        LOG_DEBUG("TV standby observed; auto-standby disabled — ignoring");
+    if (!adapterValid) {
+        // Queued commands were accepted with RESP_SUCCESS ("accepted
+        // for post-resume"). We cannot deliver on that promise; drop
+        // and log.
+        if (!drained.empty()) {
+            LOG_WARNING("Discarding ", drained.size(),
+                        " queued commands: reconnect failed");
+        }
+        if (onDone) onDone(false);
         return;
     }
 
-    if (!m_suspendCallback) {
-        LOG_WARNING("TV standby observed but no suspend callback wired");
-        return;
+    if (!drained.empty()) {
+        LOG_INFO("Processing ", drained.size(), " queued commands");
+        for (auto& command : drained) {
+            m_worker.submit([this, command = std::move(command)]
+                            (ICecAdapter& adapter) mutable {
+                try {
+                    (void)executeOnAdapter(adapter, command);
+                } catch (const std::exception& e) {
+                    LOG_ERROR("Exception processing queued command: ", e.what());
+                }
+            });
+        }
     }
 
-    LOG_INFO("TV standby observed with auto-standby enabled; initiating system suspend");
-    // The callback's contract (see Callbacks doc) is "thread-safe and
-    // non-blocking" — in practice a single MainThreadWork::post. Running
-    // it inline here avoids a thread-pool hop that added only scheduling
-    // latency, and removes one more lambda that captures this.
-    m_suspendCallback();
-}
-
-bool CommandRouter::isAdapterValid() const {
-    return m_adapter->isConnected();
-}
-
-bool CommandRouter::isSuspended() const {
-    return m_suspendQueue.isSuspended();
+    if (onDone) onDone(true);
 }
 
 } // namespace cec_control

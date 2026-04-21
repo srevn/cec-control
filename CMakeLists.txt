@@ -57,11 +57,11 @@ set(COMMON_SOURCES
 set(DAEMON_SOURCES
     src/daemon/cec_daemon.cpp
     src/daemon/command_router.cpp
+    src/daemon/cec/adapter_worker.cpp
     src/daemon/cec/libcec_adapter.cpp
     src/daemon/cec/operations.cpp
     src/daemon/command_throttler.cpp
     src/daemon/socket_server.cpp
-    src/daemon/thread_pool.cpp
     src/daemon/dbus_monitor.cpp
     src/daemon/daemon_bootstrap.cpp
     src/daemon/power/adapter_reconnect.cpp
