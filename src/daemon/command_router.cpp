@@ -102,7 +102,7 @@ bool setSource(CECAdapter& adapter, CommandThrottler& throttler,
         LOG_INFO("Setting stream path to physical address: 0x",
                  std::hex, physicalAddress);
 
-        if (auto* raw = adapter.getRawAdapter(); raw && raw->SetStreamPath(physicalAddress)) {
+        if (adapter.setStreamPath(physicalAddress)) {
             return true;
         }
 

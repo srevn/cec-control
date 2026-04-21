@@ -269,11 +269,6 @@ bool CECAdapter::isConnected() const {
     return m_connected;
 }
 
-CEC::ICECAdapter* CECAdapter::getRawAdapter() const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
-    return m_adapter.get();
-}
-
 bool CECAdapter::powerOnDevice(CEC::cec_logical_address address) {
     std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
@@ -318,6 +313,13 @@ bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_co
     } else {
         return m_adapter->SendKeypress(address, key, false);
     }
+}
+
+bool CECAdapter::setStreamPath(uint16_t physicalAddress) {
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    if (!m_adapter || !m_connected) return false;
+
+    return m_adapter->SetStreamPath(physicalAddress);
 }
 
 uint16_t CECAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {

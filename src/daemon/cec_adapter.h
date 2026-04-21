@@ -81,12 +81,6 @@ public:
     bool isConnected() const;
 
     /**
-     * Get a reference to the raw libCEC adapter
-     * @return pointer to the libCEC adapter, or nullptr if not initialized
-     */
-    CEC::ICECAdapter* getRawAdapter() const;
-
-    /**
      * Send a power on command to a device
      * @param address logical address of the device
      * @return true if successful, false otherwise
@@ -126,6 +120,15 @@ public:
      * @return true if successful, false otherwise
      */
     bool sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release);
+
+    /**
+     * Issue a CEC "Set Stream Path" message to route the active source
+     * to @p physicalAddress (0xNMPQ format; e.g. 0x1000 for HDMI 1 on
+     * the TV). Preferred over INPUT_SELECT + number-keypress sequences
+     * when the TV honours the message.
+     * @return true if libcec reports the message was sent, false otherwise.
+     */
+    bool setStreamPath(uint16_t physicalAddress);
 
     /**
      * Get the physical address of a logical device
