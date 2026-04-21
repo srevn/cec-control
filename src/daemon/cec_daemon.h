@@ -11,6 +11,7 @@
 #include "../common/timer_source.h"
 #include "command_router.h"
 #include "dbus_monitor.h"
+#include "power/adapter_reconnect.h"
 #include "socket_server.h"
 #include "thread_pool.h"
 
@@ -143,10 +144,13 @@ private:
 
     /**
      * Handler for the connection-lost retry timer: invoked between
-     * attempts. Bails out silently if suspend / resume already fixed
-     * the adapter or rendered the retry moot.
+     * attempts. Feeds the FSM; any staleness (suspend/resume already
+     * closed the cycle) is absorbed as a no-op by the FSM's Idle state.
      */
     void onReconnectRetryTimer();
+
+    /** Carry out the side-effect emitted by the reconnect FSM. */
+    void execute(AdapterReconnect::Output out);
 
     /** Route an incoming wire command to the right subsystem. */
     Message handleCommand(const Message& command);
@@ -195,15 +199,15 @@ private:
     bool m_resumeRetryPending   = false;
     int  m_terminationSignalCount = 0;
 
-    // Connection-lost retry schedule. The first attempt fires immediately
-    // from onConnectionLost(); entries below are the delays between the
-    // subsequent retries. Reset on success, on give-up, and on any
-    // suspend/resume transition. Main thread only.
-    BackoffSchedule m_reconnectSchedule{
+    // Connection-lost reconnect state machine. The first attempt fires
+    // immediately from the ConnectionLost event; entries below are the
+    // delays between subsequent retries. Reset on success, on give-up,
+    // and on any suspend/resume transition. Main thread only.
+    AdapterReconnect m_adapterReconnect{BackoffSchedule{
         std::chrono::seconds(5),
         std::chrono::seconds(10),
         std::chrono::seconds(20),
-    };
+    }};
 
     // Daemon-level lifecycle options.
     Options m_options;

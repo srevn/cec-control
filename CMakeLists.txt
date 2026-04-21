@@ -64,6 +64,7 @@ set(DAEMON_SOURCES
     src/daemon/thread_pool.cpp
     src/daemon/dbus_monitor.cpp
     src/daemon/daemon_bootstrap.cpp
+    src/daemon/power/adapter_reconnect.cpp
 )
 
 set(CLIENT_SOURCES
