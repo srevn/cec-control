@@ -58,6 +58,7 @@ set(DAEMON_SOURCES
     src/daemon/cec_daemon.cpp
     src/daemon/command_router.cpp
     src/daemon/cec/libcec_adapter.cpp
+    src/daemon/cec/operations.cpp
     src/daemon/command_throttler.cpp
     src/daemon/socket_server.cpp
     src/daemon/socket_connection.cpp
