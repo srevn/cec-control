@@ -6,21 +6,22 @@
 #include "../common/command_registry.h"
 #include "../common/logger.h"
 #include "../common/main_thread_work.h"
+#include "app_config.h"
 #include "cec/adapter_interface.h"
 #include "cec/adapter_worker.h"
 #include "cec/operations.h"
 
 namespace cec_control {
 
-CommandRouter::CommandRouter(Options        options,
-                             AdapterWorker& worker,
-                             MainThreadWork& work,
-                             Callbacks      callbacks)
+CommandRouter::CommandRouter(const AppConfig& config,
+                             AdapterWorker&   worker,
+                             MainThreadWork&  work,
+                             Callbacks        callbacks)
     : m_worker(worker),
       m_work(work),
-      m_throttler(options.throttler),
-      m_options(std::move(options)),
-      m_autoStandbyEnabled(m_options.autoStandbyEnabled),
+      m_throttler(config.throttler),
+      m_queueCommandsDuringSuspend(config.queueCommandsDuringSuspend),
+      m_autoStandbyEnabled(config.autoStandbyEnabled),
       m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
 void CommandRouter::shutdown() {
@@ -238,7 +239,7 @@ Message CommandRouter::applyAutoStandbyInline(const Message& command) {
 
 Message CommandRouter::handleSuspendedInline(const Message& command) {
     const auto* spec = findByType(command.type);
-    if (m_options.queueCommandsDuringSuspend &&
+    if (m_queueCommandsDuringSuspend &&
         spec && spec->queueableWhileSuspended) {
         // We observed isSuspended() true a moment ago on the same
         // (main) thread, so the append is guaranteed; the cast

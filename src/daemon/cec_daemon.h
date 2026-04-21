@@ -8,7 +8,7 @@
 #include "../common/main_thread_work.h"
 #include "../common/signal_source.h"
 #include "../common/timer_source.h"
-#include "cec/adapter_config.h"
+#include "app_config.h"
 #include "cec/adapter_worker.h"
 #include "cec/libcec_adapter.h"
 #include "command_router.h"
@@ -43,19 +43,11 @@ namespace cec_control {
 class CECDaemon {
 public:
     /**
-     * Daemon-level knobs: what the daemon process enables plus the
-     * adapter configuration it owns directly. Command-router tunables
-     * stay on @c CommandRouter::Options; this split mirrors the fact
-     * that the daemon constructs the adapter now that it owns the
-     * worker.
+     * Take ownership of a parsed @c AppConfig snapshot. The daemon
+     * retains it for the process lifetime so that a future SIGHUP
+     * reload can diff against the initial values.
      */
-    struct Options {
-        bool          enablePowerMonitor   = true;
-        bool          scanDevicesAtStartup = false;
-        AdapterConfig adapter;
-    };
-
-    CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions);
+    explicit CECDaemon(AppConfig config);
     ~CECDaemon();
 
     CECDaemon(const CECDaemon&)            = delete;
@@ -210,11 +202,6 @@ private:
     std::unique_ptr<SocketServer>  m_socketServer;
     std::unique_ptr<DBusMonitor>   m_dbusMonitor;
 
-    // Staged options. Router consumes them at construction in start();
-    // adapter options are read out of m_options before the adapter is
-    // built.
-    CommandRouter::Options m_routerOptions;
-
     // Pure decision types driving suspend/resume arbitration and the
     // connection-lost reconnect cycle. Both main-thread only; no
     // atomics or mutexes. Side effects are carried out by the daemon's
@@ -226,8 +213,11 @@ private:
         std::chrono::seconds(20),
     }};
 
-    // Daemon-level lifecycle options.
-    Options m_options;
+    // Parsed configuration snapshot. Stored by value so consumers can
+    // receive copies (AdapterConfig) or a const-ref (CommandRouter)
+    // without any of them invalidating the daemon's view. A future
+    // SIGHUP reload diffs a freshly-loaded AppConfig against this.
+    AppConfig m_config;
 
     int m_terminationSignalCount = 0;
 

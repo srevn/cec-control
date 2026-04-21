@@ -55,6 +55,7 @@ set(COMMON_SOURCES
 )
 
 set(DAEMON_SOURCES
+    src/daemon/app_config.cpp
     src/daemon/cec_daemon.cpp
     src/daemon/command_router.cpp
     src/daemon/cec/adapter_worker.cpp

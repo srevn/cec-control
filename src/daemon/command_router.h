@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "../common/messages.h"
+#include "app_config.h"
 #include "command_throttler.h"
 #include "power/suspend_queue.h"
 
@@ -57,17 +58,6 @@ class MainThreadWork;
 class CommandRouter {
 public:
     /**
-     * Runtime-tunable and startup-fixed knobs. Adapter-side options and
-     * device-scan flags now belong to @c CECDaemon::Options since the
-     * daemon owns the adapter construction.
-     */
-    struct Options {
-        bool            queueCommandsDuringSuspend = true;
-        bool            autoStandbyEnabled         = false;
-        ThrottlerConfig throttler;
-    };
-
-    /**
      * Outbound hook fired by the router. Supplied at construction and
      * never rewired. Invoked on the thread that observed the trigger —
      * for @c onSuspendRequested that is libcec's command thread. The
@@ -88,7 +78,10 @@ public:
     using ResponseSink = std::function<void(Message)>;
 
     /**
-     * @param options     Router tunables.
+     * @param config      Read-only snapshot; the router extracts its
+     *                    seed values (throttler tuning, initial policy
+     *                    flags) at construction and does not retain a
+     *                    reference.
      * @param worker      Non-owning; must outlive @c this. Every
      *                    adapter call is submitted here.
      * @param work        Non-owning; must outlive @c this. Used to hop
@@ -96,10 +89,10 @@ public:
      *                    thread.
      * @param callbacks   Install-once outbound hooks; see @c Callbacks.
      */
-    CommandRouter(Options        options,
-                  AdapterWorker& worker,
-                  MainThreadWork& work,
-                  Callbacks      callbacks);
+    CommandRouter(const AppConfig& config,
+                  AdapterWorker&   worker,
+                  MainThreadWork&  work,
+                  Callbacks        callbacks);
 
     ~CommandRouter() = default;
 
@@ -187,16 +180,21 @@ private:
     void onResumeWorkerComplete(bool adapterValid,
                                 std::function<void(bool)> onDone);
 
-    AdapterWorker&    m_worker;
-    MainThreadWork&   m_work;
-    CommandThrottler  m_throttler;
-    const Options     m_options;
+    AdapterWorker&   m_worker;
+    MainThreadWork&  m_work;
+    CommandThrottler m_throttler;
 
     // Shutdown gate. Main-thread writes, main-thread reads — the
     // atomic survives because Phase F's planned SIGHUP reload may want
     // a cheap cross-section snapshot for diagnostics, and removing it
     // buys nothing.
     std::atomic<bool> m_shutdownComplete{false};
+
+    // Queue-during-suspend policy. Main-thread-only reader (dispatch
+    // is main-thread), main-thread-only writer (only a future SIGHUP
+    // handler would flip it, also main-thread). A plain bool is
+    // enough; promote to atomic only if a cross-thread reader appears.
+    bool m_queueCommandsDuringSuspend;
 
     // Suspend flag + queued commands. Main-thread only.
     SuspendQueue m_suspendQueue;

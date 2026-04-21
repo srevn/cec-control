@@ -1,60 +1,24 @@
 #include "daemon_bootstrap.h"
+
+#include "../common/config_manager.h"
 #include "../common/logger.h"
 #include "../common/system_paths.h"
 #include "../common/systemd_env.h"
-
-#include <libcec/cec.h>
+#include "app_config.h"
+#include "cec_daemon.h"
 
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
-#include <sstream>
 #include <string>
-#include <string_view>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <utility>
 
 namespace cec_control {
-
-namespace {
-
-/**
- * Parse a comma-separated list of CEC logical addresses (e.g. "0,1,5") into
- * a cec_logical_addresses bitmask. Out-of-range or non-numeric entries are
- * logged and skipped; an empty input yields a cleared mask. No whitespace
- * handling — matches the legacy behaviour and keeps the config format
- * predictable.
- */
-CEC::cec_logical_addresses parseLogicalAddressList(const std::string& input,
-                                                   std::string_view fieldLabel) {
-    CEC::cec_logical_addresses addrs;
-    addrs.Clear();
-    if (input.empty()) return addrs;
-
-    std::stringstream ss(input);
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        try {
-            int id = std::stoi(token);
-            if (id >= 0 && id <= 15) {
-                addrs.Set(static_cast<CEC::cec_logical_address>(id));
-            } else {
-                LOG_WARNING("Logical address out of range in config field ",
-                            fieldLabel, ": ", id);
-            }
-        } catch (const std::exception&) {
-            LOG_WARNING("Invalid logical address in config field ",
-                        fieldLabel, ": ", token);
-        }
-    }
-    return addrs;
-}
-
-} // namespace
 
 int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     // Resolve any unset path knobs to their system defaults exactly once,
@@ -73,14 +37,16 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
 
     setupLogging(action);
 
-    // Configuration is a local value; once we've extracted the option structs
-    // it falls out of scope. No ambient/singleton access after this point.
+    // Configuration is a local value; once we've extracted the AppConfig
+    // snapshot it falls out of scope. No ambient/singleton access after
+    // this point.
     ConfigManager configManager(action.configFile);
     if (!configManager.load()) {
         LOG_WARNING("Failed to load configuration file, using defaults");
     }
 
-    DaemonAllOptions options = loadAllOptions(configManager);
+    AppConfig config = loadAppConfig(configManager);
+    logAppConfig(config);
 
     // Setup the process (daemonization, service mode, etc.)
     if (!setupProcess(/*runAsDaemon=*/!action.foreground)) {
@@ -91,7 +57,7 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
 
     try {
-        CECDaemon daemon(std::move(options.daemon), std::move(options.router));
+        CECDaemon daemon(std::move(config));
 
         if (!daemon.start()) {
             LOG_FATAL("Failed to start CEC daemon");
@@ -226,58 +192,6 @@ void DaemonBootstrap::setupLogging(const RunDaemon& action) {
 
     LOG_INFO("Logging initialised; file=", logFile,
              ", level=", action.verbose ? "DEBUG" : "INFO");
-}
-
-DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
-    DaemonAllOptions opts;
-
-    // Daemon-level knobs: lifecycle plus the adapter configuration the
-    // daemon owns directly. AdapterWorker is now the adapter's owner,
-    // so the options it consumes live alongside the daemon's other
-    // startup decisions rather than on the router.
-    auto& daemon = opts.daemon;
-    daemon.enablePowerMonitor =
-        cfg.getBool("Daemon", "EnablePowerMonitor", true);
-    daemon.scanDevicesAtStartup =
-        cfg.getBool("Daemon", "ScanDevicesAtStartup", false);
-
-    auto& adapter = daemon.adapter;
-    adapter.deviceName      = cfg.getString("Adapter", "DeviceName", "CEC Controller");
-    adapter.autoPowerOn     = cfg.getBool("Adapter", "AutoPowerOn", false);
-    adapter.autoWakeAVR     = cfg.getBool("Adapter", "AutoWakeAVR", false);
-    adapter.activateSource  = cfg.getBool("Adapter", "ActivateSource", false);
-    adapter.systemAudioMode = cfg.getBool("Adapter", "SystemAudioMode", false);
-    adapter.wakeDevices     = parseLogicalAddressList(
-        cfg.getString("Adapter", "WakeDevices", ""), "WakeDevices");
-    adapter.powerOffDevices = parseLogicalAddressList(
-        cfg.getString("Adapter", "PowerOffDevices", ""), "PowerOffDevices");
-
-    // Router-level knobs: queueability policy, auto-standby gate, and
-    // the throttler tuning. PowerOffOnStandby is the auto-standby
-    // policy gate — the router acts on it, not libcec. See the
-    // LibCecAdapter constructor for the rationale on not mirroring
-    // this into m_config.bPowerOffOnStandby.
-    auto& router = opts.router;
-    router.queueCommandsDuringSuspend =
-        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
-    router.autoStandbyEnabled =
-        cfg.getBool("Adapter", "PowerOffOnStandby", false);
-
-    auto& throttler = router.throttler;
-    throttler.baseIntervalMs   = cfg.getInt("Throttler", "BaseIntervalMs", 200);
-    throttler.maxIntervalMs    = cfg.getInt("Throttler", "MaxIntervalMs", 1000);
-    throttler.maxRetryAttempts = cfg.getInt("Throttler", "MaxRetryAttempts", 3);
-
-    LOG_INFO("Configuration: ScanDevicesAtStartup = ",
-             (daemon.scanDevicesAtStartup ? "true" : "false"));
-    LOG_INFO("Configuration: QueueCommandsDuringSuspend = ",
-             (router.queueCommandsDuringSuspend ? "true" : "false"));
-    LOG_INFO("Configuration: EnablePowerMonitor = ",
-             (daemon.enablePowerMonitor ? "true" : "false"));
-    LOG_INFO("Configuration: PowerOffOnStandby = ",
-             (router.autoStandbyEnabled ? "true" : "false"));
-
-    return opts;
 }
 
 } // namespace cec_control

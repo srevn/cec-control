@@ -12,10 +12,9 @@
 
 namespace cec_control {
 
-CECDaemon::CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions)
+CECDaemon::CECDaemon(AppConfig config)
     : m_signals{SIGINT, SIGTERM, SIGHUP},
-      m_routerOptions(std::move(routerOptions)),
-      m_options(std::move(daemonOptions)) {}
+      m_config(std::move(config)) {}
 
 CECDaemon::~CECDaemon() {
     stop();
@@ -47,8 +46,11 @@ bool CECDaemon::start() {
             /*onTvStandby*/      [this]() { this->onAdapterTvStandby(); },
             /*onConnectionLost*/ [this]() { this->onAdapterConnectionLost(); },
         };
+        // Copy (not move) the adapter config: the daemon keeps
+        // m_config intact for a future SIGHUP reload diff, and the
+        // sub-struct is small enough that the copy is noise.
         auto adapter = std::make_unique<LibCecAdapter>(
-            std::move(m_options.adapter), std::move(adapterCallbacks));
+            m_config.adapter, std::move(adapterCallbacks));
 
         // initialize() loads libcec and detects adapter hardware. It
         // does NOT spawn libcec's command or alert threads — those
@@ -73,8 +75,7 @@ bool CECDaemon::start() {
             },
         };
         m_router = std::make_unique<CommandRouter>(
-            std::move(m_routerOptions), *m_worker, m_work,
-            std::move(routerCallbacks));
+            m_config, *m_worker, m_work, std::move(routerCallbacks));
 
         m_worker->start();
 
@@ -100,7 +101,7 @@ bool CECDaemon::start() {
             return false;
         }
 
-        if (m_options.scanDevicesAtStartup) {
+        if (m_config.scanDevicesAtStartup) {
             LOG_INFO("Scanning for CEC devices...");
             m_worker->submit([](ICecAdapter& adapter) {
                 ops::logDeviceSnapshot(adapter);
@@ -120,7 +121,7 @@ bool CECDaemon::start() {
             return false;
         }
 
-        if (m_options.enablePowerMonitor) {
+        if (m_config.enablePowerMonitor) {
             if (!setupPowerMonitor()) {
                 LOG_WARNING("Failed to set up power monitoring. "
                             "Sleep/wake events will not be handled automatically.");
