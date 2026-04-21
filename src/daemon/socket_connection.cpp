@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <sys/socket.h>
 #include <utility>
@@ -148,8 +149,28 @@ void ConnectionManager::shutdown() {
     }
     live.clear();  // drop our references so only the pool tasks hold them
 
+    // Bounded wait: a handler stuck inside a libcec call, a throttler sleep,
+    // or queued on the router mutex cannot be interrupted from here. If the
+    // deadline fires, log the stragglers and return — the thread pool's
+    // join() is the next backstop, and systemd's TimeoutStopSec + SIGKILL
+    // the final one. 7s exceeds the throttler's worst-case retry budget
+    // (~1.5s) with generous slack, and stays well under the default 30s
+    // TimeoutStopSec.
+    constexpr auto kShutdownDeadline = std::chrono::seconds(7);
+
     std::unique_lock<std::mutex> lock(m_mutex);
-    m_emptyCv.wait(lock, [this] { return m_entries.empty(); });
+    if (m_emptyCv.wait_for(lock, kShutdownDeadline,
+                           [this] { return m_entries.empty(); })) {
+        return;
+    }
+
+    LOG_WARNING("ConnectionManager::shutdown: ", m_entries.size(),
+                " connection(s) still running after ",
+                kShutdownDeadline.count(),
+                "s; proceeding (pool join will absorb)");
+    for (const auto& [id, _] : m_entries) {
+        LOG_WARNING("  still-live connection id=", id);
+    }
 }
 
 } // namespace cec_control
