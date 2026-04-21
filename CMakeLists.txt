@@ -61,7 +61,6 @@ set(DAEMON_SOURCES
     src/daemon/cec/operations.cpp
     src/daemon/command_throttler.cpp
     src/daemon/socket_server.cpp
-    src/daemon/socket_connection.cpp
     src/daemon/thread_pool.cpp
     src/daemon/dbus_monitor.cpp
     src/daemon/daemon_bootstrap.cpp

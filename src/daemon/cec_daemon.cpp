@@ -1,5 +1,6 @@
 #include "cec_daemon.h"
 #include "../common/logger.h"
+#include "../common/system_paths.h"
 #include "../common/systemd_env.h"
 
 #include <chrono>
@@ -11,7 +12,6 @@ namespace cec_control {
 CECDaemon::CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions)
     : m_signals{SIGINT, SIGTERM, SIGHUP},
       m_taskPool(std::make_shared<ThreadPool>(2)),
-      m_connectionPool(std::make_shared<ThreadPool>(SocketServer::kMaxConnections)),
       m_routerOptions(std::move(routerOptions)),
       m_options(daemonOptions) {}
 
@@ -37,11 +37,10 @@ bool CECDaemon::start() {
     }
 
     // Pool workers inherit the main thread's signal mask, which was set in
-    // the SignalSource member's constructor. Start the pools after masking
+    // the SignalSource member's constructor. Start the pool after masking
     // and before spawning any other threads so SIGINT/SIGTERM/SIGHUP are
     // only delivered to us via signalfd on the main thread.
     m_taskPool->start();
-    m_connectionPool->start();
 
     try {
         // Build the router's outbound hooks before construction. Both land
@@ -71,10 +70,12 @@ bool CECDaemon::start() {
             return false;
         }
 
-        m_socketServer = std::make_unique<SocketServer>(m_connectionPool);
-        m_socketServer->setCommandHandler([this](const Message& cmd) {
-            return this->handleCommand(cmd);
-        });
+        m_socketServer = std::make_unique<SocketServer>(
+            m_loop, SystemPaths::getSocketPath());
+        m_socketServer->setCommandHandler(
+            [this](Message cmd, SocketServer::ResponseSink reply) {
+                this->handleCommand(std::move(cmd), std::move(reply));
+            });
 
         if (!m_socketServer->start()) {
             LOG_ERROR("Failed to start socket server");
@@ -105,11 +106,6 @@ bool CECDaemon::start() {
         if (!m_loop.add(m_work.fd(), READ,
                         [this](uint32_t) { m_work.drain(); })) {
             LOG_ERROR("Failed to register work-queue fd with event loop");
-            return false;
-        }
-        if (!m_loop.add(m_socketServer->listenerFd(), READ,
-                        [this](uint32_t) { m_socketServer->onReadable(); })) {
-            LOG_ERROR("Failed to register socket listener with event loop");
             return false;
         }
         if (!m_loop.add(m_suspendSafetyTimer.fd(), READ,
@@ -164,19 +160,20 @@ void CECDaemon::stop() {
     }
 
     // Ordered teardown. The invariant is that no pool worker ever observes
-    // a destroyed subsystem: we therefore drain pools *before* releasing
+    // a destroyed subsystem: we therefore drain the pool *before* releasing
     // the unique_ptrs whose members the captured lambdas reach into.
     //
     //   1. detach DBusMonitor so no further bus events reach us
-    //   2. stop accepting connections and drain in-flight handlers
-    //   3. join the connection pool; from here no socket worker can
-    //      submit anything new to the task pool
-    //   4. soft-close the router (m_shutdownComplete = true, adapter
+    //   2. stop the socket server: close the listener and every session
+    //      fd, so no new requests enter handleCommand
+    //   3. soft-close the router (m_shutdownComplete = true, adapter
     //      closed, queue cleared) while it is still alive
-    //   5. drain the task pool: any queued suspend/resume/restart
-    //      lambda observes m_shutdownComplete and becomes a no-op
-    //   6. stop DBusMonitor (bus was detached at step 1)
-    //   7. destroy subsystems and pools in dependency order
+    //   4. drain the task pool: any queued dispatch/lifecycle lambda
+    //      observes m_shutdownComplete and becomes a no-op; reply
+    //      closures posted back to m_work after this point sit in its
+    //      queue and are destructed unexecuted with CECDaemon
+    //   5. stop DBusMonitor (bus was detached at step 1)
+    //   6. destroy subsystems and the pool in dependency order
     try {
         // Each subsystem logs its own "Stopping" / "Stopped" lifecycle; the
         // daemon adds wall-clock timing so slow teardowns surface at a
@@ -191,10 +188,6 @@ void CECDaemon::stop() {
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             LOG_INFO("Socket server teardown: ", ms, "ms");
-        }
-
-        if (m_connectionPool) {
-            m_connectionPool->shutdown();
         }
 
         if (m_router) {
@@ -217,12 +210,11 @@ void CECDaemon::stop() {
     }
 
     // No thread remains that can touch any subsystem. Destroy in reverse
-    // dependency order: domain subsystems first, then the pools that
+    // dependency order: domain subsystems first, then the pool that
     // ultimately ran their closures.
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_router.reset();
-    m_connectionPool.reset();
     m_taskPool.reset();
 
     LOG_INFO("Shutdown sequence complete");
@@ -502,37 +494,51 @@ bool CECDaemon::setupPowerMonitor() {
     }
 }
 
-Message CECDaemon::handleCommand(const Message& command) {
+void CECDaemon::handleCommand(Message command, SocketServer::ResponseSink reply) {
     LOG_DEBUG("Received command: type=", static_cast<int>(command.type),
               ", deviceId=", static_cast<int>(command.deviceId));
 
-    // handleCommand runs on a socket-connection pool worker, not the main
-    // thread. Suspend/resume mutate main-thread-only FSM state and must
-    // therefore be dispatched via the work queue. Acknowledge the request
-    // as soon as it's been queued.
-    if (command.type == MessageType::CMD_SUSPEND) {
+    // Suspend and resume mutate main-thread-only FSM state. We are already
+    // on the main thread here (SocketServer dispatches synchronously from
+    // the event loop), so feed the lifecycle FSM directly and acknowledge
+    // inline.
+    switch (command.type) {
+    case MessageType::CMD_SUSPEND:
         LOG_INFO("Processing suspend command");
-        m_work.post([this]() {
-            this->applyLifecycle(
-                m_lifecycle.onSuspendRequested(PowerLifecycle::Source::Wire));
-        });
-        return Message(MessageType::RESP_SUCCESS);
-    }
-    if (command.type == MessageType::CMD_RESUME) {
+        applyLifecycle(m_lifecycle.onSuspendRequested(PowerLifecycle::Source::Wire));
+        reply(Message(MessageType::RESP_SUCCESS));
+        return;
+    case MessageType::CMD_RESUME:
         LOG_INFO("Processing resume command");
-        m_work.post([this]() {
-            this->applyLifecycle(
-                m_lifecycle.onResumeRequested(PowerLifecycle::Source::Wire));
-        });
-        return Message(MessageType::RESP_SUCCESS);
+        applyLifecycle(m_lifecycle.onResumeRequested(PowerLifecycle::Source::Wire));
+        reply(Message(MessageType::RESP_SUCCESS));
+        return;
+    default:
+        break;
     }
 
     if (!m_router) {
         LOG_ERROR("Command router not initialized");
-        return Message(MessageType::RESP_ERROR);
+        reply(Message(MessageType::RESP_ERROR));
+        return;
     }
 
-    return m_router->dispatch(command);
+    // CEC work runs on a task-pool worker so the main loop stays responsive
+    // during multi-second libcec operations. The completion hops back
+    // through m_work so @p reply is always invoked on the main thread.
+    m_taskPool->submit([this, cmd = std::move(command),
+                        reply = std::move(reply)]() mutable {
+        Message resp(MessageType::RESP_ERROR);
+        try {
+            resp = m_router->dispatch(cmd);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Exception during dispatch: ", e.what());
+        }
+        m_work.post([reply = std::move(reply),
+                     resp = std::move(resp)]() mutable {
+            reply(std::move(resp));
+        });
+    });
 }
 
 } // namespace cec_control

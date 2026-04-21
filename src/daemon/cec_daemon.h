@@ -139,8 +139,14 @@ private:
      */
     void submitLateReconnect();
 
-    /** Route an incoming wire command to the right subsystem. */
-    Message handleCommand(const Message& command);
+    /**
+     * Route an incoming wire command. Runs on the main thread. Suspend
+     * and resume feed the lifecycle FSM synchronously and reply inline;
+     * every other command hops to the task pool, with the completion
+     * posted back through @c m_work so @p reply is always invoked on
+     * the main thread.
+     */
+    void handleCommand(Message command, SocketServer::ResponseSink reply);
 
     /** Ensure a DBus monitor is up; returns true on success, false on
      *  initialization failure (logged). */
@@ -158,17 +164,16 @@ private:
     TimerSource       m_resumeRetryTimer;
     TimerSource       m_reconnectRetryTimer;
 
-    // Cross-thread worker pools. Must outlive router and socket server.
+    // Cross-thread worker pool for CEC-side blocking work. Must outlive
+    // the router and socket server.
     //
-    // Split by purpose so connection handlers (up to
-    // SocketServer::kMaxConnections long-lived recv loops) never starve
-    // lifecycle tasks (suspend, resume, reconnect, adapter restart).
-    // The task pool is intentionally small: the router mutex serialises
-    // every lifecycle task, so one worker would suffice; two gives
-    // headroom against a rare pathology (e.g. libcec wedged inside
+    // Dispatch, suspend, resume, reconnect, and adapter restart all hop
+    // through this pool so the main loop stays responsive while libcec
+    // performs multi-second synchronous operations. The router mutex
+    // serialises every task, so one worker would suffice; two gives
+    // headroom against a rare pathology (e.g. libcec wedged inside a
     // reopen) monopolising the queue.
     std::shared_ptr<ThreadPool> m_taskPool;
-    std::shared_ptr<ThreadPool> m_connectionPool;
 
     // Domain subsystems.
     std::unique_ptr<CommandRouter>  m_router;

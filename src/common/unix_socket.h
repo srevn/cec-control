@@ -66,7 +66,8 @@ public:
     /**
      * Accept a pending connection. Returns an invalid UnixSocket if the listener
      * is non-blocking and no connection is pending (errno == EAGAIN) or on error.
-     * The returned client socket is in blocking mode; callers set I/O timeouts.
+     * The returned client socket is non-blocking (SOCK_NONBLOCK); event-loop
+     * integration relies on this.
      */
     [[nodiscard]] UnixSocket accept() const;
 

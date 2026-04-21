@@ -215,7 +215,7 @@ UnixSocket UnixSocket::connect(const std::string& path, Deadline deadline) {
 
 UnixSocket UnixSocket::accept() const {
     if (m_fd < 0) return {};
-    int fd = ::accept4(m_fd, nullptr, nullptr, SOCK_CLOEXEC);
+    int fd = ::accept4(m_fd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if (fd < 0) return {};
     return UnixSocket(fd);
 }
