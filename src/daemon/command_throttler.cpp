@@ -6,13 +6,13 @@
 
 namespace cec_control {
 
-CommandThrottler::CommandThrottler(Options options)
-    : m_options(options),
+CommandThrottler::CommandThrottler(ThrottlerConfig config)
+    : m_config(config),
       m_nextAllowed(Clock::now()),
       m_consecutiveFailures(0) {}
 
 bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
-    for (uint32_t attempt = 0; attempt < m_options.maxRetryAttempts; ++attempt) {
+    for (uint32_t attempt = 0; attempt < m_config.maxRetryAttempts; ++attempt) {
         reserveSlotAndSleep();
 
         if (command()) {
@@ -23,7 +23,7 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
         m_consecutiveFailures.fetch_add(1, std::memory_order_acq_rel);
 
         LOG_WARNING("CEC command failed, retry attempt ", attempt + 1,
-                    " of ", m_options.maxRetryAttempts);
+                    " of ", m_config.maxRetryAttempts);
 
         // Exponential retry back-off, outside every lock so unrelated
         // callers progress freely.
@@ -51,16 +51,16 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
 std::chrono::milliseconds CommandThrottler::currentInterval() const noexcept {
     const uint32_t failures = m_consecutiveFailures.load(std::memory_order_acquire);
     if (failures == 0) {
-        return std::chrono::milliseconds(m_options.baseIntervalMs);
+        return std::chrono::milliseconds(m_config.baseIntervalMs);
     }
 
     // Exponential back-off, capped at the span between base and max.
     const uint32_t capped = std::min(failures, 5u);
-    const uint32_t span   = (m_options.maxIntervalMs > m_options.baseIntervalMs)
-                            ? m_options.maxIntervalMs - m_options.baseIntervalMs
+    const uint32_t span   = (m_config.maxIntervalMs > m_config.baseIntervalMs)
+                            ? m_config.maxIntervalMs - m_config.baseIntervalMs
                             : 0u;
     const uint32_t extra  = std::min(100u * (1u << capped), span);
-    return std::chrono::milliseconds(m_options.baseIntervalMs + extra);
+    return std::chrono::milliseconds(m_config.baseIntervalMs + extra);
 }
 
 void CommandThrottler::reserveSlotAndSleep() {

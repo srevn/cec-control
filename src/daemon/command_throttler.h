@@ -8,6 +8,19 @@
 namespace cec_control {
 
 /**
+ * Tuning parameters for @c CommandThrottler. Consumed once at
+ * construction and immutable thereafter. Defaults match the values
+ * emitted by @c loadAppConfig when the operator omits every throttler
+ * key, so a struct default-constructed in code behaves the same as
+ * one loaded from a config-less install.
+ */
+struct ThrottlerConfig {
+    uint32_t baseIntervalMs   = 200;
+    uint32_t maxIntervalMs    = 1000;
+    uint32_t maxRetryAttempts = 3;
+};
+
+/**
  * Adaptive inter-command back-off with exponential retry for the CEC
  * adapter.
  *
@@ -25,13 +38,7 @@ namespace cec_control {
  */
 class CommandThrottler {
 public:
-    struct Options {
-        uint32_t baseIntervalMs   = 100;
-        uint32_t maxIntervalMs    = 400;
-        uint32_t maxRetryAttempts = 3;
-    };
-
-    explicit CommandThrottler(Options options);
+    explicit CommandThrottler(ThrottlerConfig config);
 
     /**
      * Execute @p command under the throttle + retry policy. Returns
@@ -44,7 +51,7 @@ private:
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
 
-    const Options m_options;
+    const ThrottlerConfig m_config;
 
     // Earliest time at which the next command may begin. Each caller
     // CAS-reserves its slot by advancing this forward before sleeping,

@@ -62,9 +62,9 @@ public:
      * daemon owns the adapter construction.
      */
     struct Options {
-        bool queueCommandsDuringSuspend = true;
-        bool autoStandbyEnabled         = false;
-        CommandThrottler::Options throttler;
+        bool            queueCommandsDuringSuspend = true;
+        bool            autoStandbyEnabled         = false;
+        ThrottlerConfig throttler;
     };
 
     /**
