@@ -46,9 +46,14 @@ public:
 
     /**
      * Outbound hooks fired by the router. The daemon supplies both at
-     * construction and never rewires them — they are consumed by pool
-     * workers / libcec threads without synchronisation. Either member
-     * may be empty; the router silently no-ops in that case.
+     * construction and never rewires them. Both run on the router's
+     * caller thread — libcec's internal thread for @c onConnectionLost
+     * and @c onSuspendRequested alike — so implementations MUST be safe
+     * to invoke from an arbitrary thread and MUST NOT block (the libcec
+     * callback thread cannot be stalled without risking deadlock against
+     * a concurrent adapter call). The expected shape is a thread-safe
+     * post onto the daemon's main-thread work queue. Either member may
+     * be empty; the router silently no-ops in that case.
      */
     struct Callbacks {
         /** libcec dropped the adapter (fires on a libcec-owned thread). */
@@ -59,9 +64,9 @@ public:
 
     /**
      * @param options     Fully-populated configuration options.
-     * @param threadPool  Pool for background tasks (async adapter restart,
-     *                    TV-standby suspend dispatch). Must be non-null and
-     *                    outlive @c this; DaemonBootstrap guarantees both.
+     * @param threadPool  Pool for background tasks (async adapter restart).
+     *                    Must be non-null and outlive @c this;
+     *                    DaemonBootstrap guarantees both.
      * @param callbacks   Install-once outbound hooks; see Callbacks.
      */
     CommandRouter(Options options,

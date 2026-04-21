@@ -450,15 +450,17 @@ void CommandRouter::onTvStandby() {
         return;
     }
 
-    LOG_INFO("TV standby observed with auto-standby enabled; initiating system suspend");
+    if (!m_suspendCallback) {
+        LOG_WARNING("TV standby observed but no suspend callback wired");
+        return;
+    }
 
-    m_threadPool->submit([this]() {
-        if (!m_suspendCallback) {
-            LOG_WARNING("No suspend callback wired; cannot suspend the system");
-            return;
-        }
-        m_suspendCallback();
-    });
+    LOG_INFO("TV standby observed with auto-standby enabled; initiating system suspend");
+    // The callback's contract (see Callbacks doc) is "thread-safe and
+    // non-blocking" — in practice a single MainThreadWork::post. Running
+    // it inline here avoids a thread-pool hop that added only scheduling
+    // latency, and removes one more lambda that captures this.
+    m_suspendCallback();
 }
 
 bool CommandRouter::isAdapterValid() const {
