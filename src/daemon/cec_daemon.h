@@ -8,6 +8,7 @@
 #include "../common/main_thread_work.h"
 #include "../common/signal_source.h"
 #include "../common/timer_source.h"
+#include "cec/adapter_config.h"
 #include "cec/adapter_worker.h"
 #include "cec/libcec_adapter.h"
 #include "command_router.h"
@@ -49,9 +50,9 @@ public:
      * worker.
      */
     struct Options {
-        bool                   enablePowerMonitor   = true;
-        bool                   scanDevicesAtStartup = false;
-        LibCecAdapter::Options adapter;
+        bool          enablePowerMonitor   = true;
+        bool          scanDevicesAtStartup = false;
+        AdapterConfig adapter;
     };
 
     CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions);

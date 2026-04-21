@@ -8,36 +8,37 @@
 
 namespace cec_control {
 
-LibCecAdapter::LibCecAdapter(Options options, Callbacks callbacks)
-    : m_options(std::move(options)),
+LibCecAdapter::LibCecAdapter(AdapterConfig config, Callbacks callbacks)
+    : m_config(std::move(config)),
       m_connected(false),
       m_tvStandbyCallback(std::move(callbacks.onTvStandby)),
       m_connectionLostCallback(std::move(callbacks.onConnectionLost)) {
 
-    m_config.Clear();
-    m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
-    m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
+    m_libcecConfig.Clear();
+    m_libcecConfig.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
+    m_libcecConfig.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
 
-    std::snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName),
-                  "%s", m_options.deviceName.c_str());
-    m_config.bAutoWakeAVR    = m_options.autoWakeAVR    ? 1 : 0;
-    m_config.bAutoPowerOn    = m_options.autoPowerOn    ? 1 : 0;
+    std::snprintf(m_libcecConfig.strDeviceName,
+                  sizeof(m_libcecConfig.strDeviceName),
+                  "%s", m_config.deviceName.c_str());
+    m_libcecConfig.bAutoWakeAVR    = m_config.autoWakeAVR    ? 1 : 0;
+    m_libcecConfig.bAutoPowerOn    = m_config.autoPowerOn    ? 1 : 0;
     // bPowerOffOnStandby is deliberately not mirrored here —
     // auto-standby is a router-level policy, gated on the router's
     // flag rather than libcec's internal config. Leaving libcec's
     // flag at its default (0) prevents the library from taking its
     // own standby-driven actions underneath us.
-    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
-    m_config.wakeDevices     = m_options.wakeDevices;
-    m_config.powerOffDevices = m_options.powerOffDevices;
+    m_libcecConfig.bActivateSource = m_config.activateSource ? 1 : 0;
+    m_libcecConfig.wakeDevices     = m_config.wakeDevices;
+    m_libcecConfig.powerOffDevices = m_config.powerOffDevices;
 
     // m_callbacks is value-initialised so every slot starts nullptr;
     // point libcec's config at it and install the handlers we care
     // about. libcec reads these from its internal threads without a
     // lock, which is safe because they are never reassigned after
     // construction.
-    m_config.callbacks          = &m_callbacks;
-    m_config.callbackParam      = this;
+    m_libcecConfig.callbacks    = &m_callbacks;
+    m_libcecConfig.callbackParam = this;
     m_callbacks.logMessage      = &LibCecAdapter::cecLogCallback;
     m_callbacks.commandReceived = &LibCecAdapter::cecCommandCallback;
     m_callbacks.alert           = &LibCecAdapter::cecAlertCallback;
@@ -77,14 +78,14 @@ bool LibCecAdapter::initialize() {
         return true;
     }
 
-    m_adapter = AdapterPtr(::CECInitialise(&m_config));
+    m_adapter = AdapterPtr(::CECInitialise(&m_libcecConfig));
     if (!m_adapter) {
         LOG_ERROR("Failed to initialize libCEC - CECInitialise returned null");
         return false;
     }
 
     LOG_INFO("libCEC initialized, version ",
-             m_adapter->VersionToString(m_config.clientVersion));
+             m_adapter->VersionToString(m_libcecConfig.clientVersion));
 
     if (!detectAdapter()) {
         m_adapter.reset();
@@ -114,7 +115,7 @@ bool LibCecAdapter::openConnection() {
 
     try {
         // Apply configuration to the adapter before opening.
-        if (!m_adapter->SetConfiguration(&m_config)) {
+        if (!m_adapter->SetConfiguration(&m_libcecConfig)) {
             LOG_WARNING("Failed to apply adapter configuration");
         }
 
@@ -136,7 +137,7 @@ bool LibCecAdapter::openConnection() {
         // Never call AudioEnable(false) — it sends a "terminate SAC"
         // message that disrupts audio if another device already
         // established SAC.
-        if (m_options.activateSource || m_options.systemAudioMode) {
+        if (m_config.activateSource || m_config.systemAudioMode) {
             if (!m_adapter->AudioEnable(true)) {
                 LOG_WARNING("Failed to send SystemAudioModeRequest to AVR");
             } else {
@@ -216,7 +217,7 @@ bool LibCecAdapter::reopenConnection() {
     // may still be rebinding.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    m_adapter = AdapterPtr(::CECInitialise(&m_config));
+    m_adapter = AdapterPtr(::CECInitialise(&m_libcecConfig));
     if (!m_adapter) {
         LOG_ERROR("Failed to re-initialise libCEC on reopen");
         return false;

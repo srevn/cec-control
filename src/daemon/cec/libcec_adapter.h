@@ -8,6 +8,7 @@
 #include <libcec/cec.h>
 
 #include "../../common/logger.h"
+#include "adapter_config.h"
 #include "adapter_interface.h"
 
 namespace cec_control {
@@ -43,35 +44,10 @@ namespace cec_control {
 class LibCecAdapter final : public ICecAdapter {
 public:
     /**
-     * Configuration options for the libcec backend. Consumed once at
-     * construction and immutable thereafter; runtime-mutable knobs
-     * (auto-standby) live on @c CommandRouter.
-     */
-    struct Options {
-        std::string deviceName;
-        bool        autoPowerOn;
-        bool        autoWakeAVR;
-        bool        activateSource;
-        bool        systemAudioMode;
-        CEC::cec_logical_addresses wakeDevices;
-        CEC::cec_logical_addresses powerOffDevices;
-
-        Options()
-            : deviceName("CEC Control"),
-              autoPowerOn(false),
-              autoWakeAVR(false),
-              activateSource(false),
-              systemAudioMode(false) {
-            wakeDevices.Clear();
-            powerOffDevices.Clear();
-        }
-    };
-
-    /**
      * Construct a libcec-backed adapter. Callbacks are install-once
      * (see @c ICecAdapter::Callbacks).
      */
-    LibCecAdapter(Options options, Callbacks callbacks);
+    LibCecAdapter(AdapterConfig config, Callbacks callbacks);
     ~LibCecAdapter() override;
 
     LibCecAdapter(const LibCecAdapter&)            = delete;
@@ -126,18 +102,18 @@ private:
     using AdapterPtr = std::unique_ptr<CEC::ICECAdapter, AdapterDeleter>;
 
     // Configuration
-    Options     m_options;
-    std::string m_portName;
+    AdapterConfig m_config;
+    std::string   m_portName;
 
     // libcec adapter. m_callbacks is a plain non-owning struct whose
-    // address we hand to libcec via m_config.callbacks; libcec treats
-    // the pointer as borrowed (consistent with AdapterDeleter's
+    // address we hand to libcec via m_libcecConfig.callbacks; libcec
+    // treats the pointer as borrowed (consistent with AdapterDeleter's
     // CECDestroy note — libcec never free()s anything we hand it).
     // Value-initialised so every function slot starts out nullptr;
     // the constructor fills in the ones we use.
     AdapterPtr                 m_adapter;
     CEC::ICECCallbacks         m_callbacks{};
-    CEC::libcec_configuration  m_config;
+    CEC::libcec_configuration  m_libcecConfig;
 
     // Cross-thread connection hint. Written by libcec's alert thread
     // in the CEC_ALERT_CONNECTION_LOST path and by the owning worker
