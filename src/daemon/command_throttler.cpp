@@ -1,6 +1,8 @@
 #include "command_throttler.h"
 #include "../common/logger.h"
 
+#include <thread>
+
 namespace cec_control {
 
 CommandThrottler::CommandThrottler(Options options) 
@@ -47,8 +49,6 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
 }
 
 void CommandThrottler::throttleCommand() {
-    std::lock_guard<std::mutex> lock(m_throttleMutex);
-
     auto now = std::chrono::steady_clock::now();
     uint32_t throttleTime = getAdaptiveThrottleTime();
 

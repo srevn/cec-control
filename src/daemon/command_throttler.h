@@ -1,15 +1,18 @@
 #pragma once
 
 #include <chrono>
-#include <mutex>
-#include <atomic>
 #include <functional>
-#include <thread> 
 
 namespace cec_control {
 
 /**
- * Manages throttling of CEC commands to prevent overwhelming the adapter
+ * Adaptive inter-command back-off with exponential retry for the CEC
+ * adapter.
+ *
+ * NOT thread-safe. Callers must serialise invocation externally — the
+ * CommandRouter does this via @c m_routerMutex, which is this class's
+ * implicit invariant. State mutates without a lock; concurrent callers
+ * are undefined behaviour.
  */
 class CommandThrottler {
 public:
@@ -51,7 +54,6 @@ private:
 
     CommandStatus m_commandStatus;
     std::chrono::time_point<std::chrono::steady_clock> m_lastCommandTime;
-    mutable std::mutex m_throttleMutex;
 
     /** Block until enough time has passed since the previous command. */
     void throttleCommand();
