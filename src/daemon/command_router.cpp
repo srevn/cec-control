@@ -30,7 +30,7 @@ CEC::cec_user_control_code hdmiNumberKey(uint8_t source) noexcept {
     return CEC::CEC_USER_CONTROL_CODE_UNKNOWN;
 }
 
-bool powerOnDevice(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress) {
+bool powerOnDevice(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress) {
     if (!adapter.isConnected()) return false;
     LOG_INFO("Powering on device ", static_cast<int>(logicalAddress));
     return throttler.executeWithThrottle([&adapter, logicalAddress]() {
@@ -42,7 +42,7 @@ bool powerOnDevice(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t 
     });
 }
 
-bool powerOffDevice(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress) {
+bool powerOffDevice(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress) {
     if (!adapter.isConnected()) return false;
     LOG_INFO("Powering off device ", static_cast<int>(logicalAddress));
     return throttler.executeWithThrottle([&adapter, logicalAddress]() {
@@ -54,7 +54,7 @@ bool powerOffDevice(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t
     });
 }
 
-bool setVolume(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress, bool up) {
+bool setVolume(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress, bool up) {
     if (!adapter.isConnected()) return false;
     LOG_INFO("Setting volume ", up ? "up" : "down",
              " on device ", static_cast<int>(logicalAddress));
@@ -63,7 +63,7 @@ bool setVolume(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logi
     });
 }
 
-bool setMute(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress, bool mute) {
+bool setMute(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t logicalAddress, bool mute) {
     if (!adapter.isConnected()) return false;
     LOG_INFO(mute ? "Muting" : "Unmuting", " device ", static_cast<int>(logicalAddress));
     return throttler.executeWithThrottle([&adapter]() {
@@ -71,7 +71,7 @@ bool setMute(LibCecAdapter& adapter, CommandThrottler& throttler, uint8_t logica
     });
 }
 
-bool setSource(LibCecAdapter& adapter, CommandThrottler& throttler,
+bool setSource(ICecAdapter& adapter, CommandThrottler& throttler,
                uint8_t /*logicalAddress*/, uint8_t source) {
     if (!adapter.isConnected()) return false;
     LOG_INFO("Selecting input source ", static_cast<int>(source), " on TV");
@@ -122,7 +122,7 @@ bool setSource(LibCecAdapter& adapter, CommandThrottler& throttler,
     });
 }
 
-void logDeviceSnapshot(LibCecAdapter& adapter) {
+void logDeviceSnapshot(ICecAdapter& adapter) {
     try {
         const CEC::cec_logical_addresses addresses = adapter.getActiveDevices();
 
@@ -175,10 +175,14 @@ CommandRouter::CommandRouter(Options options,
     // touch. The [this] capture is legal during initializer-list
     // evaluation — the lambda stores the pointer, it does not invoke
     // onTvStandby until libcec fires a callback long after construction.
-    : m_adapter(options.adapter, LibCecAdapter::Callbacks{
-          /*onTvStandby*/      [this]() { onTvStandby(); },
-          /*onConnectionLost*/ std::move(callbacks.onConnectionLost),
-      }),
+    // The concrete adapter choice (libcec) is baked in here; the rest of
+    // the router talks to ICecAdapter through the unique_ptr member.
+    : m_adapter(std::make_unique<LibCecAdapter>(
+          options.adapter,
+          ICecAdapter::Callbacks{
+              /*onTvStandby*/      [this]() { onTvStandby(); },
+              /*onConnectionLost*/ std::move(callbacks.onConnectionLost),
+          })),
       m_throttler(options.throttler),
       m_options(std::move(options)),
       m_threadPool(std::move(threadPool)),
@@ -195,18 +199,18 @@ bool CommandRouter::initialize() {
     // race us. The state mutex is deliberately not taken.
     LOG_INFO("Initializing CEC command router");
 
-    if (!m_adapter.initialize()) {
+    if (!m_adapter->initialize()) {
         LOG_ERROR("Failed to initialize CEC adapter library");
         return false;
     }
-    if (!m_adapter.openConnection()) {
+    if (!m_adapter->openConnection()) {
         LOG_ERROR("Failed to open CEC adapter connection");
         return false;
     }
 
     if (m_options.scanDevicesAtStartup) {
         LOG_INFO("Scanning for CEC devices...");
-        logDeviceSnapshot(m_adapter);
+        logDeviceSnapshot(*m_adapter);
     } else {
         LOG_INFO("Skipping device scanning");
     }
@@ -228,7 +232,7 @@ void CommandRouter::shutdown() {
     }
 
     LOG_INFO("Shutting down CEC command router");
-    m_adapter.closeConnection();
+    m_adapter->closeConnection();
     if (!toDiscard.empty()) {
         LOG_INFO("Discarding ", toDiscard.size(),
                  " queued commands on shutdown");
@@ -258,13 +262,13 @@ bool CommandRouter::reconnect() {
         }
     }
 
-    if (m_adapter.isConnected()) {
+    if (m_adapter->isConnected()) {
         LOG_DEBUG("reconnect(): adapter already connected");
         return true;
     }
 
     LOG_INFO("Attempting to reconnect to CEC adapter");
-    if (!m_adapter.reopenConnection()) {
+    if (!m_adapter->reopenConnection()) {
         LOG_ERROR("Failed to reconnect CEC adapter");
         return false;
     }
@@ -299,14 +303,14 @@ void CommandRouter::suspend() {
     // (ms-granularity) for an in-flight libcec call to finish, but
     // does NOT wait on a throttler retry — those run lock-free now.
     LOG_INFO("Preparing CEC adapter for system sleep");
-    if (m_adapter.isConnected()) {
+    if (m_adapter->isConnected()) {
         try {
-            (void)m_adapter.standbyDevices(CEC::CECDEVICE_BROADCAST);
+            (void)m_adapter->standbyDevices(CEC::CECDEVICE_BROADCAST);
         } catch (const std::exception& e) {
             LOG_ERROR("Exception sending standby commands: ", e.what());
         }
     }
-    m_adapter.closeConnection();
+    m_adapter->closeConnection();
     LOG_INFO("CEC adapter closed for suspend");
 }
 
@@ -328,11 +332,11 @@ void CommandRouter::resume() {
     }
 
     LOG_INFO("Reinitializing CEC adapter after resume");
-    const bool reconnected = m_adapter.reopenConnection();
+    const bool reconnected = m_adapter->reopenConnection();
     if (reconnected) {
         LOG_INFO("CEC adapter reconnected successfully on resume");
         try {
-            (void)m_adapter.powerOnDevices(CEC::CECDEVICE_BROADCAST);
+            (void)m_adapter->powerOnDevices(CEC::CECDEVICE_BROADCAST);
         } catch (const std::exception& e) {
             LOG_ERROR("Exception sending power-on commands: ", e.what());
         }
@@ -397,7 +401,7 @@ Message CommandRouter::dispatch(const Message& command) {
     // here will race us on the adapter mutex — we either complete our
     // call first (adapter still open) or find the adapter closed and
     // fall through to the RESP_ERROR path.
-    if (!m_adapter.isConnected()) {
+    if (!m_adapter->isConnected()) {
         LOG_ERROR("Cannot process command: CEC adapter not connected");
         return Message(MessageType::RESP_ERROR);
     }
@@ -435,23 +439,23 @@ Message CommandRouter::executeCommand(const Message& command) {
     bool success = false;
     switch (command.type) {
         case MessageType::CMD_VOLUME_UP:
-            success = cec_control::setVolume(m_adapter, m_throttler, command.deviceId, true);
+            success = cec_control::setVolume(*m_adapter, m_throttler, command.deviceId, true);
             break;
         case MessageType::CMD_VOLUME_DOWN:
-            success = cec_control::setVolume(m_adapter, m_throttler, command.deviceId, false);
+            success = cec_control::setVolume(*m_adapter, m_throttler, command.deviceId, false);
             break;
         case MessageType::CMD_VOLUME_MUTE:
-            success = cec_control::setMute(m_adapter, m_throttler, command.deviceId, true);
+            success = cec_control::setMute(*m_adapter, m_throttler, command.deviceId, true);
             break;
         case MessageType::CMD_POWER_ON:
-            success = cec_control::powerOnDevice(m_adapter, m_throttler, command.deviceId);
+            success = cec_control::powerOnDevice(*m_adapter, m_throttler, command.deviceId);
             break;
         case MessageType::CMD_POWER_OFF:
-            success = cec_control::powerOffDevice(m_adapter, m_throttler, command.deviceId);
+            success = cec_control::powerOffDevice(*m_adapter, m_throttler, command.deviceId);
             break;
         case MessageType::CMD_CHANGE_SOURCE:
             if (!command.data.empty()) {
-                success = cec_control::setSource(m_adapter, m_throttler,
+                success = cec_control::setSource(*m_adapter, m_throttler,
                                                   command.deviceId, command.data[0]);
             }
             break;
@@ -489,7 +493,7 @@ void CommandRouter::scheduleRestart() {
                 return;
             }
         }
-        if (m_adapter.reopenConnection()) {
+        if (m_adapter->reopenConnection()) {
             LOG_INFO("Adapter restart completed successfully");
         } else {
             LOG_ERROR("Failed to restart adapter");
@@ -520,7 +524,7 @@ void CommandRouter::onTvStandby() {
 }
 
 bool CommandRouter::isAdapterValid() const {
-    return m_adapter.isConnected();
+    return m_adapter->isConnected();
 }
 
 bool CommandRouter::isSuspended() const {

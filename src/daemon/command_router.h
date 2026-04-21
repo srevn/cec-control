@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../common/messages.h"
+#include "cec/adapter_interface.h"
 #include "cec/libcec_adapter.h"
 #include "command_throttler.h"
 #include "thread_pool.h"
@@ -176,9 +177,12 @@ public:
     [[nodiscard]] bool isSuspended() const;
 
 private:
-    // Components. Direct members (not shared_ptr) — the router is the sole
-    // owner and its lifetime always encloses theirs.
-    LibCecAdapter m_adapter;
+    // Components. The router is the sole owner; the adapter is held as
+    // std::unique_ptr<ICecAdapter> so the concrete backend (libcec today,
+    // kernel /dev/cecN later) can vary while keeping router code
+    // polymorphism-clean. The throttler stays a value member — its type
+    // is not expected to vary.
+    std::unique_ptr<ICecAdapter> m_adapter;
     CommandThrottler m_throttler;
 
     // Configuration. Immutable after construction.
