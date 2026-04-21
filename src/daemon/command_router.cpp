@@ -222,13 +222,14 @@ bool CommandRouter::initialize() {
 void CommandRouter::shutdown() {
     // Flip the shutdown flag and take ownership of the queue under the
     // state lock; everything that touches the adapter runs outside.
+    // The suspend flag is deliberately left as-is: m_shutdownComplete
+    // gates every caller before the suspended check is reached.
     std::vector<Message> toDiscard;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         if (m_shutdownComplete.load(std::memory_order_relaxed)) return;
         m_shutdownComplete.store(true, std::memory_order_release);
-        toDiscard = std::move(m_queuedCommands);
-        m_queuedCommands.clear();
+        toDiscard = m_suspendQueue.drain();
     }
 
     LOG_INFO("Shutting down CEC command router");
@@ -251,7 +252,7 @@ bool CommandRouter::reconnect() {
             LOG_DEBUG("reconnect() called after shutdown; ignoring");
             return false;
         }
-        if (m_suspended.load(std::memory_order_relaxed)) {
+        if (m_suspendQueue.isSuspended()) {
             // The adapter is intentionally closed during suspend; libCEC
             // won't see a connection-lost event here, so this branch
             // mostly fires when a stray alert lands between suspend()
@@ -291,11 +292,11 @@ void CommandRouter::suspend() {
             LOG_DEBUG("suspend() called after shutdown; ignoring");
             return;
         }
-        if (m_suspended.load(std::memory_order_relaxed)) {
+        if (m_suspendQueue.isSuspended()) {
             LOG_DEBUG("suspend() called while already suspended");
             return;
         }
-        m_suspended.store(true, std::memory_order_release);
+        m_suspendQueue.enterSuspended();
     }
 
     // Phase 2: drive libcec outside the state lock. closeConnection
@@ -315,8 +316,8 @@ void CommandRouter::suspend() {
 }
 
 void CommandRouter::resume() {
-    // Phase 1: verify we are actually in the suspended state. Keep
-    // m_suspended true across the reopen below so new dispatches
+    // Phase 1: verify we are actually in the suspended state. Keep the
+    // suspend flag set across the reopen below so new dispatches
     // continue to queue rather than race the half-open adapter.
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
@@ -325,7 +326,7 @@ void CommandRouter::resume() {
             LOG_DEBUG("resume() called after shutdown; ignoring");
             return;
         }
-        if (!m_suspended.load(std::memory_order_relaxed)) {
+        if (!m_suspendQueue.isSuspended()) {
             LOG_DEBUG("resume() called while not suspended");
             return;
         }
@@ -345,14 +346,13 @@ void CommandRouter::resume() {
     }
 
     // Flip the flag and take ownership of any commands that queued
-    // during the reopen. After the release store below, new dispatches
+    // during the reopen. After exitSuspended() below, new dispatches
     // will fall through to phase 2 and may interleave with our drain.
     std::vector<Message> drained;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
-        drained = std::move(m_queuedCommands);
-        m_queuedCommands.clear();
-        m_suspended.store(false, std::memory_order_release);
+        drained = m_suspendQueue.drain();
+        m_suspendQueue.exitSuspended();
     }
 
     if (!reconnected) {
@@ -390,7 +390,7 @@ Message CommandRouter::dispatch(const Message& command) {
         if (command.type == MessageType::CMD_RESTART_ADAPTER) {
             return handleRestartLocked(command);
         }
-        if (m_suspended.load(std::memory_order_relaxed)) {
+        if (m_suspendQueue.isSuspended()) {
             return handleSuspendedLocked(command);
         }
     }
@@ -412,7 +412,7 @@ Message CommandRouter::handleRestartLocked(const Message& /*command*/) {
     // Shutdown was ruled out by the outer dispatch() check; we only
     // need to guard against the suspended case. Reopening mid-suspend
     // races libcec against USB suspend and must be refused.
-    if (m_suspended.load(std::memory_order_relaxed)) {
+    if (m_suspendQueue.isSuspended()) {
         LOG_WARNING("CMD_RESTART_ADAPTER rejected: router is suspended");
         return Message(MessageType::RESP_ERROR);
     }
@@ -425,7 +425,10 @@ Message CommandRouter::handleSuspendedLocked(const Message& command) {
     const auto* spec = findByType(command.type);
     if (m_options.queueCommandsDuringSuspend &&
         spec && spec->queueableWhileSuspended) {
-        m_queuedCommands.push_back(command);
+        // dispatch()'s phase-1 just observed m_suspendQueue.isSuspended()
+        // under the same m_stateMutex we still hold, so tryPush is
+        // guaranteed to append. The cast silences [[nodiscard]].
+        (void)m_suspendQueue.tryPush(command);
         LOG_INFO("Queued command type=", static_cast<int>(command.type),
                  " for execution after resume");
         return Message(MessageType::RESP_SUCCESS);
@@ -485,8 +488,7 @@ void CommandRouter::scheduleRestart() {
             std::lock_guard<std::mutex> lock(m_stateMutex);
             const bool shuttingDown =
                 m_shutdownComplete.load(std::memory_order_relaxed);
-            const bool suspended =
-                m_suspended.load(std::memory_order_relaxed);
+            const bool suspended = m_suspendQueue.isSuspended();
             if (shuttingDown || suspended) {
                 LOG_INFO("Adapter restart skipped: router is ",
                          shuttingDown ? "shut down" : "suspended");
@@ -528,7 +530,7 @@ bool CommandRouter::isAdapterValid() const {
 }
 
 bool CommandRouter::isSuspended() const {
-    return m_suspended.load(std::memory_order_acquire);
+    return m_suspendQueue.isSuspended();
 }
 
 } // namespace cec_control

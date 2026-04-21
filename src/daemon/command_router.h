@@ -4,12 +4,12 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <vector>
 
 #include "../common/messages.h"
 #include "cec/adapter_interface.h"
 #include "cec/libcec_adapter.h"
 #include "command_throttler.h"
+#include "power/suspend_queue.h"
 #include "thread_pool.h"
 
 namespace cec_control {
@@ -196,15 +196,17 @@ private:
     // outside this lock.
     mutable std::mutex m_stateMutex;
 
-    // Lifecycle flags. Writes happen under m_stateMutex so the queue
-    // mutation stays coherent with the flag flip; reads are lock-free
-    // so observers (dispatch phase-1 elsewhere, daemon state queries,
-    // the scheduled-restart task) do not serialise on unrelated writers.
-    std::atomic<bool> m_suspended{false};
+    // Shutdown gate. Writes happen under m_stateMutex so they stay
+    // coherent with paired suspend-queue mutation; reads are lock-free
+    // so observers (dispatch phase-1, daemon state queries, the
+    // scheduled-restart task) do not serialise on unrelated writers.
     std::atomic<bool> m_shutdownComplete{false};
 
-    // Commands parked while suspended. Guarded by m_stateMutex.
-    std::vector<Message> m_queuedCommands;
+    // Suspend flag and the commands parked while it is set. Writes
+    // happen under m_stateMutex; the flag read inside SuspendQueue
+    // is lock-free so off-lock observers (the daemon's late-reconnect
+    // task on the thread pool) can still see it cheaply.
+    SuspendQueue m_suspendQueue;
 
     // Policy: suspend the PC when the TV signals standby. Atomic so the
     // TV-standby callback (libCEC's thread) can read it without waiting
@@ -237,7 +239,7 @@ private:
 
     /**
      * Schedule a fresh adapter reinit on the thread pool. The submitted
-     * task re-checks @c m_shutdownComplete / @c m_suspended under
+     * task re-checks @c m_shutdownComplete and @c m_suspendQueue under
      * @c m_stateMutex and aborts if either is set, then performs the
      * reopen with no router-side lock held. A concurrent suspend or
      * shutdown that transitions between the check and the reopen is

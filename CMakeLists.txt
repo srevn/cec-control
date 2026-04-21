@@ -66,6 +66,7 @@ set(DAEMON_SOURCES
     src/daemon/daemon_bootstrap.cpp
     src/daemon/power/adapter_reconnect.cpp
     src/daemon/power/power_lifecycle.cpp
+    src/daemon/power/suspend_queue.cpp
 )
 
 set(CLIENT_SOURCES
