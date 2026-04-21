@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -28,6 +29,13 @@ namespace cec_control {
  */
 class SocketServer {
 public:
+    /**
+     * Upper bound on simultaneous client connections. The server rejects
+     * further accepts once reached; the daemon sizes its connection pool
+     * to match so a live handler never queues for a worker.
+     */
+    static constexpr std::size_t kMaxConnections = 10;
+
     using CommandHandler = std::function<Message(const Message&)>;
 
     SocketServer(const SocketServer&) = delete;

@@ -32,7 +32,8 @@ constexpr std::array<std::chrono::milliseconds, 3> kConnectionLostRetrySchedule 
 
 CECDaemon::CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions)
     : m_signals{SIGINT, SIGTERM, SIGHUP},
-      m_threadPool(std::make_shared<ThreadPool>(4)),
+      m_taskPool(std::make_shared<ThreadPool>(2)),
+      m_connectionPool(std::make_shared<ThreadPool>(SocketServer::kMaxConnections)),
       m_routerOptions(std::move(routerOptions)),
       m_options(daemonOptions) {}
 
@@ -58,13 +59,14 @@ bool CECDaemon::start() {
     }
 
     // Pool workers inherit the main thread's signal mask, which was set in
-    // the SignalSource member's constructor. Start the pool after masking
+    // the SignalSource member's constructor. Start the pools after masking
     // and before spawning any other threads so SIGINT/SIGTERM/SIGHUP are
     // only delivered to us via signalfd on the main thread.
-    m_threadPool->start();
+    m_taskPool->start();
+    m_connectionPool->start();
 
     try {
-        m_router = std::make_unique<CommandRouter>(std::move(m_routerOptions), m_threadPool);
+        m_router = std::make_unique<CommandRouter>(std::move(m_routerOptions), m_taskPool);
 
         m_router->setConnectionLostCallback([this]() {
             // Runs on a libCEC-owned thread. Hand off to the main loop
@@ -88,7 +90,7 @@ bool CECDaemon::start() {
             return false;
         }
 
-        m_socketServer = std::make_unique<SocketServer>(m_threadPool);
+        m_socketServer = std::make_unique<SocketServer>(m_connectionPool);
         m_socketServer->setCommandHandler([this](const Message& cmd) {
             return this->handleCommand(cmd);
         });
@@ -215,9 +217,16 @@ void CECDaemon::stop() {
     m_socketServer.reset();
     m_router.reset();
 
-    if (m_threadPool) {
-        m_threadPool->shutdown();
-        m_threadPool.reset();
+    // Drain in dependency order: connection handlers could still be
+    // submitting tasks (via dispatch → scheduleRestart) until their
+    // own pool is fully drained, so shut the connection pool first.
+    if (m_connectionPool) {
+        m_connectionPool->shutdown();
+        m_connectionPool.reset();
+    }
+    if (m_taskPool) {
+        m_taskPool->shutdown();
+        m_taskPool.reset();
     }
 
     LOG_INFO("Shutdown sequence complete");
@@ -286,7 +295,7 @@ void CECDaemon::startSuspend(EventSource /*source*/) {
 
     // Run the CEC-side suspend on a pool worker so the main loop continues
     // to service signals, sockets, and DBus while we wait.
-    m_threadPool->submit([this]() {
+    m_taskPool->submit([this]() {
         const auto t0 = std::chrono::steady_clock::now();
         try {
             m_router->suspend();
@@ -336,7 +345,7 @@ void CECDaemon::startResume(EventSource /*source*/) {
     m_reconnectRetryTimer.disarm();
     m_reconnectAttempts = 0;
 
-    m_threadPool->submit([this]() {
+    m_taskPool->submit([this]() {
         try {
             m_router->resume();
         } catch (const std::exception& e) {
@@ -396,7 +405,7 @@ void CECDaemon::onResumeRetryTimer() {
     if (!m_resumeRetryPending) return;
     m_resumeRetryPending = false;
 
-    m_threadPool->submit([this]() {
+    m_taskPool->submit([this]() {
         if (!m_router) return;
         if (m_router->isAdapterValid() || m_router->isSuspended()) return;
         LOG_INFO("Performing delayed reconnection attempt");
@@ -412,7 +421,7 @@ void CECDaemon::onConnectionLost() {
 }
 
 void CECDaemon::submitReconnectAttempt() {
-    m_threadPool->submit([this]() {
+    m_taskPool->submit([this]() {
         const bool ok = m_router && m_router->reconnect();
         m_work.post([this, ok]() { this->onReconnectResult(ok); });
     });

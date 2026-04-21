@@ -12,7 +12,6 @@ namespace cec_control {
 
 namespace {
 
-constexpr std::size_t MAX_CLIENT_CONNECTIONS = 10;
 constexpr int LISTEN_BACKLOG = 16;
 constexpr mode_t SOCKET_FILE_PERMISSIONS = 0660;
 constexpr auto CLIENT_IDLE_TIMEOUT = std::chrono::seconds(60);
@@ -108,7 +107,7 @@ void SocketServer::onReadable() {
         }
 
         auto conn = std::make_unique<Connection>(std::move(client), m_handler);
-        if (!m_connections.add(std::move(conn), *m_threadPool, MAX_CLIENT_CONNECTIONS)) {
+        if (!m_connections.add(std::move(conn), *m_threadPool, kMaxConnections)) {
             LOG_WARNING("Connection limit reached; dropping new client");
         }
     }

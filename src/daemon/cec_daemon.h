@@ -167,8 +167,17 @@ private:
     TimerSource       m_resumeRetryTimer;
     TimerSource       m_reconnectRetryTimer;
 
-    // Cross-thread worker pool. Must outlive router and socket server.
-    std::shared_ptr<ThreadPool> m_threadPool;
+    // Cross-thread worker pools. Must outlive router and socket server.
+    //
+    // Split by purpose so connection handlers (up to
+    // SocketServer::kMaxConnections long-lived recv loops) never starve
+    // lifecycle tasks (suspend, resume, reconnect, adapter restart).
+    // The task pool is intentionally small: the router mutex serialises
+    // every lifecycle task, so one worker would suffice; two gives
+    // headroom against a rare pathology (e.g. libcec wedged inside
+    // reopen) monopolising the queue.
+    std::shared_ptr<ThreadPool> m_taskPool;
+    std::shared_ptr<ThreadPool> m_connectionPool;
 
     // Domain subsystems.
     std::unique_ptr<CommandRouter>  m_router;
