@@ -66,24 +66,27 @@ bool CECDaemon::start() {
     m_connectionPool->start();
 
     try {
-        m_router = std::make_unique<CommandRouter>(std::move(m_routerOptions), m_taskPool);
+        // Build the router's outbound hooks before construction. Both land
+        // on the main thread via m_work so lifecycle state (FSM, timers)
+        // is only ever touched from one thread, regardless of which
+        // libCEC- or pool-owned thread fires the event.
+        CommandRouter::Callbacks routerCallbacks{
+            /*onConnectionLost*/ [this]() {
+                m_work.post([this]() { this->onConnectionLost(); });
+            },
+            /*onSuspendRequested*/ [this]() {
+                // Router fires this on a pool worker. sd-bus is
+                // single-owner (main thread), so hop there; the actual
+                // Suspend() success/failure is logged by DBusMonitor,
+                // so this side is fire-and-forget.
+                m_work.post([this]() {
+                    if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
+                });
+            },
+        };
 
-        m_router->setConnectionLostCallback([this]() {
-            // Runs on a libCEC-owned thread. Hand off to the main loop
-            // so the retry state machine (counter, timer) is touched by
-            // a single thread only.
-            m_work.post([this]() { this->onConnectionLost(); });
-        });
-
-        m_router->setSuspendCallback([this]() {
-            // Router calls this on a pool worker; sd-bus is single-owner
-            // (main thread), so we post the call via the work queue. The
-            // actual Suspend() success/failure is logged by DBusMonitor,
-            // so this side is fire-and-forget.
-            m_work.post([this]() {
-                if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
-            });
-        });
+        m_router = std::make_unique<CommandRouter>(
+            std::move(m_routerOptions), m_taskPool, std::move(routerCallbacks));
 
         if (!m_router->initialize()) {
             LOG_ERROR("Failed to initialize command router");

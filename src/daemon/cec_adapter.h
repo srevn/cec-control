@@ -40,9 +40,23 @@ public:
     };
 
     /**
-     * Create a new CEC adapter
+     * Observer callbacks invoked by libcec on its internal thread.
+     * Installed once at construction and immutable thereafter: libcec
+     * reads the stored function objects without synchronisation, so
+     * any late re-wiring would be a data race. Either member may be
+     * empty — the adapter no-ops the corresponding event.
      */
-    CECAdapter(Options options = Options());
+    struct Callbacks {
+        /** TV signalled CEC standby (libcec command thread). */
+        std::function<void()> onTvStandby;
+        /** libcec raised CEC_ALERT_CONNECTION_LOST (libcec alert thread). */
+        std::function<void()> onConnectionLost;
+    };
+
+    /**
+     * Create a new CEC adapter. Callbacks are install-once.
+     */
+    CECAdapter(Options options, Callbacks callbacks);
 
     /**
      * Destructor
@@ -171,20 +185,6 @@ public:
     CEC::cec_logical_address getActiveSource() const;
 
     /**
-     * @brief Set a callback to be invoked when the TV signals standby.
-     *
-     * The adapter fires the callback unconditionally on every TV-originated
-     * standby opcode; policy (whether to act on it) lives in the caller.
-     */
-    void setOnTvStandbyCallback(std::function<void()> callback);
-
-    /**
-     * @brief Set a callback to be invoked when the CEC connection is lost
-     * @param callback The function to call
-     */
-    void setConnectionLostCallback(std::function<void()> callback);
-
-    /**
      * Send standby commands to configured devices
      * @param address The logical address to put in standby (CECDEVICE_BROADCAST uses powerOffDevices list)
      * @return True on success, false otherwise
@@ -234,9 +234,10 @@ private:
     // Thread safety
     mutable std::recursive_mutex m_adapterMutex;
 
-    // Callbacks
-    std::function<void()> m_tvStandbyCallback;
-    std::function<void()> m_connectionLostCallback;
+    // Callbacks — install-once at construction; libcec reads them from
+    // its internal threads without a lock. Never reassigned post-ctor.
+    const std::function<void()> m_tvStandbyCallback;
+    const std::function<void()> m_connectionLostCallback;
 
     // Set up CEC callbacks
     void setupCallbacks();

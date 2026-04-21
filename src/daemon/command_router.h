@@ -45,12 +45,28 @@ public:
     };
 
     /**
+     * Outbound hooks fired by the router. The daemon supplies both at
+     * construction and never rewires them — they are consumed by pool
+     * workers / libcec threads without synchronisation. Either member
+     * may be empty; the router silently no-ops in that case.
+     */
+    struct Callbacks {
+        /** libcec dropped the adapter (fires on a libcec-owned thread). */
+        std::function<void()> onConnectionLost;
+        /** TV-standby + auto-standby policy agree the system should sleep. */
+        std::function<void()> onSuspendRequested;
+    };
+
+    /**
      * @param options     Fully-populated configuration options.
      * @param threadPool  Pool for background tasks (async adapter restart,
      *                    TV-standby suspend dispatch). Must be non-null and
      *                    outlive @c this; DaemonBootstrap guarantees both.
+     * @param callbacks   Install-once outbound hooks; see Callbacks.
      */
-    CommandRouter(Options options, std::shared_ptr<ThreadPool> threadPool);
+    CommandRouter(Options options,
+                  std::shared_ptr<ThreadPool> threadPool,
+                  Callbacks callbacks);
     ~CommandRouter();
 
     CommandRouter(const CommandRouter&) = delete;
@@ -99,18 +115,6 @@ public:
      */
     void resume();
 
-    void setConnectionLostCallback(std::function<void()> callback);
-
-    /**
-     * Invoked when the router concludes the system should suspend (TV
-     * signalled standby and auto-standby is enabled). Daemon wires this
-     * to the D-Bus Suspend method; the actual success/failure of the
-     * Suspend call is logged by the DBus monitor itself, so the callback
-     * is fire-and-forget. Called on a thread-pool worker, never inline
-     * from dispatch().
-     */
-    void setSuspendCallback(std::function<void()> callback);
-
     [[nodiscard]] bool isAdapterValid() const;
     [[nodiscard]] bool isSuspended() const;
 
@@ -139,8 +143,9 @@ private:
     // m_routerMutex (which can be held by dispatch() mid-command).
     std::atomic<bool> m_autoStandbyEnabled;
 
-    // Suspend dispatch target installed by the daemon.
-    std::function<void()> m_suspendCallback;
+    // Suspend dispatch target — install-once at construction, consumed
+    // by a pool worker from onTvStandby. Never reassigned after init.
+    const std::function<void()> m_suspendCallback;
 
     /** Dispatch body. Caller must hold m_routerMutex. */
     Message dispatchLocked(const Message& command);

@@ -7,8 +7,11 @@
 
 namespace cec_control {
 
-CECAdapter::CECAdapter(Options options)
-    : m_options(options), m_connected(false) {
+CECAdapter::CECAdapter(Options options, Callbacks callbacks)
+    : m_options(std::move(options)),
+      m_connected(false),
+      m_tvStandbyCallback(std::move(callbacks.onTvStandby)),
+      m_connectionLostCallback(std::move(callbacks.onConnectionLost)) {
 
     // Initialize libcec configuration
     m_config.Clear();
@@ -434,14 +437,6 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
             LOG_DEBUG("CEC alert: ", static_cast<int>(alert));
             break;
     }
-}
-
-void CECAdapter::setOnTvStandbyCallback(std::function<void()> callback) {
-    m_tvStandbyCallback = std::move(callback);
-}
-
-void CECAdapter::setConnectionLostCallback(std::function<void()> callback) {
-    m_connectionLostCallback = std::move(callback);
 }
 
 bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {

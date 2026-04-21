@@ -166,29 +166,27 @@ void logDeviceSnapshot(CECAdapter& adapter) {
 
 } // namespace
 
-CommandRouter::CommandRouter(Options options, std::shared_ptr<ThreadPool> threadPool)
-    : m_adapter(options.adapter),
+CommandRouter::CommandRouter(Options options,
+                             std::shared_ptr<ThreadPool> threadPool,
+                             Callbacks callbacks)
+    // TV standby always lifts to our onTvStandby hook; policy (whether to
+    // suspend the PC) lives here in the router, not in the adapter. That
+    // way CMD_AUTO_STANDBY toggles a single flag with no libcec config
+    // touch. The [this] capture is legal during initializer-list
+    // evaluation — the lambda stores the pointer, it does not invoke
+    // onTvStandby until libcec fires a callback long after construction.
+    : m_adapter(options.adapter, CECAdapter::Callbacks{
+          /*onTvStandby*/      [this]() { onTvStandby(); },
+          /*onConnectionLost*/ std::move(callbacks.onConnectionLost),
+      }),
       m_throttler(options.throttler),
       m_options(std::move(options)),
       m_threadPool(std::move(threadPool)),
-      m_autoStandbyEnabled(m_options.autoStandbyEnabled) {
-
-    // TV standby always lifts to our callback; policy (whether to suspend the
-    // PC) lives here in the router, not in the adapter. That way
-    // CMD_AUTO_STANDBY toggles a single flag with no libcec config touch.
-    m_adapter.setOnTvStandbyCallback([this]() { this->onTvStandby(); });
-}
+      m_autoStandbyEnabled(m_options.autoStandbyEnabled),
+      m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
 CommandRouter::~CommandRouter() {
     shutdown();
-}
-
-void CommandRouter::setConnectionLostCallback(std::function<void()> callback) {
-    m_adapter.setConnectionLostCallback(std::move(callback));
-}
-
-void CommandRouter::setSuspendCallback(std::function<void()> callback) {
-    m_suspendCallback = std::move(callback);
 }
 
 bool CommandRouter::initialize() {
