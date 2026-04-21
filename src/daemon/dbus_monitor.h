@@ -1,9 +1,10 @@
 #pragma once
 
-#include <cstddef>
+#include <chrono>
 #include <functional>
 #include <systemd/sd-bus.h>
 
+#include "../common/backoff_schedule.h"
 #include "../common/event_loop.h"
 #include "../common/timer_source.h"
 
@@ -22,7 +23,7 @@ namespace cec_control {
  * registration of the bus fd is dropped, a backoff timer arms, and
  * each firing retries sd_bus_default_system + add_match + take-lock.
  * CEC-side work keeps running throughout. If every retry in
- * kReconnectSchedule fails, the monitor moves to Disabled and power
+ * m_reconnectSchedule fails, the monitor moves to Disabled and power
  * monitoring stays off for the rest of the session (no further
  * periodic log noise).
  *
@@ -137,7 +138,7 @@ private:
      * view. Starts Operational; a fatal sd_bus_process / sd_bus_get_fd
      * error transitions to Reconnecting (bus torn down, backoff timer
      * armed). Successful reconnect returns to Operational; exhausting
-     * kReconnectSchedule promotes to Disabled (no further bus activity
+     * m_reconnectSchedule promotes to Disabled (no further bus activity
      * this session — CEC work continues regardless).
      */
     enum class BusState {
@@ -160,7 +161,7 @@ private:
     /**
      * Drop the bus connection on detection of a fatal error, release
      * the inhibit lock, unregister the bus fd from the loop, and arm
-     * the reconnect timer with the first entry of kReconnectSchedule.
+     * the reconnect timer with the first entry of m_reconnectSchedule.
      */
     void handleBusDisconnect();
 
@@ -224,7 +225,16 @@ private:
     PowerStateCallback m_callback;
 
     BusState m_state = BusState::Operational;
-    std::size_t m_reconnectAttempts = 0;
+    // Delays between reconnect attempts after a bus disconnect. Tuned so
+    // a quick dbus-daemon / logind restart (sub-second downtime) is
+    // caught by the first retry; a genuine outage falls onto exponential
+    // backoff. Exhausting the schedule transitions to Disabled.
+    BackoffSchedule m_reconnectSchedule{
+        std::chrono::seconds(2),
+        std::chrono::seconds(10),
+        std::chrono::seconds(30),
+        std::chrono::seconds(60),
+    };
 };
 
 } // namespace cec_control

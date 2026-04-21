@@ -5,7 +5,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -61,21 +60,6 @@ uint32_t pollToEventMask(int pollEvents) noexcept {
     if (pollEvents & POLLOUT) mask |= static_cast<uint32_t>(EventPoller::Event::WRITE);
     return mask;
 }
-
-/**
- * Delay between reconnect attempts after a bus disconnect. Tuned so
- * that a quick dbus-daemon or logind restart (sub-second downtime) is
- * caught by the first retry, while a genuine outage gets exponentially
- * longer waits. After the final entry expires the monitor transitions
- * to Disabled; the daemon continues serving CEC work without further
- * retry attempts until restarted.
- */
-constexpr std::array<std::chrono::milliseconds, 4> kReconnectSchedule = {
-    std::chrono::milliseconds(2'000),
-    std::chrono::milliseconds(10'000),
-    std::chrono::milliseconds(30'000),
-    std::chrono::milliseconds(60'000),
-};
 
 } // namespace
 
@@ -210,7 +194,7 @@ void DBusMonitor::stop() {
     m_reconnectTimer.disarm();
     tearDownBusState();
     m_state = BusState::Operational;
-    m_reconnectAttempts = 0;
+    m_reconnectSchedule.reset();
 
     LOG_INFO("sd-bus D-Bus monitor stopped");
 }
@@ -483,13 +467,15 @@ void DBusMonitor::onReconnectTimer() {
     m_reconnectTimer.consume();
     if (m_state != BusState::Reconnecting) return;
 
+    // attemptsSoFar was incremented by the nextDelay() call that armed
+    // this timer, so it already names the attempt about to run.
     LOG_INFO("Attempting D-Bus reconnection (",
-             m_reconnectAttempts + 1, "/",
-             kReconnectSchedule.size(), ")");
+             m_reconnectSchedule.attemptsSoFar(), "/",
+             m_reconnectSchedule.size(), ")");
 
     if (reconnectBus() && registerBusWithLoop()) {
         m_state = BusState::Operational;
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
         LOG_INFO("D-Bus reconnected successfully; power monitoring resumed");
         // Drain any events accumulated before we registered and resync
         // the sd-bus timer to whatever deadline the library is carrying.
@@ -501,20 +487,19 @@ void DBusMonitor::onReconnectTimer() {
     // Clean up any half-initialised connection state before the next
     // attempt. tearDownBusState is idempotent on already-null members.
     tearDownBusState();
-    ++m_reconnectAttempts;
 
-    if (m_reconnectAttempts >= kReconnectSchedule.size()) {
+    const auto delay = m_reconnectSchedule.nextDelay();
+    if (!delay) {
         LOG_WARNING("D-Bus reconnection abandoned after ",
-                    m_reconnectAttempts,
+                    m_reconnectSchedule.attemptsSoFar(),
                     " attempts; power monitoring disabled for this session");
         m_state = BusState::Disabled;
         return;
     }
 
-    const auto delay = kReconnectSchedule[m_reconnectAttempts];
     LOG_WARNING("D-Bus reconnect attempt failed; next try in ",
-                delay.count(), "ms");
-    if (!m_reconnectTimer.armOnce(delay)) {
+                delay->count(), "ms");
+    if (!m_reconnectTimer.armOnce(*delay)) {
         LOG_ERROR("Failed to arm reconnect timer; "
                   "power monitoring disabled for this session");
         m_state = BusState::Disabled;
@@ -543,9 +528,9 @@ void DBusMonitor::handleBusDisconnect() {
     tearDownBusState();
 
     m_state = BusState::Reconnecting;
-    m_reconnectAttempts = 0;
-
-    if (!m_reconnectTimer.armOnce(kReconnectSchedule[0])) {
+    m_reconnectSchedule.reset();
+    const auto initialDelay = m_reconnectSchedule.nextDelay();
+    if (!initialDelay || !m_reconnectTimer.armOnce(*initialDelay)) {
         LOG_ERROR("Failed to arm reconnect timer; "
                   "power monitoring disabled for this session");
         m_state = BusState::Disabled;

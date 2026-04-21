@@ -1,10 +1,10 @@
 #pragma once
 
 #include <chrono>
-#include <cstddef>
 #include <deque>
 #include <memory>
 
+#include "../common/backoff_schedule.h"
 #include "../common/event_loop.h"
 #include "../common/main_thread_work.h"
 #include "../common/signal_source.h"
@@ -137,7 +137,7 @@ private:
     /**
      * Process the outcome of the most recent reconnect attempt: on
      * success reset the counter; on failure either arm the next retry
-     * timer or give up per kConnectionLostRetrySchedule.
+     * timer or give up per m_reconnectSchedule.
      */
     void onReconnectResult(bool ok);
 
@@ -195,10 +195,15 @@ private:
     bool m_resumeRetryPending   = false;
     int  m_terminationSignalCount = 0;
 
-    // Connection-lost retry state. Counts attempts completed in the
-    // current cycle; reset to 0 after success, after giving up, or on
-    // any suspend/resume. Main thread only.
-    std::size_t m_reconnectAttempts = 0;
+    // Connection-lost retry schedule. The first attempt fires immediately
+    // from onConnectionLost(); entries below are the delays between the
+    // subsequent retries. Reset on success, on give-up, and on any
+    // suspend/resume transition. Main thread only.
+    BackoffSchedule m_reconnectSchedule{
+        std::chrono::seconds(5),
+        std::chrono::seconds(10),
+        std::chrono::seconds(20),
+    };
 
     // Daemon-level lifecycle options.
     Options m_options;

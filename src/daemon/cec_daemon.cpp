@@ -2,7 +2,6 @@
 #include "../common/logger.h"
 #include "../common/systemd_env.h"
 
-#include <array>
 #include <chrono>
 #include <csignal>
 #include <utility>
@@ -13,20 +12,6 @@ namespace {
 
 constexpr auto kSuspendSafetyDeadline = std::chrono::seconds(10);
 constexpr auto kResumeRetryDelay      = std::chrono::seconds(10);
-
-/**
- * Retry schedule for CEC reconnect after a connection-lost event: the
- * libCEC alert triggers attempt #0 immediately; each subsequent entry
- * is the delay before the next attempt. A flaky USB-to-CEC bridge can
- * take a few seconds to re-enumerate, which the single prior retry
- * occasionally missed. Cancelled on suspend/resume; reset on any
- * successful reopen.
- */
-constexpr std::array<std::chrono::milliseconds, 3> kConnectionLostRetrySchedule = {
-    std::chrono::milliseconds(5'000),
-    std::chrono::milliseconds(10'000),
-    std::chrono::milliseconds(20'000),
-};
 
 } // namespace
 
@@ -301,7 +286,7 @@ void CECDaemon::startSuspend(EventSource /*source*/) {
     // adapter deliberately, so further reconnect attempts would just
     // race the suspend path. resume() will reopen the adapter itself.
     m_reconnectRetryTimer.disarm();
-    m_reconnectAttempts = 0;
+    m_reconnectSchedule.reset();
 
     // Arm the safety deadline so we never leave the system wedged waiting
     // on our inhibit lock if router->suspend() hangs.
@@ -361,7 +346,7 @@ void CECDaemon::startResume(EventSource /*source*/) {
     // resume() drives its own reopen; a connection-lost retry cycle
     // from before suspend is now stale.
     m_reconnectRetryTimer.disarm();
-    m_reconnectAttempts = 0;
+    m_reconnectSchedule.reset();
 
     m_taskPool->submit([this]() {
         try {
@@ -434,7 +419,7 @@ void CECDaemon::onResumeRetryTimer() {
 void CECDaemon::onConnectionLost() {
     LOG_WARNING("CEC connection lost, attempting to reconnect");
     m_reconnectRetryTimer.disarm();
-    m_reconnectAttempts = 0;
+    m_reconnectSchedule.reset();
     submitReconnectAttempt();
 }
 
@@ -450,30 +435,29 @@ void CECDaemon::onReconnectResult(bool ok) {
     // m_router->isSuspended() true; the reconnect result is stale and
     // resume() handles the reopen. Drop the result silently.
     if (m_router && m_router->isSuspended()) {
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
         return;
     }
     if (ok) {
         LOG_INFO("Successfully reconnected to CEC adapter");
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
         return;
     }
 
-    if (m_reconnectAttempts >= kConnectionLostRetrySchedule.size()) {
+    const auto delay = m_reconnectSchedule.nextDelay();
+    if (!delay) {
         LOG_WARNING("CEC reconnect abandoned after ",
-                    m_reconnectAttempts + 1,
+                    m_reconnectSchedule.attemptsSoFar() + 1,
                     " attempts; waiting for next connection-lost event");
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
         return;
     }
 
-    const auto delay = kConnectionLostRetrySchedule[m_reconnectAttempts];
-    ++m_reconnectAttempts;
     LOG_WARNING("CEC reconnect attempt failed; next retry in ",
-                delay.count(), "ms");
-    if (!m_reconnectRetryTimer.armOnce(delay)) {
+                delay->count(), "ms");
+    if (!m_reconnectRetryTimer.armOnce(*delay)) {
         LOG_ERROR("Failed to arm reconnect-retry timer; giving up this cycle");
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
     }
 }
 
@@ -484,12 +468,16 @@ void CECDaemon::onReconnectRetryTimer() {
         // Either the adapter is already back (a concurrent retry won,
         // or resume() reopened it) or we are now suspended. Reset the
         // cycle either way.
-        m_reconnectAttempts = 0;
+        m_reconnectSchedule.reset();
         return;
     }
+    // attemptsSoFar has been incremented by the nextDelay() call that
+    // armed this timer, so it already names the attempt we are about
+    // to run. Total attempts = schedule size + 1 (the immediate one
+    // from onConnectionLost).
     LOG_INFO("Performing retried CEC reconnection (attempt ",
-             m_reconnectAttempts + 1, "/",
-             kConnectionLostRetrySchedule.size() + 1, ")");
+             m_reconnectSchedule.attemptsSoFar() + 1, "/",
+             m_reconnectSchedule.size() + 1, ")");
     submitReconnectAttempt();
 }
 
