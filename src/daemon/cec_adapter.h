@@ -222,6 +222,13 @@ private:
     AdapterPtr m_adapter;
     CEC::ICECCallbacks m_callbacks{};
     CEC::libcec_configuration m_config;
+
+    // Coherent connection state. Every write happens under m_adapterMutex
+    // except the CEC_ALERT_CONNECTION_LOST path inside cecAlertCallback,
+    // which fires on libcec's internal thread and cannot take the mutex
+    // without risking deadlock. That write is an advisory hint; the
+    // authoritative state is always the value observed inside the mutex.
+    // The type is atomic purely to make the unlocked write well-defined.
     std::atomic<bool> m_connected;
 
     // Thread safety

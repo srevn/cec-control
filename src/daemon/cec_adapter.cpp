@@ -190,15 +190,12 @@ bool CECAdapter::openConnection() {
 }
 
 void CECAdapter::closeConnection() {
+    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_connected) {
         return;
     }
-
-    // Flip the flag before taking the lock so any caller probing
-    // isConnected() returns early rather than racing Close() itself.
     m_connected = false;
 
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
     if (!m_adapter) {
         return;
     }
@@ -415,6 +412,10 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
     switch(alert) {
         case CEC::CEC_ALERT_CONNECTION_LOST:
             LOG_ERROR("CEC connection lost");
+            // Unlocked write from libcec's internal thread — see the
+            // m_connected invariant in cec_adapter.h. Taking
+            // m_adapterMutex here would risk deadlock if another thread
+            // is already inside a libcec call under the same mutex.
             adapter->m_connected = false;
             if (adapter->m_connectionLostCallback) {
                 adapter->m_connectionLostCallback();
