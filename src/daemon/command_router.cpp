@@ -329,10 +329,17 @@ Message CommandRouter::dispatch(const Message& command) {
 }
 
 Message CommandRouter::dispatchLocked(const Message& command) {
-    // CMD_RESTART_ADAPTER bypasses both the suspend and connected checks —
-    // it's the operator's override to force a fresh adapter, and the
-    // reconnect itself runs asynchronously on a pool worker.
+    // CMD_RESTART_ADAPTER is the operator's override to drop and recreate
+    // the adapter, so it bypasses the "already connected" check. It does
+    // NOT bypass the suspend / shutdown gates: reopening during the
+    // kernel sleep path races libcec against USB suspend, and resurrecting
+    // the adapter after shutdown() closed it would undo the teardown.
     if (command.type == MessageType::CMD_RESTART_ADAPTER) {
+        if (m_shutdownComplete || m_suspended) {
+            LOG_WARNING("CMD_RESTART_ADAPTER rejected: router is ",
+                        m_shutdownComplete ? "shut down" : "suspended");
+            return Message(MessageType::RESP_ERROR);
+        }
         LOG_INFO("Scheduling adapter restart");
         scheduleRestart();
         return Message(MessageType::RESP_SUCCESS);
@@ -400,6 +407,15 @@ Message CommandRouter::dispatchLocked(const Message& command) {
 void CommandRouter::scheduleRestart() {
     m_threadPool->submit([this]() {
         std::lock_guard<std::mutex> lock(m_routerMutex);
+        // State can change between dispatchLocked scheduling us and this
+        // worker acquiring the lock (a DBus suspend or an outer stop()
+        // can land in the interval). Re-check so the worker never reopens
+        // an adapter the daemon has deliberately torn down.
+        if (m_shutdownComplete || m_suspended) {
+            LOG_INFO("Adapter restart skipped: router is ",
+                     m_shutdownComplete ? "shut down" : "suspended");
+            return;
+        }
         if (m_adapter.reopenConnection()) {
             LOG_INFO("Adapter restart completed successfully");
         } else {
