@@ -38,7 +38,7 @@ public:
      * @c true on first success, @c false once every retry attempt has
      * been consumed. Thread-safe.
      */
-    bool executeWithThrottle(std::function<bool()> command);
+    [[nodiscard]] bool executeWithThrottle(std::function<bool()> command);
 
 private:
     using Clock     = std::chrono::steady_clock;

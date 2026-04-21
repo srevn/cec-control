@@ -39,7 +39,7 @@ public:
     void reset() noexcept;
 
     /** Relinquishes ownership without closing the descriptor. */
-    int release() noexcept { return std::exchange(m_fd, -1); }
+    [[nodiscard]] int release() noexcept { return std::exchange(m_fd, -1); }
 
     int get() const noexcept { return m_fd; }
     bool valid() const noexcept { return m_fd >= 0; }
@@ -54,24 +54,24 @@ public:
      * If another process is accepting, listen fails and an invalid socket is returned.
      * Returns an invalid UnixSocket on any failure.
      */
-    static UnixSocket listen(const std::string& path, mode_t perms, int backlog);
+    [[nodiscard]] static UnixSocket listen(const std::string& path, mode_t perms, int backlog);
 
     /**
      * Connect to a Unix SEQPACKET socket at @p path. The returned socket is in
      * blocking mode with no I/O timeouts set. Honors @p deadline for the
      * connect syscall itself.
      */
-    static UnixSocket connect(const std::string& path, Deadline deadline);
+    [[nodiscard]] static UnixSocket connect(const std::string& path, Deadline deadline);
 
     /**
      * Accept a pending connection. Returns an invalid UnixSocket if the listener
      * is non-blocking and no connection is pending (errno == EAGAIN) or on error.
      * The returned client socket is in blocking mode; callers set I/O timeouts.
      */
-    UnixSocket accept() const;
+    [[nodiscard]] UnixSocket accept() const;
 
     /** Apply the same timeout to both SO_RCVTIMEO and SO_SNDTIMEO. */
-    bool setIoTimeout(std::chrono::milliseconds timeout) const;
+    [[nodiscard]] bool setIoTimeout(std::chrono::milliseconds timeout) const;
 
 private:
     int m_fd = -1;

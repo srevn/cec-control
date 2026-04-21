@@ -144,7 +144,7 @@ private:
 
     /** Ensure a DBus monitor is up; returns true on success, false on
      *  initialization failure (logged). */
-    bool setupPowerMonitor();
+    [[nodiscard]] bool setupPowerMonitor();
 
     // Event loop and single-threaded primitives. Declared first so they
     // outlive every subsystem that might register handlers against them.

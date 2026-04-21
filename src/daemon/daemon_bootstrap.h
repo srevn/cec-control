@@ -31,13 +31,13 @@ public:
 
 private:
     /** Setup the process (daemonization, service mode, etc.). */
-    static bool setupProcess(bool runAsDaemon);
+    [[nodiscard]] static bool setupProcess(bool runAsDaemon);
 
     /** Check if running under systemd. */
-    static bool isRunningUnderSystemd();
+    [[nodiscard]] static bool isRunningUnderSystemd();
 
     /** Daemonize the process by forking into background. */
-    static bool daemonize();
+    [[nodiscard]] static bool daemonize();
 
     /** Initialize logging with the given configuration. */
     static void setupLogging(const RunDaemon& action);

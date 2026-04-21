@@ -34,7 +34,7 @@ public:
      * overwritten. A duration of zero disarms (matches timerfd_settime
      * semantics). Returns false if the syscall fails.
      */
-    bool armOnce(std::chrono::milliseconds d);
+    [[nodiscard]] bool armOnce(std::chrono::milliseconds d);
 
     /** Cancel the current arming. Idempotent. */
     void disarm();

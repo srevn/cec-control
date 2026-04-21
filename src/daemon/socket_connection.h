@@ -69,7 +69,7 @@ public:
      * pool rejects the task — in either case the Connection is destroyed
      * (and its FD closed) before returning.
      */
-    bool add(std::unique_ptr<Connection> conn, ThreadPool& pool, std::size_t maxConnections);
+    [[nodiscard]] bool add(std::unique_ptr<Connection> conn, ThreadPool& pool, std::size_t maxConnections);
 
     /**
      * Signal every registered Connection to stop, then block until all of

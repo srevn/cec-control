@@ -27,7 +27,7 @@ public:
     ConfigManager& operator=(ConfigManager&&) = delete;
 
     /** Load configuration from file. Returns false when the file is absent. */
-    bool load();
+    [[nodiscard]] bool load();
 
     std::string getString(const std::string& section,
                           const std::string& key,

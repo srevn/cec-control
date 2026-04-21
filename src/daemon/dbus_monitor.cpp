@@ -447,8 +447,11 @@ void DBusMonitor::updateLoopRegistration() {
     const auto relMs = relativeFromAbsoluteUs(absUs);
     if (relMs.count() < 0) {
         m_timer.disarm();
-    } else {
-        m_timer.armOnce(relMs);
+    } else if (!m_timer.armOnce(relMs)) {
+        // A timerfd failure here means the next purely-timeout-driven
+        // bus wake-up will not fire; incoming I/O still kicks
+        // processBus() via onBusReadable(). Log and carry on.
+        LOG_WARNING("sd-bus timeout timer arm failed; relying on bus I/O to drive next process pass");
     }
 }
 
