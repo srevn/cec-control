@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "../common/messages.h"
-#include "cec_adapter.h"
+#include "cec/libcec_adapter.h"
 #include "command_throttler.h"
 #include "thread_pool.h"
 
@@ -27,7 +27,7 @@ namespace cec_control {
  *    take-out on the resume path. It is NEVER held across a libcec
  *    call or across a throttler sleep.
  *
- *  - libcec access is serialised inside @c CECAdapter via its own
+ *  - libcec access is serialised inside @c LibCecAdapter via its own
  *    adapter mutex; the router does not replicate that serialisation.
  *
  *  - @c CommandThrottler is thread-safe on its own (atomics + CAS)
@@ -60,7 +60,7 @@ public:
         bool scanDevicesAtStartup = false;
         bool queueCommandsDuringSuspend = true;
         bool autoStandbyEnabled = false;
-        CECAdapter::Options adapter;
+        LibCecAdapter::Options adapter;
         CommandThrottler::Options throttler;
     };
 
@@ -178,7 +178,7 @@ public:
 private:
     // Components. Direct members (not shared_ptr) — the router is the sole
     // owner and its lifetime always encloses theirs.
-    CECAdapter m_adapter;
+    LibCecAdapter m_adapter;
     CommandThrottler m_throttler;
 
     // Configuration. Immutable after construction.

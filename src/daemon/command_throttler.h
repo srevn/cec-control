@@ -21,7 +21,7 @@ namespace cec_control {
  *
  * This class fences only @e when each command may begin. Serialisation
  * of the underlying libcec call is the caller's responsibility, which
- * in practice happens inside @c CECAdapter via its adapter mutex.
+ * in practice happens inside @c LibCecAdapter via its adapter mutex.
  */
 class CommandThrottler {
 public:

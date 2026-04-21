@@ -1,5 +1,5 @@
-#include "cec_adapter.h"
-#include "../common/logger.h"
+#include "libcec_adapter.h"
+#include "../../common/logger.h"
 
 #include <thread>
 #include <unistd.h>
@@ -7,7 +7,7 @@
 
 namespace cec_control {
 
-CECAdapter::CECAdapter(Options options, Callbacks callbacks)
+LibCecAdapter::LibCecAdapter(Options options, Callbacks callbacks)
     : m_options(std::move(options)),
       m_connected(false),
       m_tvStandbyCallback(std::move(callbacks.onTvStandby)),
@@ -28,7 +28,7 @@ CECAdapter::CECAdapter(Options options, Callbacks callbacks)
     setupCallbacks();
 }
 
-CECAdapter::~CECAdapter() {
+LibCecAdapter::~LibCecAdapter() {
     closeConnection();
 
     std::lock_guard<std::mutex> lock(m_adapterMutex);
@@ -38,7 +38,7 @@ CECAdapter::~CECAdapter() {
     }
 }
 
-void CECAdapter::populateConfigFromOptions(const Options& options) {
+void LibCecAdapter::populateConfigFromOptions(const Options& options) {
     m_options = options;
 
     // Set up device name
@@ -63,7 +63,7 @@ void CECAdapter::populateConfigFromOptions(const Options& options) {
     m_config.powerOffDevices = m_options.powerOffDevices;
 }
 
-void CECAdapter::setupCallbacks() {
+void LibCecAdapter::setupCallbacks() {
     if (!m_config.callbacks) {
         LOG_ERROR("Cannot set up callbacks: callback structure is null");
         return;
@@ -71,9 +71,9 @@ void CECAdapter::setupCallbacks() {
 
     try {
         // Set up callbacks with null checks
-        m_config.callbacks->logMessage = CECAdapter::cecLogCallback;
-        m_config.callbacks->commandReceived = CECAdapter::cecCommandCallback;
-        m_config.callbacks->alert = CECAdapter::cecAlertCallback;
+        m_config.callbacks->logMessage = LibCecAdapter::cecLogCallback;
+        m_config.callbacks->commandReceived = LibCecAdapter::cecCommandCallback;
+        m_config.callbacks->alert = LibCecAdapter::cecAlertCallback;
 
         m_config.callbackParam = this;
 
@@ -85,7 +85,7 @@ void CECAdapter::setupCallbacks() {
     }
 }
 
-bool CECAdapter::detectAdapter() {
+bool LibCecAdapter::detectAdapter() {
     LOG_INFO("Detecting CEC adapters...");
     CEC::cec_adapter_descriptor devices[10];
     int8_t numDevices = m_adapter->DetectAdapters(devices, 10, nullptr, true);
@@ -101,7 +101,7 @@ bool CECAdapter::detectAdapter() {
     return true;
 }
 
-bool CECAdapter::initialize() {
+bool LibCecAdapter::initialize() {
     LOG_INFO("Initializing libCEC");
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (m_adapter) {
@@ -126,7 +126,7 @@ bool CECAdapter::initialize() {
     return true;
 }
 
-bool CECAdapter::openConnection() {
+bool LibCecAdapter::openConnection() {
     LOG_INFO("Opening CEC adapter connection");
     std::lock_guard<std::mutex> lock(m_adapterMutex);
 
@@ -192,7 +192,7 @@ bool CECAdapter::openConnection() {
     }
 }
 
-void CECAdapter::closeConnection() {
+void LibCecAdapter::closeConnection() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_connected) {
         return;
@@ -221,7 +221,7 @@ void CECAdapter::closeConnection() {
     LOG_INFO("CEC adapter connection closed");
 }
 
-bool CECAdapter::reopenConnection() {
+bool LibCecAdapter::reopenConnection() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     LOG_INFO("Reopening CEC adapter connection");
 
@@ -265,46 +265,46 @@ bool CECAdapter::reopenConnection() {
     return openConnection();
 }
 
-bool CECAdapter::isConnected() const {
+bool LibCecAdapter::isConnected() const {
     return m_connected;
 }
 
-bool CECAdapter::powerOnDevice(CEC::cec_logical_address address) {
+bool LibCecAdapter::powerOnDevice(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->PowerOnDevices(address);
 }
 
-bool CECAdapter::standbyDevice(CEC::cec_logical_address address) {
+bool LibCecAdapter::standbyDevice(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->StandbyDevices(address);
 }
 
-bool CECAdapter::volumeUp() {
+bool LibCecAdapter::volumeUp() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->VolumeUp();
 }
 
-bool CECAdapter::volumeDown() {
+bool LibCecAdapter::volumeDown() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->VolumeDown();
 }
 
-bool CECAdapter::toggleMute() {
+bool LibCecAdapter::toggleMute() {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->AudioToggleMute();
 }
 
-bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release) {
+bool LibCecAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
@@ -315,42 +315,42 @@ bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_co
     }
 }
 
-bool CECAdapter::setStreamPath(uint16_t physicalAddress) {
+bool LibCecAdapter::setStreamPath(uint16_t physicalAddress) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->SetStreamPath(physicalAddress);
 }
 
-uint16_t CECAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {
+uint16_t LibCecAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return 0;
 
     return m_adapter->GetDevicePhysicalAddress(address);
 }
 
-bool CECAdapter::isDeviceActive(CEC::cec_logical_address address) const {
+bool LibCecAdapter::isDeviceActive(CEC::cec_logical_address address) const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->IsActiveDevice(address);
 }
 
-CEC::cec_power_status CECAdapter::getDevicePowerStatus(CEC::cec_logical_address address) const {
+CEC::cec_power_status LibCecAdapter::getDevicePowerStatus(CEC::cec_logical_address address) const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CEC_POWER_STATUS_UNKNOWN;
 
     return m_adapter->GetDevicePowerStatus(address);
 }
 
-std::string CECAdapter::getDeviceOSDName(CEC::cec_logical_address address) const {
+std::string LibCecAdapter::getDeviceOSDName(CEC::cec_logical_address address) const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return "";
 
     return m_adapter->GetDeviceOSDName(address);
 }
 
-CEC::cec_logical_addresses CECAdapter::getActiveDevices() const {
+CEC::cec_logical_addresses LibCecAdapter::getActiveDevices() const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) {
         CEC::cec_logical_addresses empty;
@@ -361,7 +361,7 @@ CEC::cec_logical_addresses CECAdapter::getActiveDevices() const {
     return m_adapter->GetActiveDevices();
 }
 
-CEC::cec_logical_address CECAdapter::getActiveSource() const {
+CEC::cec_logical_address LibCecAdapter::getActiveSource() const {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CECDEVICE_UNKNOWN;
 
@@ -369,8 +369,8 @@ CEC::cec_logical_address CECAdapter::getActiveSource() const {
 }
 
 // Callback implementations
-void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* message) {
-    CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
+void LibCecAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* message) {
+    LibCecAdapter* adapter = static_cast<LibCecAdapter*>(cbParam);
     if (!adapter || !message) return;
 
     // Map CEC log levels to our log levels
@@ -388,8 +388,8 @@ void CECAdapter::cecLogCallback(void *cbParam, const CEC::cec_log_message* messa
     Logger::getInstance().log(level, "CEC: ", message->message);
 }
 
-void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* command) {
-    CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
+void LibCecAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* command) {
+    LibCecAdapter* adapter = static_cast<LibCecAdapter*>(cbParam);
     if (!adapter || !command) return;
 
     // Log received commands
@@ -408,15 +408,15 @@ void CECAdapter::cecCommandCallback(void *cbParam, const CEC::cec_command* comma
     }
 }
 
-void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter) {
-    CECAdapter* adapter = static_cast<CECAdapter*>(cbParam);
+void LibCecAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, const CEC::libcec_parameter) {
+    LibCecAdapter* adapter = static_cast<LibCecAdapter*>(cbParam);
     if (!adapter) return;
 
     switch(alert) {
         case CEC::CEC_ALERT_CONNECTION_LOST:
             LOG_ERROR("CEC connection lost");
             // Unlocked write from libcec's internal thread — see the
-            // m_connected invariant in cec_adapter.h. Taking
+            // m_connected invariant in libcec_adapter.h. Taking
             // m_adapterMutex here would risk deadlock if another thread
             // is already inside a libcec call under the same mutex.
             adapter->m_connected = false;
@@ -439,7 +439,7 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
     }
 }
 
-bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
+bool LibCecAdapter::standbyDevices(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
@@ -447,7 +447,7 @@ bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
     return m_adapter->StandbyDevices(address);
 }
 
-bool CECAdapter::powerOnDevices(CEC::cec_logical_address address) {
+bool LibCecAdapter::powerOnDevices(CEC::cec_logical_address address) {
     std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
