@@ -231,8 +231,13 @@ private:
     // The type is atomic purely to make the unlocked write well-defined.
     std::atomic<bool> m_connected;
 
-    // Thread safety
-    mutable std::recursive_mutex m_adapterMutex;
+    // Serialises libcec access and writes to m_connected. A plain mutex
+    // is sufficient: every public member function enters the lock exactly
+    // once, and reopenConnection() inlines its close/destroy sequence
+    // rather than re-entering closeConnection(). If you add a new method
+    // that needs to run under this lock, build a private *Locked() helper
+    // — do not promote the mutex back to std::recursive_mutex.
+    mutable std::mutex m_adapterMutex;
 
     // Callbacks — install-once at construction; libcec reads them from
     // its internal threads without a lock. Never reassigned post-ctor.

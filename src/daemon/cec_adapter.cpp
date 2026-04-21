@@ -31,7 +31,7 @@ CECAdapter::CECAdapter(Options options, Callbacks callbacks)
 CECAdapter::~CECAdapter() {
     closeConnection();
 
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (m_adapter) {
         LOG_INFO("Releasing CEC adapter resources");
         m_adapter.reset();
@@ -103,7 +103,7 @@ bool CECAdapter::detectAdapter() {
 
 bool CECAdapter::initialize() {
     LOG_INFO("Initializing libCEC");
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (m_adapter) {
         LOG_WARNING("libCEC already initialized");
         return true;
@@ -128,7 +128,7 @@ bool CECAdapter::initialize() {
 
 bool CECAdapter::openConnection() {
     LOG_INFO("Opening CEC adapter connection");
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
 
     if (!m_adapter) {
         LOG_ERROR("Cannot open connection, libCEC not initialized");
@@ -193,7 +193,7 @@ bool CECAdapter::openConnection() {
 }
 
 void CECAdapter::closeConnection() {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_connected) {
         return;
     }
@@ -222,7 +222,7 @@ void CECAdapter::closeConnection() {
 }
 
 bool CECAdapter::reopenConnection() {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     LOG_INFO("Reopening CEC adapter connection");
 
     if (!m_adapter) {
@@ -270,42 +270,42 @@ bool CECAdapter::isConnected() const {
 }
 
 bool CECAdapter::powerOnDevice(CEC::cec_logical_address address) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->PowerOnDevices(address);
 }
 
 bool CECAdapter::standbyDevice(CEC::cec_logical_address address) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->StandbyDevices(address);
 }
 
 bool CECAdapter::volumeUp() {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->VolumeUp();
 }
 
 bool CECAdapter::volumeDown() {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->VolumeDown();
 }
 
 bool CECAdapter::toggleMute() {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->AudioToggleMute();
 }
 
 bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_control_code key, bool release) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     if (release) {
@@ -316,42 +316,42 @@ bool CECAdapter::sendKeypress(CEC::cec_logical_address address, CEC::cec_user_co
 }
 
 bool CECAdapter::setStreamPath(uint16_t physicalAddress) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->SetStreamPath(physicalAddress);
 }
 
 uint16_t CECAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return 0;
 
     return m_adapter->GetDevicePhysicalAddress(address);
 }
 
 bool CECAdapter::isDeviceActive(CEC::cec_logical_address address) const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     return m_adapter->IsActiveDevice(address);
 }
 
 CEC::cec_power_status CECAdapter::getDevicePowerStatus(CEC::cec_logical_address address) const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CEC_POWER_STATUS_UNKNOWN;
 
     return m_adapter->GetDevicePowerStatus(address);
 }
 
 std::string CECAdapter::getDeviceOSDName(CEC::cec_logical_address address) const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return "";
 
     return m_adapter->GetDeviceOSDName(address);
 }
 
 CEC::cec_logical_addresses CECAdapter::getActiveDevices() const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) {
         CEC::cec_logical_addresses empty;
         empty.Clear();
@@ -362,7 +362,7 @@ CEC::cec_logical_addresses CECAdapter::getActiveDevices() const {
 }
 
 CEC::cec_logical_address CECAdapter::getActiveSource() const {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return CEC::CECDEVICE_UNKNOWN;
 
     return m_adapter->GetActiveSource();
@@ -440,7 +440,7 @@ void CECAdapter::cecAlertCallback(void *cbParam, const CEC::libcec_alert alert, 
 }
 
 bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     // libCEC automatically uses powerOffDevices list when CECDEVICE_BROADCAST is used
@@ -448,7 +448,7 @@ bool CECAdapter::standbyDevices(CEC::cec_logical_address address) {
 }
 
 bool CECAdapter::powerOnDevices(CEC::cec_logical_address address) {
-    std::lock_guard<std::recursive_mutex> lock(m_adapterMutex);
+    std::lock_guard<std::mutex> lock(m_adapterMutex);
     if (!m_adapter || !m_connected) return false;
 
     // libCEC automatically uses wakeDevices list when CECDEVICE_BROADCAST is used
