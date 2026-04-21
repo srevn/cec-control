@@ -185,20 +185,38 @@ void CECDaemon::stop() {
         LOG_INFO("Stopping daemon under systemd control");
     }
 
+    // Ordered teardown. The invariant is that no pool worker ever observes
+    // a destroyed subsystem: we therefore drain pools *before* releasing
+    // the unique_ptrs whose members the captured lambdas reach into.
+    //
+    //   1. detach DBusMonitor so no further bus events reach us
+    //   2. stop accepting connections and drain in-flight handlers
+    //   3. join the connection pool; from here no socket worker can
+    //      submit anything new to the task pool
+    //   4. soft-close the router (m_shutdownComplete = true, adapter
+    //      closed, queue cleared) while it is still alive
+    //   5. drain the task pool: any queued suspend/resume/restart
+    //      lambda observes m_shutdownComplete and becomes a no-op
+    //   6. stop DBusMonitor (bus was detached at step 1)
+    //   7. destroy subsystems and pools in dependency order
     try {
+        // Each subsystem logs its own "Stopping" / "Stopped" lifecycle; the
+        // daemon adds wall-clock timing so slow teardowns surface at a
+        // glance without double-logging the transitions themselves.
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
         }
 
-        // Each subsystem logs its own "Stopping" / "Stopped" lifecycle; the
-        // daemon adds wall-clock timing so slow teardowns surface at a
-        // glance without double-logging the transitions themselves.
         if (m_socketServer) {
             const auto t0 = std::chrono::steady_clock::now();
             m_socketServer->stop();
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             LOG_INFO("Socket server teardown: ", ms, "ms");
+        }
+
+        if (m_connectionPool) {
+            m_connectionPool->shutdown();
         }
 
         if (m_router) {
@@ -209,6 +227,10 @@ void CECDaemon::stop() {
             LOG_INFO("Command router teardown: ", ms, "ms");
         }
 
+        if (m_taskPool) {
+            m_taskPool->shutdown();
+        }
+
         if (m_dbusMonitor) {
             m_dbusMonitor->stop();
         }
@@ -216,21 +238,14 @@ void CECDaemon::stop() {
         LOG_ERROR("Exception during daemon shutdown: ", e.what());
     }
 
+    // No thread remains that can touch any subsystem. Destroy in reverse
+    // dependency order: domain subsystems first, then the pools that
+    // ultimately ran their closures.
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_router.reset();
-
-    // Drain in dependency order: connection handlers could still be
-    // submitting tasks (via dispatch → scheduleRestart) until their
-    // own pool is fully drained, so shut the connection pool first.
-    if (m_connectionPool) {
-        m_connectionPool->shutdown();
-        m_connectionPool.reset();
-    }
-    if (m_taskPool) {
-        m_taskPool->shutdown();
-        m_taskPool.reset();
-    }
+    m_connectionPool.reset();
+    m_taskPool.reset();
 
     LOG_INFO("Shutdown sequence complete");
 }

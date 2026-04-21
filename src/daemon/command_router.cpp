@@ -229,6 +229,12 @@ void CommandRouter::shutdown() {
 bool CommandRouter::reconnect() {
     std::lock_guard<std::mutex> lock(m_routerMutex);
 
+    if (m_shutdownComplete) {
+        // A pool worker picked this up after the outer stop() already
+        // tore the adapter down; reopening would resurrect it.
+        LOG_DEBUG("reconnect() called after shutdown; ignoring");
+        return false;
+    }
     if (m_suspended) {
         // The adapter is intentionally closed during suspend; libCEC won't
         // see a connection-lost event here, so this branch mostly fires when
@@ -254,6 +260,12 @@ bool CommandRouter::reconnect() {
 
 void CommandRouter::suspend() {
     std::lock_guard<std::mutex> lock(m_routerMutex);
+    if (m_shutdownComplete) {
+        // shutdown() already closed the adapter and cleared the queue;
+        // re-running the suspend sequence would only churn flags.
+        LOG_DEBUG("suspend() called after shutdown; ignoring");
+        return;
+    }
     if (m_suspended) {
         LOG_DEBUG("suspend() called while already suspended");
         return;
@@ -274,6 +286,11 @@ void CommandRouter::suspend() {
 
 void CommandRouter::resume() {
     std::lock_guard<std::mutex> lock(m_routerMutex);
+    if (m_shutdownComplete) {
+        // resume() would reopen an adapter shutdown() just destroyed.
+        LOG_DEBUG("resume() called after shutdown; ignoring");
+        return;
+    }
     if (!m_suspended) {
         LOG_DEBUG("resume() called while not suspended");
         return;
