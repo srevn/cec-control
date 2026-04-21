@@ -18,15 +18,35 @@ namespace cec_control {
  * @brief Owns the CEC adapter and every piece of state that pivots on the
  *        suspend / resume lifecycle.
  *
- * Public methods acquire @ref m_routerMutex exactly once; libCEC is
- * single-threaded and this is the sole point of serialisation. The suspend
- * flag, the queue of commands parked during suspend, and the auto-standby
- * policy all live here rather than being smeared across the daemon, so a
- * single lock covers every transition.
+ * Locking discipline:
  *
- * The router is deliberately ignorant of the D-Bus inhibit lock, signals, and
- * the run-loop. The daemon orchestrates those around calls to suspend() and
- * resume(); the router only does CEC work.
+ *  - @ref m_stateMutex guards lifecycle state only — the suspend flag,
+ *    the shutdown flag, and the queue of commands parked during suspend.
+ *    It is held briefly: a dispatch's phase-1 state check, the flag
+ *    flip in @c suspend() / @c resume() / @c shutdown(), and the queue
+ *    take-out on the resume path. It is NEVER held across a libcec
+ *    call or across a throttler sleep.
+ *
+ *  - libcec access is serialised inside @c CECAdapter via its own
+ *    adapter mutex; the router does not replicate that serialisation.
+ *
+ *  - @c CommandThrottler is thread-safe on its own (atomics + CAS)
+ *    and its sleeps are outside every lock.
+ *
+ * @c dispatch() therefore splits into two phases: phase-1 reads and
+ * mutates router state under @c m_stateMutex (queueing, shutdown /
+ * suspend gates, CMD_RESTART_ADAPTER scheduling); phase-2 runs the
+ * command through the adapter and throttler with no router lock held.
+ * The key property is that @c suspend() never waits on throttler
+ * retries: it flips the suspend flag under @c m_stateMutex and releases
+ * the lock before touching the adapter. Any in-flight dispatch that
+ * already passed phase-1 finishes against the adapter concurrently
+ * with @c suspend()'s @c closeConnection() — the adapter mutex
+ * naturally serialises the two.
+ *
+ * The router is deliberately ignorant of the D-Bus inhibit lock,
+ * signals, and the run-loop. The daemon orchestrates those around
+ * calls to @c suspend() / @c resume(); the router only does CEC work.
  */
 class CommandRouter {
 public:
@@ -88,35 +108,67 @@ public:
     /**
      * Synchronous command dispatch. Thread-safe.
      *
-     * While suspended, queueable commands are parked for a post-resume drain
-     * and return RESP_SUCCESS ("accepted for when the system wakes");
-     * non-queueable commands (except CMD_RESTART_ADAPTER) return RESP_ERROR.
-     * CMD_RESTART_ADAPTER is always scheduled so an operator can force a
-     * reinit even mid-suspend.
+     * Splits internally into a brief phase-1 state check under
+     * @c m_stateMutex and a phase-2 command execution that holds no
+     * router-level lock (libcec is serialised by the adapter's own
+     * mutex, the throttler by its own atomics).
+     *
+     * While suspended, queueable commands are parked for a post-resume
+     * drain and return RESP_SUCCESS ("accepted for when the system
+     * wakes"); non-queueable commands return RESP_ERROR.
+     * CMD_RESTART_ADAPTER is handled in phase-1 and rejected if the
+     * router is shut down or suspended — both states imply the adapter
+     * is deliberately closed and a reopen would race the other
+     * transition.
      */
     Message dispatch(const Message& command);
 
     /**
-     * Reconnect if the adapter is not currently connected. No-op when already
-     * connected, and a no-op with a debug log while suspended (the suspend
-     * path deliberately closes the adapter). Thread-safe.
+     * Reconnect if the adapter is not currently connected. No-op when
+     * already connected, and a no-op with a debug log while suspended
+     * or shut down (both states deliberately close the adapter).
+     * Thread-safe.
+     *
+     * The state check and the reopen are not atomic with respect to a
+     * concurrent @c suspend() / @c shutdown(). In the unlikely race, the
+     * adapter is reopened and immediately closed again on the next
+     * lifecycle tick; the adapter mutex serialises the two calls so no
+     * inconsistent state is observable from outside.
      */
     [[nodiscard]] bool reconnect();
 
     /**
      * Issue pre-sleep CEC actions and close the adapter. Synchronous;
-     * returns once the adapter is fully down. Safe to call while already
-     * suspended (returns immediately).
+     * returns once the adapter is fully down. Safe to call while
+     * already suspended (returns immediately).
+     *
+     * Does not wait on in-flight throttler retries. The suspend flag
+     * is flipped under @c m_stateMutex — new dispatches see it and
+     * bail immediately — and the lock is released before the adapter
+     * close sequence runs. An already-running phase-2 dispatch
+     * completes against the adapter concurrently (serialised by the
+     * adapter mutex, ms-granularity) and then sees its next iteration
+     * fail cleanly as the connection drops.
      */
     void suspend();
 
     /**
-     * Reconnect the adapter, power on configured devices, clear the suspend
-     * flag, and drain any commands queued during suspend. Drain runs inline
-     * under the router mutex so queued commands execute as a contiguous
-     * block; new dispatches block on the mutex until the drain completes.
+     * Reconnect the adapter, power on configured devices, clear the
+     * suspend flag, and replay any commands queued during suspend.
      *
-     * Returns once the drain is done. Safe to call while not suspended.
+     * Ordering: commands queued during suspend are replayed in the
+     * order they arrived. New dispatches arriving after the suspend
+     * flag is cleared may interleave with the replay at the adapter
+     * level — the adapter mutex serialises each libcec call, but
+     * replayed and newly-arriving commands race for the next adapter
+     * slot. Acceptable because commands at this layer are idempotent
+     * (volume up/down, power on/off, source selection) and because
+     * preserving strict FIFO would require holding @c m_stateMutex
+     * across every throttler sleep in the drain — reintroducing the
+     * long-hold pattern that this lock discipline deliberately avoids.
+     *
+     * Returns once the drain has been fully attempted. Safe to call
+     * while not suspended.
      */
     void resume();
 
@@ -135,27 +187,60 @@ private:
     // Background pool for async tasks. Must outlive this router.
     std::shared_ptr<ThreadPool> m_threadPool;
 
-    // Sole lock protecting adapter access, suspend state, and queue.
-    mutable std::mutex m_routerMutex;
+    // Narrow lock protecting lifecycle flags and the suspend queue. See
+    // the class-level doc-comment for scope and what deliberately lives
+    // outside this lock.
+    mutable std::mutex m_stateMutex;
 
-    // Suspend lifecycle state (guarded by m_routerMutex).
-    bool m_suspended = false;
-    bool m_shutdownComplete = false;
+    // Lifecycle flags. Writes happen under m_stateMutex so the queue
+    // mutation stays coherent with the flag flip; reads are lock-free
+    // so observers (dispatch phase-1 elsewhere, daemon state queries,
+    // the scheduled-restart task) do not serialise on unrelated writers.
+    std::atomic<bool> m_suspended{false};
+    std::atomic<bool> m_shutdownComplete{false};
+
+    // Commands parked while suspended. Guarded by m_stateMutex.
     std::vector<Message> m_queuedCommands;
 
-    // Policy: suspend the PC when the TV signals standby. Atomic because the
-    // TV standby callback runs on libCEC's thread and must not contend on
-    // m_routerMutex (which can be held by dispatch() mid-command).
+    // Policy: suspend the PC when the TV signals standby. Atomic so the
+    // TV-standby callback (libCEC's thread) can read it without waiting
+    // on any router-side state mutex.
     std::atomic<bool> m_autoStandbyEnabled;
 
-    // Suspend dispatch target — install-once at construction, consumed
-    // by a pool worker from onTvStandby. Never reassigned after init.
+    // Suspend dispatch target — install-once at construction, invoked
+    // inline from onTvStandby (see Callbacks contract). Never reassigned.
     const std::function<void()> m_suspendCallback;
 
-    /** Dispatch body. Caller must hold m_routerMutex. */
-    Message dispatchLocked(const Message& command);
+    /**
+     * Phase-1 helper for @c CMD_RESTART_ADAPTER. Caller must hold
+     * @c m_stateMutex. Returns the wire response to send back.
+     */
+    Message handleRestartLocked(const Message& command);
 
-    /** Schedule a fresh adapter reinit on the thread pool. */
+    /**
+     * Phase-1 helper for commands arriving while suspended. Caller
+     * must hold @c m_stateMutex. Either queues the command for later
+     * replay or rejects it, per its queueability spec.
+     */
+    Message handleSuspendedLocked(const Message& command);
+
+    /**
+     * Phase-2 body: dispatches @p command through the adapter and
+     * throttler with no router lock held. Called both from @c dispatch()
+     * and from @c resume()'s drain.
+     */
+    Message executeCommand(const Message& command);
+
+    /**
+     * Schedule a fresh adapter reinit on the thread pool. The submitted
+     * task re-checks @c m_shutdownComplete / @c m_suspended under
+     * @c m_stateMutex and aborts if either is set, then performs the
+     * reopen with no router-side lock held. A concurrent suspend or
+     * shutdown that transitions between the check and the reopen is
+     * tolerated: the reopen runs to completion and the following
+     * @c suspend() / @c shutdown() closes the adapter again. The
+     * adapter mutex serialises the two calls internally.
+     */
     void scheduleRestart();
 
     /** Hook invoked by the adapter when the TV signals STANDBY. */
