@@ -243,8 +243,8 @@ DaemonAllOptions DaemonBootstrap::loadAllOptions(const ConfigManager& cfg) {
     router.queueCommandsDuringSuspend =
         cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
     // PowerOffOnStandby is the auto-standby policy gate — the router acts on
-    // it, not libcec. See LibCecAdapter::populateConfigFromOptions for the
-    // rationale on not mirroring this into m_config.bPowerOffOnStandby.
+    // it, not libcec. See the LibCecAdapter constructor for the rationale on
+    // not mirroring this into m_config.bPowerOffOnStandby.
     router.autoStandbyEnabled =
         cfg.getBool("Adapter", "PowerOffOnStandby", false);
 

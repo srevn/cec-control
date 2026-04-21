@@ -141,15 +141,6 @@ private:
     const std::function<void()> m_tvStandbyCallback;
     const std::function<void()> m_connectionLostCallback;
 
-    // Set up CEC callbacks
-    void setupCallbacks();
-
-    /**
-     * @brief Populates the libcec_configuration struct from our Options.
-     * @param options The configuration options to use.
-     */
-    void populateConfigFromOptions(const Options& options);
-
     /**
      * @brief Detects available CEC adapter hardware.
      * @return true if an adapter was found, false otherwise.

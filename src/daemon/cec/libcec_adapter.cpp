@@ -1,6 +1,7 @@
 #include "libcec_adapter.h"
 #include "../../common/logger.h"
 
+#include <cstdio>
 #include <thread>
 #include <unistd.h>
 #include <sys/types.h>
@@ -13,19 +14,31 @@ LibCecAdapter::LibCecAdapter(Options options, Callbacks callbacks)
       m_tvStandbyCallback(std::move(callbacks.onTvStandby)),
       m_connectionLostCallback(std::move(callbacks.onConnectionLost)) {
 
-    // Initialize libcec configuration
     m_config.Clear();
     m_config.clientVersion = CEC::LIBCEC_VERSION_CURRENT;
     m_config.deviceTypes.Add(CEC::CEC_DEVICE_TYPE_PLAYBACK_DEVICE);
 
-    // Populate config from options
-    populateConfigFromOptions(m_options);
+    std::snprintf(m_config.strDeviceName, sizeof(m_config.strDeviceName),
+                  "%s", m_options.deviceName.c_str());
+    m_config.bAutoWakeAVR    = m_options.autoWakeAVR    ? 1 : 0;
+    m_config.bAutoPowerOn    = m_options.autoPowerOn    ? 1 : 0;
+    // bPowerOffOnStandby is deliberately not mirrored here — auto-standby is
+    // a router-level policy, gated on the router's flag rather than libcec's
+    // internal config. Leaving libcec's flag at its default (0) prevents the
+    // library from taking its own standby-driven actions underneath us.
+    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
+    m_config.wakeDevices     = m_options.wakeDevices;
+    m_config.powerOffDevices = m_options.powerOffDevices;
 
-    // m_callbacks is value-initialised so every slot is nullptr; point
-    // libcec's config at it and let setupCallbacks() install the handlers
-    // we care about.
-    m_config.callbacks = &m_callbacks;
-    setupCallbacks();
+    // m_callbacks is value-initialised so every slot starts nullptr; point
+    // libcec's config at it and install the handlers we care about. libcec
+    // reads these from its internal threads without a lock, which is safe
+    // because they are never reassigned after construction.
+    m_config.callbacks         = &m_callbacks;
+    m_config.callbackParam     = this;
+    m_callbacks.logMessage     = &LibCecAdapter::cecLogCallback;
+    m_callbacks.commandReceived= &LibCecAdapter::cecCommandCallback;
+    m_callbacks.alert          = &LibCecAdapter::cecAlertCallback;
 }
 
 LibCecAdapter::~LibCecAdapter() {
@@ -35,53 +48,6 @@ LibCecAdapter::~LibCecAdapter() {
     if (m_adapter) {
         LOG_INFO("Releasing CEC adapter resources");
         m_adapter.reset();
-    }
-}
-
-void LibCecAdapter::populateConfigFromOptions(const Options& options) {
-    m_options = options;
-
-    // Set up device name
-    snprintf(
-        m_config.strDeviceName, sizeof(m_config.strDeviceName),
-        "%s", m_options.deviceName.c_str()
-    );
-
-    // Set up auto power on and wake AVR
-    m_config.bAutoWakeAVR = m_options.autoWakeAVR ? 1 : 0;
-    m_config.bAutoPowerOn = m_options.autoPowerOn ? 1 : 0;
-
-    // Source activation. bPowerOffOnStandby is deliberately not mirrored here
-    // — auto-standby is a router-level policy, gated on the router's flag
-    // rather than libcec's internal config. Leaving libcec's flag at its
-    // default (0) prevents the library from taking its own standby-driven
-    // actions underneath us.
-    m_config.bActivateSource = m_options.activateSource ? 1 : 0;
-
-    // Set up wake devices and power off devices
-    m_config.wakeDevices = m_options.wakeDevices;
-    m_config.powerOffDevices = m_options.powerOffDevices;
-}
-
-void LibCecAdapter::setupCallbacks() {
-    if (!m_config.callbacks) {
-        LOG_ERROR("Cannot set up callbacks: callback structure is null");
-        return;
-    }
-
-    try {
-        // Set up callbacks with null checks
-        m_config.callbacks->logMessage = LibCecAdapter::cecLogCallback;
-        m_config.callbacks->commandReceived = LibCecAdapter::cecCommandCallback;
-        m_config.callbacks->alert = LibCecAdapter::cecAlertCallback;
-
-        m_config.callbackParam = this;
-
-    } catch (const std::exception& e) {
-        LOG_ERROR("Exception during callback setup: ", e.what());
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during callback setup");
     }
 }
 
