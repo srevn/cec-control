@@ -8,13 +8,6 @@
 
 namespace cec_control {
 
-namespace {
-
-constexpr auto kSuspendSafetyDeadline = std::chrono::seconds(10);
-constexpr auto kResumeRetryDelay      = std::chrono::seconds(10);
-
-} // namespace
-
 CECDaemon::CECDaemon(Options daemonOptions, CommandRouter::Options routerOptions)
     : m_signals{SIGINT, SIGTERM, SIGHUP},
       m_taskPool(std::make_shared<ThreadPool>(2)),
@@ -249,52 +242,96 @@ void CECDaemon::onSignalReadable() {
     }
 }
 
-void CECDaemon::enqueuePowerEvent(PowerEvent event, EventSource source) {
-    m_pendingEvents.push_back({event, source});
-    startNextLifecycleEvent();
+void CECDaemon::applyLifecycle(PowerLifecycle::Output output) {
+    executeEffects(output);
+    executeEffects(m_lifecycle.pumpQueue());
 }
 
-void CECDaemon::startNextLifecycleEvent() {
-    if (m_phase != LifecyclePhase::Idle) return;
-    if (m_pendingEvents.empty()) return;
+void CECDaemon::executeEffects(const PowerLifecycle::Output& out) {
+    using Timer = PowerLifecycle::Output::Timer;
+    using Work  = PowerLifecycle::Output::Work;
+    using Lock  = PowerLifecycle::Output::Lock;
+    using Notify = PowerLifecycle::Output::Notify;
 
-    const auto next = m_pendingEvents.front();
-    m_pendingEvents.pop_front();
-    m_phaseSource = next.source;
-
-    switch (next.event) {
-        case PowerEvent::Suspend: startSuspend(next.source); break;
-        case PowerEvent::Resume:  startResume(next.source);  break;
+    // Entry banner for a new cycle. Emitted before any other effect so
+    // a concurrent timer-arm warning lands *after* "starting X" in the log.
+    switch (out.work) {
+    case Work::StartSuspend:
+        LOG_INFO("System suspending, preparing CEC adapter");
+        break;
+    case Work::StartResume:
+        LOG_INFO("System resuming, reinitializing CEC adapter");
+        break;
+    case Work::None:
+        break;
     }
+
+    // Disarm stale timers first so a subsequent Arm on the same axis
+    // starts from a clean slate. TimerSource::disarm is idempotent.
+    if (out.safetyTimer == Timer::Disarm) m_suspendSafetyTimer.disarm();
+    if (out.resumeRetry == Timer::Disarm) m_resumeRetryTimer.disarm();
+
+    // Notify the reconnect FSM. Its effects are carried out inline by
+    // execute(); a SystemSuspend/SystemResume there disarms the
+    // reconnect retry timer if one was armed.
+    switch (out.reconnectNotify) {
+    case Notify::SystemSuspend:
+        execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemSuspend));
+        break;
+    case Notify::SystemResume:
+        execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemResume));
+        break;
+    case Notify::None:
+        break;
+    }
+
+    // Arm new timers. On syscall failure, feed back to the FSM so its
+    // internal armed flags stay accurate; the returned Output is always
+    // inert for these feedback events, so no further dispatch is needed.
+    if (out.safetyTimer == Timer::Arm) {
+        if (!m_suspendSafetyTimer.armOnce(out.safetyDelay)) {
+            LOG_WARNING("Could not arm suspend-safety timer; "
+                        "inhibit lock will only release on completion");
+            (void)m_lifecycle.onSafetyTimerArmFailed();
+        }
+    }
+    if (out.resumeRetry == Timer::Arm) {
+        if (!m_resumeRetryTimer.armOnce(out.resumeRetryDelay)) {
+            LOG_WARNING("Could not arm resume-retry timer");
+            (void)m_lifecycle.onResumeRetryArmFailed();
+        }
+    }
+
+    // Inhibit-lock operations. m_dbusMonitor may be absent when power
+    // monitoring is disabled by configuration or failed to initialise;
+    // lock ops are no-ops in that case.
+    if (m_dbusMonitor) {
+        switch (out.lock) {
+        case Lock::Release: m_dbusMonitor->releaseInhibitLock(); break;
+        case Lock::Take:    m_dbusMonitor->takeInhibitLock();    break;
+        case Lock::None:    break;
+        }
+    }
+
+    // Pool-side work.
+    switch (out.work) {
+    case Work::StartSuspend: submitSuspendWork(); break;
+    case Work::StartResume:  submitResumeWork();  break;
+    case Work::None:         break;
+    }
+    if (out.submitLateReconnect) submitLateReconnect();
 }
 
-void CECDaemon::startSuspend(EventSource /*source*/) {
+void CECDaemon::submitSuspendWork() {
     if (!m_router) {
-        // Daemon is mid-teardown; discard silently and keep draining so
-        // the sequencer never wedges the queue.
-        startNextLifecycleEvent();
+        // Defensive: daemon mid-teardown. Post a synthetic completion
+        // via m_work so the FSM keeps draining on a subsequent loop
+        // iteration rather than re-entering applyLifecycle inline.
+        m_work.post([this]() {
+            this->onSuspendComplete(std::chrono::milliseconds(0));
+        });
         return;
     }
-    LOG_INFO("System suspending, preparing CEC adapter");
-    m_phase = LifecyclePhase::Suspending;
-
-    // Cancel any pending post-resume retry: a new suspend invalidates it.
-    m_resumeRetryTimer.disarm();
-    m_resumeRetryPending = false;
-
-    // Cancel any in-flight reconnect cycle: suspend closes the adapter
-    // deliberately, so further reconnect attempts would just race the
-    // suspend path. resume() will reopen the adapter itself.
-    execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemSuspend));
-
-    // Arm the safety deadline so we never leave the system wedged waiting
-    // on our inhibit lock if router->suspend() hangs.
-    m_suspendSafetyArmed = true;
-    if (!m_suspendSafetyTimer.armOnce(std::chrono::duration_cast<std::chrono::milliseconds>(
-            kSuspendSafetyDeadline))) {
-        LOG_WARNING("Could not arm suspend-safety timer; inhibit lock will only release on completion");
-    }
-
     // Run the CEC-side suspend on a pool worker so the main loop continues
     // to service signals, sockets, and DBus while we wait.
     m_taskPool->submit([this]() {
@@ -310,42 +347,11 @@ void CECDaemon::startSuspend(EventSource /*source*/) {
     });
 }
 
-void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
-    // Whichever path (completion vs. safety timer) fires first releases
-    // the inhibit lock; the other becomes a no-op.
-    m_suspendSafetyTimer.disarm();
-    if (m_suspendSafetyArmed) {
-        m_suspendSafetyArmed = false;
-        LOG_INFO("CEC suspend took ", workDuration.count(), "ms");
-        if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
-            LOG_INFO("CEC sleep preparation complete; allowing system to sleep");
-            m_dbusMonitor->releaseInhibitLock();
-        }
-    } else {
-        LOG_WARNING("CEC suspend completed in ", workDuration.count(),
-                    "ms but safety timer had already released the inhibit lock");
-    }
-
-    m_phase = LifecyclePhase::Idle;
-    startNextLifecycleEvent();
-}
-
-void CECDaemon::startResume(EventSource /*source*/) {
+void CECDaemon::submitResumeWork() {
     if (!m_router) {
-        startNextLifecycleEvent();
+        m_work.post([this]() { this->onResumeComplete(false); });
         return;
     }
-    LOG_INFO("System resuming, reinitializing CEC adapter");
-    m_phase = LifecyclePhase::Resuming;
-
-    // Clear any stale retry flag (another resume cycle starts fresh).
-    m_resumeRetryTimer.disarm();
-    m_resumeRetryPending = false;
-
-    // resume() drives its own reopen; a connection-lost retry cycle
-    // from before suspend is now stale.
-    execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemResume));
-
     m_taskPool->submit([this]() {
         try {
             m_router->resume();
@@ -353,65 +359,58 @@ void CECDaemon::startResume(EventSource /*source*/) {
             LOG_ERROR("Exception during resume: ", e.what());
         }
         const bool adapterValid = m_router->isAdapterValid();
-        m_work.post([this, adapterValid]() { this->onResumeComplete(adapterValid); });
+        m_work.post([this, adapterValid]() {
+            this->onResumeComplete(adapterValid);
+        });
     });
 }
 
-void CECDaemon::onResumeComplete(bool adapterValid) {
-    // After resume, the USB subsystem can still be settling. One delayed
-    // retry ten seconds later covers the window where the first reopen
-    // races with ttyACM* re-enumeration. Cancellable (disarmed on the
-    // next suspend/resume).
-    if (!adapterValid && !m_resumeRetryPending) {
-        m_resumeRetryPending = true;
-        if (!m_resumeRetryTimer.armOnce(std::chrono::duration_cast<std::chrono::milliseconds>(
-                kResumeRetryDelay))) {
-            LOG_WARNING("Could not arm resume-retry timer");
-            m_resumeRetryPending = false;
-        }
-    }
-
-    // Retake the delay-inhibitor so the next real sleep is guarded
-    // again. Wire-sourced resumes never dropped the lock, so there is
-    // nothing to retake in that case.
-    if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
-        m_dbusMonitor->takeInhibitLock();
-    }
-
-    m_phase = LifecyclePhase::Idle;
-    startNextLifecycleEvent();
-}
-
-void CECDaemon::onSuspendSafetyTimer() {
-    m_suspendSafetyTimer.consume();
-    if (!m_suspendSafetyArmed) {
-        // Race: completion path fired first and cleared the flag. The
-        // disarm() happens-before the consume() above, but the fd could
-        // still report one leftover expiration; nothing to do.
-        return;
-    }
-    m_suspendSafetyArmed = false;
-    LOG_WARNING("Suspend did not complete within ",
-                kSuspendSafetyDeadline.count(),
-                "s; releasing inhibit lock forcibly");
-    // Only a D-Bus-sourced suspend ever held the lock; wire-sourced
-    // suspends leave it untouched so the next real sleep stays guarded.
-    if (m_phaseSource == EventSource::DBus && m_dbusMonitor) {
-        m_dbusMonitor->releaseInhibitLock();
-    }
-}
-
-void CECDaemon::onResumeRetryTimer() {
-    m_resumeRetryTimer.consume();
-    if (!m_resumeRetryPending) return;
-    m_resumeRetryPending = false;
-
+void CECDaemon::submitLateReconnect() {
     m_taskPool->submit([this]() {
         if (!m_router) return;
         if (m_router->isAdapterValid() || m_router->isSuspended()) return;
         LOG_INFO("Performing delayed reconnection attempt");
         (void)m_router->reconnect();
     });
+}
+
+void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
+    // Whichever path (completion vs. safety timer) fires first discharges
+    // the inhibit-lock release; the other path takes the overrun branch.
+    auto out = m_lifecycle.onSuspendCompleted();
+    if (out.safetyOverrun) {
+        LOG_WARNING("CEC suspend completed in ", workDuration.count(),
+                    "ms but safety timer had already released the inhibit lock");
+    } else {
+        LOG_INFO("CEC suspend took ", workDuration.count(), "ms");
+        if (out.lock == PowerLifecycle::Output::Lock::Release) {
+            LOG_INFO("CEC sleep preparation complete; allowing system to sleep");
+        }
+    }
+    applyLifecycle(out);
+}
+
+void CECDaemon::onResumeComplete(bool adapterValid) {
+    // After resume, the USB subsystem can still be settling. The FSM
+    // emits a Timer::Arm for one delayed retry (gated on !adapterValid
+    // and not-already-armed); the lock retake happens for DBus sources.
+    applyLifecycle(m_lifecycle.onResumeCompleted(adapterValid));
+}
+
+void CECDaemon::onSuspendSafetyTimer() {
+    m_suspendSafetyTimer.consume();
+    auto out = m_lifecycle.onSafetyTimerFired();
+    if (out.safetyFired) {
+        LOG_WARNING("Suspend did not complete within ",
+                    PowerLifecycle::kSuspendSafetyDeadline.count(),
+                    "s; releasing inhibit lock forcibly");
+    }
+    applyLifecycle(out);
+}
+
+void CECDaemon::onResumeRetryTimer() {
+    m_resumeRetryTimer.consume();
+    applyLifecycle(m_lifecycle.onResumeRetryTimerFired());
 }
 
 void CECDaemon::onConnectionLost() {
@@ -487,11 +486,11 @@ bool CECDaemon::setupPowerMonitor() {
         m_dbusMonitor->setCallback([this](DBusMonitor::PowerState state) {
             // Runs inline inside sd_bus_process; hop through m_work so the
             // sequencer never executes nested in the bus dispatch stack.
-            const auto event = (state == DBusMonitor::PowerState::Suspending)
-                               ? PowerEvent::Suspend
-                               : PowerEvent::Resume;
-            m_work.post([this, event]() {
-                this->enqueuePowerEvent(event, EventSource::DBus);
+            m_work.post([this, state]() {
+                auto out = (state == DBusMonitor::PowerState::Suspending)
+                    ? m_lifecycle.onSuspendRequested(PowerLifecycle::Source::DBus)
+                    : m_lifecycle.onResumeRequested(PowerLifecycle::Source::DBus);
+                this->applyLifecycle(out);
             });
         });
         LOG_INFO("D-Bus power monitoring setup successfully");
@@ -508,20 +507,22 @@ Message CECDaemon::handleCommand(const Message& command) {
               ", deviceId=", static_cast<int>(command.deviceId));
 
     // handleCommand runs on a socket-connection pool worker, not the main
-    // thread. Suspend/resume mutate main-thread-only state (timer arming,
-    // coordination flags) and must therefore be dispatched via the work
-    // queue. Acknowledge the request as soon as it's been queued.
+    // thread. Suspend/resume mutate main-thread-only FSM state and must
+    // therefore be dispatched via the work queue. Acknowledge the request
+    // as soon as it's been queued.
     if (command.type == MessageType::CMD_SUSPEND) {
         LOG_INFO("Processing suspend command");
         m_work.post([this]() {
-            this->enqueuePowerEvent(PowerEvent::Suspend, EventSource::Wire);
+            this->applyLifecycle(
+                m_lifecycle.onSuspendRequested(PowerLifecycle::Source::Wire));
         });
         return Message(MessageType::RESP_SUCCESS);
     }
     if (command.type == MessageType::CMD_RESUME) {
         LOG_INFO("Processing resume command");
         m_work.post([this]() {
-            this->enqueuePowerEvent(PowerEvent::Resume, EventSource::Wire);
+            this->applyLifecycle(
+                m_lifecycle.onResumeRequested(PowerLifecycle::Source::Wire));
         });
         return Message(MessageType::RESP_SUCCESS);
     }

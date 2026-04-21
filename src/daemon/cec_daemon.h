@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <deque>
 #include <memory>
 
 #include "../common/backoff_schedule.h"
@@ -12,6 +11,7 @@
 #include "command_router.h"
 #include "dbus_monitor.h"
 #include "power/adapter_reconnect.h"
+#include "power/power_lifecycle.h"
 #include "socket_server.h"
 #include "thread_pool.h"
 
@@ -58,59 +58,18 @@ public:
 
 private:
     /**
-     * Power-lifecycle sequencer phases. Exactly one lifecycle event is in
-     * flight at a time; subsequent events queue in m_pendingEvents until
-     * the current phase returns to Idle.
-     */
-    enum class LifecyclePhase { Idle, Suspending, Resuming };
-
-    /** Events fed into the sequencer. */
-    enum class PowerEvent { Suspend, Resume };
-
-    /**
-     * Where a PowerEvent originated. D-Bus events are bound to a real
-     * logind sleep cycle and must release/retake the delay-inhibitor
-     * lock. Wire events are local operator actions and leave the lock
-     * alone.
-     */
-    enum class EventSource { DBus, Wire };
-
-    struct PendingPowerEvent {
-        PowerEvent  event;
-        EventSource source;
-    };
-
-    /**
-     * Enqueue a lifecycle event on the main thread. Safe to call inline
-     * from any main-thread context (dbus callback, m_work drain). Do not
-     * call from worker threads directly; use m_work.post() to hop the
-     * main thread first.
-     */
-    void enqueuePowerEvent(PowerEvent event, EventSource source);
-
-    /**
-     * Drain the next queued event if the sequencer is Idle. Invoked on
-     * every phase-to-Idle transition and on every fresh enqueue.
-     */
-    void startNextLifecycleEvent();
-
-    /** Begin a suspend cycle: arm safety timer, submit router->suspend() to the pool. */
-    void startSuspend(EventSource source);
-
-    /** Begin a resume cycle: submit router->resume() to the pool. */
-    void startResume(EventSource source);
-
-    /**
      * Main-thread continuation posted from the suspend pool worker.
-     * Releases the inhibit lock (iff source was D-Bus), transitions the
-     * phase back to Idle, and drains the next queued event.
+     * Feeds the lifecycle FSM; on a DBus-sourced cycle the emitted
+     * Lock::Release drops the inhibit lock, unless the safety timer
+     * already claimed that obligation.
      */
     void onSuspendComplete(std::chrono::milliseconds workDuration);
 
     /**
-     * Main-thread continuation posted from the resume pool worker. Arms
-     * a delayed retry if the adapter failed to come back, retakes the
-     * inhibit lock (iff source was D-Bus), then drains the next event.
+     * Main-thread continuation posted from the resume pool worker.
+     * Feeds the lifecycle FSM; the emitted Timer::Arm covers the
+     * post-resume USB re-enumeration window, and on a DBus-sourced
+     * cycle the emitted Lock::Take re-installs the inhibit lock.
      */
     void onResumeComplete(bool adapterValid);
 
@@ -124,8 +83,8 @@ private:
     void onResumeRetryTimer();
 
     /**
-     * Main-thread entry point for a libCEC connection-lost alert. Resets
-     * the retry state machine and kicks off the first reconnect attempt.
+     * Main-thread entry point for a libCEC connection-lost alert. Feeds
+     * the reconnect FSM and kicks off the first attempt.
      */
     void onConnectionLost();
 
@@ -136,9 +95,8 @@ private:
     void submitReconnectAttempt();
 
     /**
-     * Process the outcome of the most recent reconnect attempt: on
-     * success reset the counter; on failure either arm the next retry
-     * timer or give up per m_reconnectSchedule.
+     * Process the outcome of the most recent reconnect attempt: feed
+     * AttemptSucceeded or AttemptFailed to the reconnect FSM.
      */
     void onReconnectResult(bool ok);
 
@@ -151,6 +109,35 @@ private:
 
     /** Carry out the side-effect emitted by the reconnect FSM. */
     void execute(AdapterReconnect::Output out);
+
+    /**
+     * Apply an Output emitted by the lifecycle FSM, then drain the next
+     * queued event (if any) via PowerLifecycle::pumpQueue. A single
+     * post-event pump suffices because a successful pump leaves the
+     * FSM non-Idle, blocking further pumps.
+     */
+    void applyLifecycle(PowerLifecycle::Output output);
+
+    /**
+     * Flat switch over every axis in the Output. Execution order is
+     * chosen for reviewability: disarm stale timers first, notify the
+     * reconnect FSM, arm new timers (with ArmFailed feedback on
+     * syscall failure), apply lock ops, then submit pool-side work.
+     */
+    void executeEffects(const PowerLifecycle::Output& output);
+
+    /** Submit router->suspend() to the task pool with timing. */
+    void submitSuspendWork();
+
+    /** Submit router->resume() to the task pool. */
+    void submitResumeWork();
+
+    /**
+     * Fire-and-forget reconnect attempt triggered by the post-resume
+     * retry timer. Separate from the AdapterReconnect cycle: covers
+     * the specific USB-reenumeration race after wake.
+     */
+    void submitLateReconnect();
 
     /** Route an incoming wire command to the right subsystem. */
     Message handleCommand(const Message& command);
@@ -191,18 +178,11 @@ private:
     // Staged options. Router consumes them on initialize().
     CommandRouter::Options m_routerOptions;
 
-    // Suspend / resume coordination state. Main thread only; no atomics.
-    LifecyclePhase                m_phase = LifecyclePhase::Idle;
-    EventSource                   m_phaseSource = EventSource::DBus;
-    std::deque<PendingPowerEvent> m_pendingEvents;
-    bool m_suspendSafetyArmed   = false;
-    bool m_resumeRetryPending   = false;
-    int  m_terminationSignalCount = 0;
-
-    // Connection-lost reconnect state machine. The first attempt fires
-    // immediately from the ConnectionLost event; entries below are the
-    // delays between subsequent retries. Reset on success, on give-up,
-    // and on any suspend/resume transition. Main thread only.
+    // Pure decision types driving suspend/resume arbitration and the
+    // connection-lost reconnect cycle. Both main-thread only; no
+    // atomics or mutexes. Side effects are carried out by the daemon's
+    // fd handlers and pool submissions.
+    PowerLifecycle m_lifecycle;
     AdapterReconnect m_adapterReconnect{BackoffSchedule{
         std::chrono::seconds(5),
         std::chrono::seconds(10),
@@ -211,6 +191,8 @@ private:
 
     // Daemon-level lifecycle options.
     Options m_options;
+
+    int  m_terminationSignalCount = 0;
 
     // True between start() returning success and stop() completing.
     bool m_started = false;
