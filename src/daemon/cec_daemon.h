@@ -27,12 +27,15 @@ namespace cec_control {
  *        @c AdapterWorker thread so the main loop stays responsive.
  *
  * The daemon owns the adapter lifecycle: it constructs the
- * @c LibCecAdapter on the main thread, transfers it to
- * @c AdapterWorker, then builds the @c CommandRouter with a reference
- * to both the worker and the main-thread work queue. libcec's
- * internal threads are spawned only once the worker is observable —
- * @c openConnection is submitted as the worker's first job — so
- * callback forwarders always see a fully-wired daemon.
+ * @c LibCecAdapter on the main thread, runs @c initialize() and
+ * @c openConnection() on the main thread (libcec's Open is
+ * thread-identity-agnostic), hands the opened adapter to
+ * @c AdapterWorker, then builds the @c CommandRouter with a
+ * reference to both the worker and the main-thread work queue.
+ * From @c m_worker->start() onwards the worker is the sole thread
+ * that invokes any libcec method; callbacks arriving between
+ * @c Open() returning and the router being assigned are absorbed
+ * by null checks in the daemon's forwarders.
  *
  * Shutdown drives a strict ordering so no thread observes a destroyed
  * subsystem: the socket server stops before the router's shutdown
@@ -54,11 +57,12 @@ public:
     CECDaemon& operator=(const CECDaemon&) = delete;
 
     /**
-     * Construct and initialise the adapter, hand it to the worker,
-     * build the router, register every event-loop source, and submit
-     * @c openConnection as the worker's first job. Returns @c true on
-     * success; a failure path leaves the daemon in a state where
-     * @c stop() will tear down whatever partial state was committed.
+     * Construct, initialise, and open the adapter on the main thread;
+     * hand the opened adapter to the worker; build the router;
+     * start the worker; register every event-loop source. Returns
+     * @c true on success; a failure path leaves the daemon in a state
+     * where @c stop() will tear down whatever partial state was
+     * committed.
      */
     [[nodiscard]] bool start();
 

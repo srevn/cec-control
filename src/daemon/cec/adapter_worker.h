@@ -64,11 +64,11 @@ public:
     using Job = std::function<void(ICecAdapter&)>;
 
     /**
-     * Take ownership of an adapter. The adapter may be uninitialised,
-     * initialised-but-not-open, or already open — typically the caller
-     * runs @c initialize() synchronously on the main thread and submits
-     * @c openConnection() as the worker's first job, so libcec's
-     * internal threads only spawn once the worker is observable.
+     * Take ownership of an adapter. Typical pattern: the caller runs
+     * @c initialize() and @c openConnection() on the main thread
+     * (libcec's Open is thread-identity-agnostic) and hands the opened
+     * adapter in. The worker is the sole thread that invokes any other
+     * adapter method; it closes the connection as its exit step.
      */
     explicit AdapterWorker(std::unique_ptr<ICecAdapter> adapter) noexcept;
 

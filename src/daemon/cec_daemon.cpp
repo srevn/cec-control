@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <csignal>
-#include <future>
 #include <utility>
 
 #include "../common/logger.h"
@@ -54,10 +53,23 @@ bool CECDaemon::start() {
 
         // initialize() loads libcec and detects adapter hardware. It
         // does NOT spawn libcec's command or alert threads — those
-        // start inside openConnection(), which we submit as the
-        // worker's first job once the worker is observable.
+        // start inside openConnection() below.
         if (!adapter->initialize()) {
             LOG_ERROR("Failed to initialize CEC adapter library");
+            return false;
+        }
+
+        // Open the adapter on the main thread. libcec's Open is
+        // thread-identity-agnostic: the internal command and alert
+        // threads it spawns reference only the stable address of the
+        // callback struct embedded in the adapter, not the calling
+        // thread's identity. Doing it here keeps the startup path
+        // linear — no promise/future round trip, no worker submit
+        // before the worker is even spawned. From m_worker->start()
+        // onwards the worker is the sole thread that invokes any
+        // other libcec method, and its close-on-exit handles teardown.
+        if (!adapter->openConnection()) {
+            LOG_ERROR("Failed to open CEC adapter connection");
             return false;
         }
 
@@ -78,28 +90,6 @@ bool CECDaemon::start() {
             m_config, *m_worker, m_work, std::move(routerCallbacks));
 
         m_worker->start();
-
-        // Open the adapter on the worker thread. Blocking the main
-        // thread on a one-shot future is acceptable here: we have not
-        // yet entered the event loop, and a hung libcec Open is no
-        // worse than the pre-refactor synchronous call on main. The
-        // promise is heap-allocated via shared_ptr so the job lambda
-        // remains copy-constructible for std::function.
-        auto openPromise = std::make_shared<std::promise<bool>>();
-        auto openFuture  = openPromise->get_future();
-        m_worker->submit([promise = openPromise](ICecAdapter& adapter) {
-            try {
-                promise->set_value(adapter.openConnection());
-            } catch (...) {
-                // Propagate the exception through the future so the
-                // waiting thread can surface a useful message.
-                promise->set_exception(std::current_exception());
-            }
-        });
-        if (!openFuture.get()) {
-            LOG_ERROR("Failed to open CEC adapter connection");
-            return false;
-        }
 
         if (m_config.daemon.scanDevicesAtStartup) {
             LOG_INFO("Scanning for CEC devices...");
@@ -553,11 +543,12 @@ void CECDaemon::handleCommand(Message command, SocketServer::ResponseSink reply)
 }
 
 void CECDaemon::onAdapterTvStandby() {
-    // Fires on libcec's command thread. m_router is set before the
-    // worker's first job (openConnection) runs; libcec's internal
-    // threads are spawned only inside that Open call. The null check
-    // here is defense-in-depth for any future change that might
-    // breach that ordering.
+    // Fires on libcec's command thread. libcec's internal threads
+    // spawn inside openConnection() on the main thread before the
+    // router is built; a callback arriving in the narrow window
+    // between Open() returning and m_router being assigned is
+    // silently dropped by the null check. The window is microseconds
+    // and in practice no TV-standby event fires during startup.
     if (auto* router = m_router.get()) {
         router->onTvStandby();
     }
