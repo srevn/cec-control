@@ -16,6 +16,7 @@
 #include "cec/operations.h"
 #include "command_router.h"
 #include "dbus_monitor.h"
+#include "power/power_supervisor.h"
 #include "socket_server.h"
 
 namespace cec_control {
@@ -98,6 +99,13 @@ bool CECDaemon::start() {
         m_router = std::make_unique<CommandRouter>(
             m_config, *m_worker, m_work, std::move(routerCallbacks));
 
+        // Build the supervisor over the router/worker/timers. The
+        // dbus pointer is wired in setupPowerMonitor below (or stays
+        // null when power monitoring is disabled).
+        m_supervisor = std::make_unique<PowerSupervisor>(
+            *m_router, *m_worker, m_work,
+            m_suspendSafetyTimer, m_resumeRetryTimer, m_reconnectRetryTimer);
+
         m_worker->start();
 
         if (m_config.daemon.scanDevicesAtStartup) {
@@ -146,17 +154,17 @@ bool CECDaemon::start() {
             return false;
         }
         if (!m_loop.add(m_suspendSafetyTimer.fd(), READ,
-                        [this](uint32_t) { this->onSuspendSafetyTimer(); })) {
+                        [this](uint32_t) { m_supervisor->onSafetyTimerFired(); })) {
             LOG_ERROR("Failed to register suspend-safety timer with event loop");
             return false;
         }
         if (!m_loop.add(m_resumeRetryTimer.fd(), READ,
-                        [this](uint32_t) { this->onResumeRetryTimer(); })) {
+                        [this](uint32_t) { m_supervisor->onResumeRetryTimerFired(); })) {
             LOG_ERROR("Failed to register resume-retry timer with event loop");
             return false;
         }
         if (!m_loop.add(m_reconnectRetryTimer.fd(), READ,
-                        [this](uint32_t) { this->onReconnectRetryTimer(); })) {
+                        [this](uint32_t) { m_supervisor->onReconnectRetryTimerFired(); })) {
             LOG_ERROR("Failed to register reconnect-retry timer with event loop");
             return false;
         }
@@ -164,6 +172,10 @@ bool CECDaemon::start() {
         if (m_dbusMonitor) {
             if (!m_dbusMonitor->attach(m_loop)) {
                 LOG_WARNING("Failed to attach D-Bus monitor to event loop");
+                // The monitor is about to be torn down; clear the
+                // supervisor's pointer first so it cannot dangle on
+                // any subsequent lock op.
+                m_supervisor->setDBusMonitor(nullptr);
                 m_dbusMonitor.reset();
             }
         }
@@ -209,7 +221,9 @@ void CECDaemon::stop() {
     //      this returns, libcec's internal threads are quiet and
     //      cannot reach any daemon forwarder
     //   5. stop DBusMonitor (bus was detached at step 1)
-    //   6. destroy subsystems in reverse construction order
+    //   6. destroy subsystems with the supervisor first so its
+    //      non-owning references / pointer to dbus, router, worker
+    //      cannot dangle.
     try {
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
@@ -242,12 +256,12 @@ void CECDaemon::stop() {
         LOG_ERROR("Exception during daemon shutdown: ", e.what());
     }
 
-    // Destroy in reverse construction order: domain subsystems first,
-    // then the worker whose thread their continuations might have
-    // posted against. The router holds an AdapterWorker&; reset it
-    // before the worker so the reference is valid right up to
-    // router destruction even though the router's destructor does
-    // not reach through it.
+    // Reset in an order that prevents dangling references / pointer
+    // dereferences. m_supervisor holds non-owning refs to m_router /
+    // m_worker / m_work / the timers, plus a raw pointer to
+    // m_dbusMonitor; destroying it first means none of those can be
+    // touched again from supervisor code paths.
+    m_supervisor.reset();
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_router.reset();
@@ -269,224 +283,6 @@ void CECDaemon::onSignalReadable() {
     }
 }
 
-void CECDaemon::applyLifecycle(PowerLifecycle::Output output) {
-    executeEffects(output);
-    executeEffects(m_lifecycle.pumpQueue());
-}
-
-void CECDaemon::executeEffects(const PowerLifecycle::Output& out) {
-    using Timer  = PowerLifecycle::Output::Timer;
-    using Work   = PowerLifecycle::Output::Work;
-    using Lock   = PowerLifecycle::Output::Lock;
-    using Notify = PowerLifecycle::Output::Notify;
-
-    // Entry banner for a new cycle. Emitted before any other effect so
-    // a concurrent timer-arm warning lands after "starting X" in the
-    // log.
-    switch (out.work) {
-    case Work::StartSuspend:
-        LOG_INFO("System suspending, preparing CEC adapter");
-        break;
-    case Work::StartResume:
-        LOG_INFO("System resuming, reinitializing CEC adapter");
-        break;
-    case Work::None:
-        break;
-    }
-
-    // Disarm stale timers first so a subsequent Arm on the same axis
-    // starts from a clean slate. TimerSource::disarm is idempotent.
-    if (out.safetyTimer == Timer::Disarm) m_suspendSafetyTimer.disarm();
-    if (out.resumeRetry == Timer::Disarm) m_resumeRetryTimer.disarm();
-
-    // Notify the reconnect FSM. Its effects are carried out inline by
-    // execute(); a SystemSuspend/SystemResume there disarms the
-    // reconnect retry timer if one was armed.
-    switch (out.reconnectNotify) {
-    case Notify::SystemSuspend:
-        execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemSuspend));
-        break;
-    case Notify::SystemResume:
-        execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemResume));
-        break;
-    case Notify::None:
-        break;
-    }
-
-    // Arm new timers. On syscall failure, feed back to the FSM so its
-    // internal armed flags stay accurate; the returned Output is
-    // always inert for these feedback events, so no further dispatch
-    // is needed.
-    if (out.safetyTimer == Timer::Arm) {
-        if (!m_suspendSafetyTimer.armOnce(out.safetyDelay)) {
-            LOG_WARNING("Could not arm suspend-safety timer; "
-                        "inhibit lock will only release on completion");
-            (void)m_lifecycle.onSafetyTimerArmFailed();
-        }
-    }
-    if (out.resumeRetry == Timer::Arm) {
-        if (!m_resumeRetryTimer.armOnce(out.resumeRetryDelay)) {
-            LOG_WARNING("Could not arm resume-retry timer");
-            (void)m_lifecycle.onResumeRetryArmFailed();
-        }
-    }
-
-    // Inhibit-lock operations. m_dbusMonitor may be absent when power
-    // monitoring is disabled by configuration or failed to initialise;
-    // lock ops are no-ops in that case.
-    if (m_dbusMonitor) {
-        switch (out.lock) {
-        case Lock::Release: m_dbusMonitor->releaseInhibitLock(); break;
-        case Lock::Take:    m_dbusMonitor->takeInhibitLock();    break;
-        case Lock::None:    break;
-        }
-    }
-
-    // Adapter-side work.
-    switch (out.work) {
-    case Work::StartSuspend: submitSuspendWork(); break;
-    case Work::StartResume:  submitResumeWork();  break;
-    case Work::None:         break;
-    }
-    if (out.submitLateReconnect) submitLateReconnect();
-}
-
-void CECDaemon::submitSuspendWork() {
-    if (!m_router) {
-        // Defensive: daemon mid-teardown. Post a synthetic completion
-        // via m_work so the FSM keeps draining on a subsequent loop
-        // iteration rather than re-entering applyLifecycle inline.
-        m_work.post([this]() {
-            this->onSuspendComplete(std::chrono::milliseconds(0));
-        });
-        return;
-    }
-    m_router->suspendAsync([this](std::chrono::milliseconds elapsed) {
-        this->onSuspendComplete(elapsed);
-    });
-}
-
-void CECDaemon::submitResumeWork() {
-    if (!m_router) {
-        m_work.post([this]() { this->onResumeComplete(false); });
-        return;
-    }
-    m_router->resumeAsync([this](bool adapterValid) {
-        this->onResumeComplete(adapterValid);
-    });
-}
-
-void CECDaemon::submitLateReconnect() {
-    if (!m_router || !m_worker) return;
-    if (m_worker->isAdapterConnected() || m_router->isSuspended()) return;
-    LOG_INFO("Performing delayed reconnection attempt");
-    m_router->reconnectAsync(/*onDone*/ {});
-}
-
-void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
-    // Whichever path (completion vs. safety timer) fires first
-    // discharges the inhibit-lock release; the other path takes the
-    // overrun branch.
-    auto out = m_lifecycle.onSuspendCompleted();
-    if (out.safety == PowerLifecycle::Output::SafetyOutcome::Overrun) {
-        LOG_WARNING("CEC suspend completed in ", workDuration.count(),
-                    "ms but safety timer had already released the inhibit lock");
-    } else {
-        LOG_INFO("CEC suspend took ", workDuration.count(), "ms");
-        if (out.lock == PowerLifecycle::Output::Lock::Release) {
-            LOG_INFO("CEC sleep preparation complete; allowing system to sleep");
-        }
-    }
-    applyLifecycle(out);
-}
-
-void CECDaemon::onResumeComplete(bool adapterValid) {
-    // After resume, the USB subsystem can still be settling. The FSM
-    // emits a Timer::Arm for one delayed retry (gated on !adapterValid
-    // and not-already-armed); the lock retake happens for DBus sources.
-    applyLifecycle(m_lifecycle.onResumeCompleted(adapterValid));
-}
-
-void CECDaemon::onSuspendSafetyTimer() {
-    m_suspendSafetyTimer.consume();
-    auto out = m_lifecycle.onSafetyTimerFired();
-    if (out.safety == PowerLifecycle::Output::SafetyOutcome::Fired) {
-        LOG_WARNING("Suspend did not complete within ",
-                    PowerLifecycle::kSuspendSafetyDeadline.count(),
-                    "s; releasing inhibit lock forcibly");
-    }
-    applyLifecycle(out);
-}
-
-void CECDaemon::onResumeRetryTimer() {
-    m_resumeRetryTimer.consume();
-    applyLifecycle(m_lifecycle.onResumeRetryTimerFired());
-}
-
-void CECDaemon::onConnectionLost() {
-    LOG_WARNING("CEC connection lost, attempting to reconnect");
-    execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::ConnectionLost));
-}
-
-void CECDaemon::submitReconnectAttempt() {
-    if (!m_router) {
-        m_work.post([this]() { this->onReconnectResult(false); });
-        return;
-    }
-    m_router->reconnectAsync([this](bool ok) {
-        this->onReconnectResult(ok);
-    });
-}
-
-void CECDaemon::onReconnectResult(bool ok) {
-    // A result arriving after a SystemSuspend/Resume has already moved
-    // the FSM to Idle is absorbed as a no-op; no state check needed.
-    if (ok) LOG_INFO("Successfully reconnected to CEC adapter");
-    execute(m_adapterReconnect.onEvent(
-        ok ? AdapterReconnect::Event::AttemptSucceeded
-           : AdapterReconnect::Event::AttemptFailed));
-}
-
-void CECDaemon::onReconnectRetryTimer() {
-    m_reconnectRetryTimer.consume();
-    execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::RetryTimerFired));
-}
-
-void CECDaemon::execute(AdapterReconnect::Output out) {
-    using E = AdapterReconnect::Effect;
-    switch (out.effect) {
-    case E::None:
-        break;
-    case E::StartAttempt:
-        // StartAttempt supersedes any armed retry timer; disarm()
-        // unconditionally so the dispatcher stays free of state checks.
-        m_reconnectRetryTimer.disarm();
-        if (out.attemptNumber > 1) {
-            LOG_INFO("Performing retried CEC reconnection (attempt ",
-                     out.attemptNumber, "/", out.totalAttempts, ")");
-        }
-        submitReconnectAttempt();
-        break;
-    case E::ScheduleRetry:
-        LOG_WARNING("CEC reconnect attempt failed; next retry in ",
-                    out.delay.count(), "ms (attempt ",
-                    out.attemptNumber, "/", out.totalAttempts, ")");
-        if (!m_reconnectRetryTimer.armOnce(out.delay)) {
-            LOG_ERROR("Failed to arm reconnect-retry timer");
-            execute(m_adapterReconnect.onEvent(
-                AdapterReconnect::Event::TimerArmFailed));
-        }
-        break;
-    case E::CancelRetry:
-        m_reconnectRetryTimer.disarm();
-        break;
-    case E::AbandonCycle:
-        LOG_WARNING("CEC reconnect abandoned after ", out.totalAttempts,
-                    " attempts; waiting for next connection-lost event");
-        break;
-    }
-}
-
 bool CECDaemon::setupPowerMonitor() {
     LOG_INFO("Setting up D-Bus power monitoring");
     try {
@@ -498,15 +294,19 @@ bool CECDaemon::setupPowerMonitor() {
         }
         m_dbusMonitor->setCallback([this](DBusMonitor::PowerState state) {
             // Runs inline inside sd_bus_process; hop through m_work so
-            // the sequencer never executes nested in the bus dispatch
+            // the supervisor never executes nested in the bus dispatch
             // stack.
             m_work.post([this, state]() {
-                auto out = (state == DBusMonitor::PowerState::Suspending)
-                    ? m_lifecycle.onSuspendRequested(PowerLifecycle::Source::DBus)
-                    : m_lifecycle.onResumeRequested(PowerLifecycle::Source::DBus);
-                this->applyLifecycle(out);
+                if (state == DBusMonitor::PowerState::Suspending) {
+                    m_supervisor->onSuspendRequested(PowerLifecycle::Source::DBus);
+                } else {
+                    m_supervisor->onResumeRequested(PowerLifecycle::Source::DBus);
+                }
             });
         });
+        // Hand the live monitor to the supervisor so the lifecycle
+        // FSM's lock-take / lock-release effects can fire against it.
+        m_supervisor->setDBusMonitor(m_dbusMonitor.get());
         LOG_INFO("D-Bus power monitoring setup successfully");
         return true;
     } catch (const std::exception& e) {
@@ -522,17 +322,17 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
 
     // Suspend and resume mutate main-thread-only FSM state. We are
     // already on the main thread here (SocketServer dispatches
-    // synchronously from the event loop), so feed the lifecycle FSM
+    // synchronously from the event loop), so feed the supervisor
     // directly and acknowledge inline.
     switch (command.type) {
     case MessageType::CMD_SUSPEND:
         LOG_INFO("Processing suspend command");
-        applyLifecycle(m_lifecycle.onSuspendRequested(PowerLifecycle::Source::Wire));
+        m_supervisor->onSuspendRequested(PowerLifecycle::Source::Wire);
         reply(Message(MessageType::RESP_SUCCESS));
         return;
     case MessageType::CMD_RESUME:
         LOG_INFO("Processing resume command");
-        applyLifecycle(m_lifecycle.onResumeRequested(PowerLifecycle::Source::Wire));
+        m_supervisor->onResumeRequested(PowerLifecycle::Source::Wire);
         reply(Message(MessageType::RESP_SUCCESS));
         return;
     default:
@@ -564,9 +364,11 @@ void CECDaemon::onAdapterTvStandby() {
 }
 
 void CECDaemon::onAdapterConnectionLost() {
-    // Fires on libcec's alert thread. Hop to main so the reconnect
-    // FSM transition runs single-threaded.
-    m_work.post([this]() { this->onConnectionLost(); });
+    // Fires on libcec's alert thread. Hop to main so the supervisor's
+    // reconnect FSM transition runs single-threaded.
+    m_work.post([this]() {
+        if (m_supervisor) m_supervisor->onConnectionLost();
+    });
 }
 
 } // namespace cec_control
