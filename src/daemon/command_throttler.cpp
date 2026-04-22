@@ -6,6 +6,18 @@
 
 namespace cec_control {
 
+namespace {
+
+// Unit step for the failure-driven exponential schedules in both
+// executeWithThrottle's post-attempt retry delay and currentInterval's
+// extra term. Keeping them shared names the coupling: changing this
+// value bumps both schedules in lockstep. Operator-tunable knobs for
+// the adaptive interval live in ThrottlerConfig; this step is a
+// source-level tuning parameter, not a config field.
+constexpr uint32_t kFailureStepMs = 100;
+
+} // namespace
+
 CommandThrottler::CommandThrottler(ThrottlerConfig config)
     : m_config(config),
       m_nextAllowed(Clock::now()),
@@ -27,8 +39,9 @@ bool CommandThrottler::executeWithThrottle(std::function<bool()> command) {
 
         // Exponential retry back-off, outside every lock so unrelated
         // callers progress freely.
-        const uint32_t delayMs = (attempt == 0) ? 100u
-                                                : (100u * (1u << attempt));
+        const uint32_t delayMs = (attempt == 0)
+            ? kFailureStepMs
+            : (kFailureStepMs * (1u << attempt));
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     }
 
@@ -59,7 +72,7 @@ std::chrono::milliseconds CommandThrottler::currentInterval() const noexcept {
     const uint32_t span   = (m_config.maxIntervalMs > m_config.baseIntervalMs)
                             ? m_config.maxIntervalMs - m_config.baseIntervalMs
                             : 0u;
-    const uint32_t extra  = std::min(100u * (1u << capped), span);
+    const uint32_t extra  = std::min(kFailureStepMs * (1u << capped), span);
     return std::chrono::milliseconds(m_config.baseIntervalMs + extra);
 }
 
