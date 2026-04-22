@@ -1,99 +1,89 @@
 cmake_minimum_required(VERSION 3.10)
 project(cec-control VERSION 1.0.0 LANGUAGES CXX)
 
-# Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Set build type if not specified
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
+# Default to Release for single-config generators. Multi-config generators
+# (Ninja Multi-Config, Visual Studio) pick the type at build time and must
+# not have the cache variable forced here.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    message(STATUS "Build type defaulted to Release")
 endif()
 
-# Compiler flags
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 
-# Find libcec package
+# External dependencies via pkg-config. IMPORTED_TARGET produces
+# PkgConfig::LIBCEC / PkgConfig::LIBSYSTEMD, which carry include paths and
+# link flags transitively — no explicit ${..._INCLUDE_DIRS} /
+# ${..._LIBRARIES} plumbing required.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBCEC REQUIRED libcec>=5.0.0)
+pkg_check_modules(LIBCEC     REQUIRED IMPORTED_TARGET libcec>=5.0.0)
+pkg_check_modules(LIBSYSTEMD REQUIRED IMPORTED_TARGET libsystemd>=239)
 
-# Find libsystemd for sd-bus
-pkg_check_modules(LIBSYSTEMD REQUIRED libsystemd>=239)
-
-# Define installation paths
 include(GNUInstallDirs)
 
-# Define application paths
-set(CONFIG_DIR "/etc/cec-control")
-set(LOG_DIR "/var/log/cec-control")
+# Application paths
+set(CONFIG_DIR  "/etc/cec-control")
+set(LOG_DIR     "/var/log/cec-control")
 set(RUNTIME_DIR "/run/cec-control")
 
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-include_directories(${LIBCEC_INCLUDE_DIR})
-include_directories(${LIBSYSTEMD_INCLUDE_DIRS})
+add_executable(cec-control)
 
-# Define source files
-set(COMMON_SOURCES
-    src/common/messages.cpp
-    src/common/logger.cpp
-    src/common/unix_socket.cpp
-    src/common/config_manager.cpp
-    src/common/system_paths.cpp
-    src/common/systemd_env.cpp
-    src/common/event_poller.cpp
-    src/common/event_loop.cpp
-    src/common/main_thread_work.cpp
-    src/common/signal_source.cpp
-    src/common/timer_source.cpp
-    src/common/command_registry.cpp
-    src/common/argument_parser.cpp
-    src/common/help_printer.cpp
+target_include_directories(cec-control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(cec-control PRIVATE -Wall -Wextra)
+
+target_sources(cec-control PRIVATE
+    src/main.cpp
 )
 
-set(DAEMON_SOURCES
+target_sources(cec-control PRIVATE
+    src/common/argument_parser.cpp
+    src/common/command_registry.cpp
+    src/common/config_manager.cpp
+    src/common/event_loop.cpp
+    src/common/event_poller.cpp
+    src/common/help_printer.cpp
+    src/common/logger.cpp
+    src/common/main_thread_work.cpp
+    src/common/messages.cpp
+    src/common/signal_source.cpp
+    src/common/system_paths.cpp
+    src/common/systemd_env.cpp
+    src/common/timer_source.cpp
+    src/common/unix_socket.cpp
+)
+
+target_sources(cec-control PRIVATE
     src/daemon/app_config.cpp
-    src/daemon/cec_daemon.cpp
-    src/daemon/command_router.cpp
     src/daemon/cec/adapter_worker.cpp
     src/daemon/cec/libcec_adapter.cpp
     src/daemon/cec/operations.cpp
+    src/daemon/cec_daemon.cpp
+    src/daemon/command_router.cpp
     src/daemon/command_throttler.cpp
-    src/daemon/socket_server.cpp
-    src/daemon/dbus_monitor.cpp
     src/daemon/daemon_bootstrap.cpp
+    src/daemon/dbus_monitor.cpp
     src/daemon/power/adapter_reconnect.cpp
     src/daemon/power/power_lifecycle.cpp
     src/daemon/power/suspend_queue.cpp
+    src/daemon/socket_server.cpp
 )
 
-set(CLIENT_SOURCES
+target_sources(cec-control PRIVATE
     src/client/cec_client.cpp
     src/client/client_runner.cpp
     src/client/socket_client.cpp
 )
 
-set(BINARY_SOURCES
-    src/main.cpp
-    ${COMMON_SOURCES}
-    ${DAEMON_SOURCES}
-    ${CLIENT_SOURCES}
-)
-
-# Create unified executable
-add_executable(cec-control ${BINARY_SOURCES})
-
-# Link all necessary libraries for the unified binary
-target_link_libraries(cec-control
-    PRIVATE
-        pthread
-        stdc++fs
-    PUBLIC
-        ${LIBCEC_LIBRARIES}
-        ${LIBSYSTEMD_LIBRARIES}
+target_link_libraries(cec-control PRIVATE
+    pthread
+    stdc++fs
+    PkgConfig::LIBCEC
+    PkgConfig::LIBSYSTEMD
 )
 
 # Install unified binary
@@ -122,14 +112,14 @@ install(CODE "
     execute_process(COMMAND chmod 755 \"${CONFIG_DIR}\")
     execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}\")
   endif()
-  
+
   # Create log directory
   if(NOT EXISTS \"${LOG_DIR}\")
     file(MAKE_DIRECTORY \"${LOG_DIR}\")
     execute_process(COMMAND chmod 755 \"${LOG_DIR}\")
     execute_process(COMMAND chown root:wheel \"${LOG_DIR}\")
   endif()
-  
+
   # Copy sample config to real config only if it doesn't exist
   if(NOT EXISTS \"${CONFIG_DIR}/config.conf\")
     file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/etc/cec-control.conf\"
@@ -141,7 +131,7 @@ install(CODE "
   else()
     message(STATUS \"Existing configuration found at ${CONFIG_DIR}/config.conf - not overwriting\")
   endif()
-  
+
   # Make sure the sample config is owned by root too
   execute_process(COMMAND chown root:wheel \"${CONFIG_DIR}/config.conf.sample\")
 ")
