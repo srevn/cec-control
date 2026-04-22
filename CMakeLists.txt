@@ -58,11 +58,13 @@ target_sources(cec-control PRIVATE
 )
 
 target_sources(cec-control PRIVATE
+    src/daemon/adapter_lifecycle.cpp
     src/daemon/app_config.cpp
     src/daemon/cec/adapter_worker.cpp
     src/daemon/cec/libcec_adapter.cpp
     src/daemon/cec/operations.cpp
     src/daemon/cec_daemon.cpp
+    src/daemon/command_dispatcher.cpp
     src/daemon/command_router.cpp
     src/daemon/command_throttler.cpp
     src/daemon/daemon_bootstrap.cpp
