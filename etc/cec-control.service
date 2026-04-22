@@ -1,17 +1,39 @@
 [Unit]
 Description=CEC Control Daemon
-After=network.target
+After=network.target dbus.service
+Wants=dbus.service
 
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=@INSTALL_USER@
 Group=@INSTALL_GROUP@
 ExecStart=@CMAKE_INSTALL_PREFIX@/bin/cec-control daemon
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=15
+WatchdogSec=60s
+
+RuntimeDirectory=cec-control
+RuntimeDirectoryMode=0755
+LogsDirectory=cec-control
+LogsDirectoryMode=0755
+ConfigurationDirectory=cec-control
+ConfigurationDirectoryMode=0755
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

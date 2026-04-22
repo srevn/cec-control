@@ -6,7 +6,7 @@
 
 #include "../common/logger.h"
 #include "../common/system_paths.h"
-#include "../common/systemd_env.h"
+#include "../common/systemd_notify.h"
 // Full definitions of the subsystems cec_daemon.h forward-declares.
 // Placed here so this TU can construct, call into, and destroy each
 // one; cec_daemon.h stays thin and does not transitively pull libcec
@@ -51,7 +51,9 @@ bool CECDaemon::start() {
         LOG_ERROR("Main-thread work queue not initialised; aborting start");
         return false;
     }
-    if (!m_suspendSafetyTimer.valid() || !m_reconnectRetryTimer.valid()) {
+    if (!m_suspendSafetyTimer.valid() ||
+        !m_reconnectRetryTimer.valid() ||
+        !m_watchdogTimer.valid()) {
         LOG_ERROR("Timer source(s) not initialised; aborting start");
         return false;
     }
@@ -205,6 +207,31 @@ bool CECDaemon::start() {
             }
         }
 
+        // Register the watchdog only when the unit configured one —
+        // otherwise the timer stays disarmed, its fd never fires, and
+        // we avoid registering a handler that would only ever no-op.
+        // The service manager grants us WatchdogSec; ping at half that
+        // interval so a single missed tick is not fatal.
+        std::chrono::microseconds watchdogPeriod{};
+        if (SystemdNotify::watchdogEnabled(watchdogPeriod)) {
+            const auto pingInterval =
+                std::chrono::duration_cast<std::chrono::milliseconds>(watchdogPeriod / 2);
+            if (!m_loop.add(m_watchdogTimer.fd(), READ,
+                            [this](uint32_t) { this->onWatchdogTimerFired(); })) {
+                LOG_ERROR("Failed to register watchdog timer with event loop");
+                return false;
+            }
+            if (!m_watchdogTimer.armPeriodic(pingInterval)) {
+                LOG_ERROR("Failed to arm watchdog timer (period=",
+                          pingInterval.count(), "ms); aborting start");
+                return false;
+            }
+            LOG_INFO("Systemd watchdog active; pinging every ",
+                     pingInterval.count(), "ms");
+        } else {
+            LOG_INFO("Systemd watchdog not configured for this unit");
+        }
+
         m_started = true;
         LOG_INFO("CEC daemon started successfully");
         return true;
@@ -226,12 +253,14 @@ void CECDaemon::stop() {
 
     LOG_INFO("Stopping CEC daemon");
 
+    // Announce a clean shutdown to the service manager before any
+    // subsystem teardown can begin. A no-op outside a notify-capable
+    // supervisor; under systemd it distinguishes graceful stops from
+    // unexpected exits for Restart= policy.
+    SystemdNotify::stopping();
+
     // Idempotent even if run() already returned on its own.
     m_loop.stop();
-
-    if (SystemdEnv::isUnderSystemd()) {
-        LOG_INFO("Stopping daemon under systemd control");
-    }
 
     // Ordered teardown. The invariant is that no thread ever observes
     // a destroyed subsystem:
@@ -326,6 +355,15 @@ void CECDaemon::onSignalReadable() {
         // (which ultimately delivers SIGKILL).
         m_loop.stop();
     }
+}
+
+void CECDaemon::onWatchdogTimerFired() {
+    // Drain the expiration counter so the level-triggered fd quiets
+    // until the next period. We ping once per handler invocation
+    // regardless of how many expirations accumulated — the service
+    // manager cares about recency, not count.
+    m_watchdogTimer.consume();
+    SystemdNotify::watchdog();
 }
 
 bool CECDaemon::setupPowerMonitor() {

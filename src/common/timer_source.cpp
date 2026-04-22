@@ -47,6 +47,25 @@ bool TimerSource::armOnce(std::chrono::milliseconds d) {
     return true;
 }
 
+bool TimerSource::armPeriodic(std::chrono::milliseconds period) {
+    if (m_fd < 0 || period.count() <= 0) {
+        return false;
+    }
+
+    struct itimerspec spec{};
+    const auto ms = period.count();
+    spec.it_value.tv_sec  = static_cast<time_t>(ms / 1000);
+    spec.it_value.tv_nsec = static_cast<long>((ms % 1000) * 1'000'000);
+    // Repeating semantics: kernel re-arms it_interval after each fire.
+    spec.it_interval = spec.it_value;
+
+    if (::timerfd_settime(m_fd, 0, &spec, nullptr) < 0) {
+        LOG_ERROR("timerfd_settime(periodic) failed: ", std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 void TimerSource::disarm() {
     if (m_fd < 0) return;
     struct itimerspec spec{};  // all-zero disarms

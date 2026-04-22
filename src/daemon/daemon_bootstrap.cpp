@@ -4,6 +4,7 @@
 #include "../common/logger.h"
 #include "../common/system_paths.h"
 #include "../common/systemd_env.h"
+#include "../common/systemd_notify.h"
 #include "app_config.h"
 #include "cec_daemon.h"
 
@@ -71,6 +72,12 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
             LOG_FATAL("Failed to start CEC daemon");
             return EXIT_FAILURE;
         }
+
+        // Announce readiness to the service manager only after every
+        // subsystem is wired and its fds are registered. For Type=notify
+        // units this is what transitions the unit from activating to
+        // active and releases After= dependents; a no-op otherwise.
+        SystemdNotify::ready();
 
         LOG_INFO("CEC daemon initialized successfully, starting main loop");
         daemon.run();

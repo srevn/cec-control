@@ -36,6 +36,14 @@ public:
      */
     [[nodiscard]] bool armOnce(std::chrono::milliseconds d);
 
+    /**
+     * Arm the timer to fire repeatedly every @p period. A prior arming
+     * is replaced. A zero or negative period is a programming error
+     * (would busy-spin or disarm ambiguously) and returns @c false
+     * without touching the timer. Returns @c false on syscall failure.
+     */
+    [[nodiscard]] bool armPeriodic(std::chrono::milliseconds period);
+
     /** Cancel the current arming. Idempotent. */
     void disarm();
 

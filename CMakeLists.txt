@@ -53,6 +53,7 @@ target_sources(cec-control PRIVATE
     src/common/signal_source.cpp
     src/common/system_paths.cpp
     src/common/systemd_env.cpp
+    src/common/systemd_notify.cpp
     src/common/timer_source.cpp
     src/common/unix_socket.cpp
 )

@@ -115,6 +115,14 @@ private:
     void onSignalReadable();
 
     /**
+     * Handler for the systemd watchdog timer. Drains the timerfd and
+     * sends @c WATCHDOG=1 to the service manager. Only registered with
+     * the event loop when the unit actually configured @c WatchdogSec;
+     * otherwise the timer stays disarmed and this method is never called.
+     */
+    void onWatchdogTimerFired();
+
+    /**
      * Route an incoming wire command. Runs on the main thread.
      * Suspend and resume delegate directly to @c PowerSupervisor and
      * reply inline; everything else is forwarded to the dispatcher
@@ -166,6 +174,10 @@ private:
     EventLoop      m_loop;
     TimerSource    m_suspendSafetyTimer;
     TimerSource    m_reconnectRetryTimer;
+    // Fires the systemd watchdog ping at half the configured WatchdogSec.
+    // Registered with the loop only when a watchdog is actually configured
+    // (see CECDaemon::start); otherwise the timerfd stays inert.
+    TimerSource    m_watchdogTimer;
 
     // Auto-suspend-on-TV-standby policy. Declared before m_worker so
     // reverse-of-declaration destruction tears down the worker (and
