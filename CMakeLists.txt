@@ -64,6 +64,7 @@ target_sources(cec-control PRIVATE
     src/daemon/cec/libcec_adapter.cpp
     src/daemon/cec/operations.cpp
     src/daemon/cec_daemon.cpp
+    src/daemon/command_dispatch.cpp
     src/daemon/command_dispatcher.cpp
     src/daemon/command_throttler.cpp
     src/daemon/daemon_bootstrap.cpp

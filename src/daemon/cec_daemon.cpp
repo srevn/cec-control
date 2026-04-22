@@ -15,6 +15,7 @@
 #include "cec/adapter_worker.h"
 #include "cec/libcec_adapter.h"
 #include "cec/operations.h"
+#include "command_dispatch.h"
 #include "command_dispatcher.h"
 #include "dbus_monitor.h"
 #include "power/power_supervisor.h"
@@ -32,6 +33,14 @@ CECDaemon::~CECDaemon() {
 
 bool CECDaemon::start() {
     LOG_INFO("Starting CEC daemon");
+
+    // Fail fast on a structurally broken dispatch table before any
+    // subsystem that would consume it is constructed. The validator
+    // logs one error per violation.
+    if (!validateDispatchTable()) {
+        LOG_ERROR("Dispatch table validation failed; aborting start");
+        return false;
+    }
 
     if (!m_signals.valid()) {
         LOG_ERROR("Signal source not initialised; aborting start");
@@ -334,23 +343,36 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
     LOG_DEBUG("Received command: type=", static_cast<int>(command.type),
               ", deviceId=", static_cast<int>(command.deviceId));
 
-    // Suspend and resume mutate main-thread-only FSM state. We are
-    // already on the main thread here (SocketServer dispatches
-    // synchronously from the event loop), so feed the supervisor
-    // directly and acknowledge inline.
-    switch (command.type) {
-    case MessageType::CMD_SUSPEND:
-        LOG_INFO("Processing suspend command");
-        m_supervisor->onSuspendRequested(PowerLifecycle::Source::Wire);
+    // Consult the dispatch table to decide whether this command is a
+    // supervisor-intercepted lifecycle message (short-circuited here
+    // into PowerSupervisor) or an ordinary wire command (forwarded to
+    // CommandDispatcher). Unknown / response types fall through to the
+    // dispatcher's own gate, which replies RESP_ERROR.
+    const DispatchSpec* spec = findDispatchByType(command.type);
+    if (spec != nullptr &&
+        spec->dispatch == DispatchClass::SupervisorIntercepted) {
+        // Main-thread only: SocketServer dispatches synchronously from
+        // the event loop, so the supervisor mutations run inline on
+        // the right thread and we can ack immediately.
+        switch (command.type) {
+        case MessageType::CMD_SUSPEND:
+            LOG_INFO("Processing suspend command");
+            m_supervisor->onSuspendRequested(PowerLifecycle::Source::Wire);
+            break;
+        case MessageType::CMD_RESUME:
+            LOG_INFO("Processing resume command");
+            m_supervisor->onResumeRequested(PowerLifecycle::Source::Wire);
+            break;
+        default:
+            // validateDispatchTable at startup forbids a table row
+            // classified SupervisorIntercepted without a case here.
+            LOG_ERROR("SupervisorIntercepted command without mapping: type=",
+                      static_cast<int>(command.type));
+            reply(Message(MessageType::RESP_ERROR));
+            return;
+        }
         reply(Message(MessageType::RESP_SUCCESS));
         return;
-    case MessageType::CMD_RESUME:
-        LOG_INFO("Processing resume command");
-        m_supervisor->onResumeRequested(PowerLifecycle::Source::Wire);
-        reply(Message(MessageType::RESP_SUCCESS));
-        return;
-    default:
-        break;
     }
 
     if (!m_dispatcher) {
@@ -360,8 +382,8 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
     }
 
     // The dispatcher internally chooses between an inline main-thread
-    // reply (gate-only, state-only paths) and a worker hop with the
-    // reply posted back via m_work.
+    // reply (gate / state-only paths) and a worker hop with the reply
+    // posted back via m_work (AdapterCall path).
     m_dispatcher->dispatch(std::move(command), std::move(reply));
 }
 

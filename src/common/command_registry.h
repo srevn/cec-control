@@ -57,19 +57,6 @@ struct CommandSpec {
     std::string_view argSyntax;   // help-text syntax (e.g. "(on|off) DEVICE_ID")
     std::string_view help;        // one-line description
     ParseFn          parse;       // nonnull
-
-    /**
-     * True if this command is safe to park in the router's suspend queue for
-     * execution after resume. Commands that mutate router policy (e.g.
-     * auto-standby) or that have no meaningful post-resume effect (e.g.
-     * source change while the TV is off) are marked false.
-     *
-     * Moot for the two daemon-intercepted lifecycle messages (CMD_SUSPEND,
-     * CMD_RESUME) — they never reach the router's queueable check — and for
-     * CMD_RESTART_ADAPTER, which is dispatched asynchronously before the
-     * suspend branch runs. All three keep the field at false for clarity.
-     */
-    bool             queueableWhileSuspended;
 };
 
 /**

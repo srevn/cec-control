@@ -14,6 +14,7 @@ class AdapterLifecycle;
 class AdapterWorker;
 class ICecAdapter;
 class MainThreadWork;
+struct DispatchSpec;
 
 /**
  * @class CommandDispatcher
@@ -22,25 +23,34 @@ class MainThreadWork;
  *        standby observation).
  *
  * Single-threaded for wire dispatch: every call to @c dispatch happens
- * on the main event loop. Adapter-driven commands hand the response
- * sink to a worker job that posts the invocation back through
- * @c MainThreadWork. The class also exposes a public @c replay path
- * used by @c PowerSupervisor after a successful resume — see
- * @c AdapterLifecycle's class doc for the data flow.
+ * on the main event loop. @c DispatchClass::AdapterCall commands hand
+ * the response sink to a worker job that posts the invocation back
+ * through @c MainThreadWork. The class also exposes a public
+ * @c replay path used by @c PowerSupervisor after a successful resume
+ * — see @c AdapterLifecycle's class doc for the data flow.
  *
  * ## Dispatch paths
  *
- * @c dispatch distinguishes three classes of command, each replying to
- * its @c ResponseSink from a different point:
+ * Every incoming command is classified via @c findDispatchByType in
+ * @c command_dispatch.h. The dispatcher observes three outcomes:
  *
- *  - @b Gate-only (shutdown rejection, suspended non-queueable) —
- *    replies synchronously on the main thread.
- *  - @b State-only (suspend queue push, @c CMD_AUTO_STANDBY flag flip)
- *    — replies synchronously after a minimal state mutation.
- *  - @b Adapter-driven (volume, power, source, mute,
- *    @c CMD_RESTART_ADAPTER) — submits a worker job; the job invokes
- *    the sink via @c MainThreadWork::post on completion, so the client
- *    sees the genuine outcome rather than a fire-and-forget ack.
+ *  - @b Gated reject (shutdown gate tripped, unknown type, suspended
+ *    + non-queueable) — replies @c RESP_ERROR synchronously on the
+ *    main thread.
+ *  - @b DispatchClass::StateOnly (@c CMD_AUTO_STANDBY) — mutates
+ *    dispatcher-local state and replies synchronously.
+ *  - @b DispatchClass::AdapterCall (volume, power, source, mute,
+ *    @c CMD_RESTART_ADAPTER) — @c submitAdapterWork submits a worker
+ *    job; the job invokes the sink via @c MainThreadWork::post on
+ *    completion, so the client sees the genuine outcome rather than a
+ *    fire-and-forget ack.
+ *
+ * @c DispatchClass::SupervisorIntercepted rows never reach this class:
+ * @c CECDaemon::handleCommand short-circuits @c CMD_SUSPEND and
+ * @c CMD_RESUME straight into @c PowerSupervisor. The dispatcher's
+ * own switch rejects any stray one defensively; the startup-time
+ * @c validateDispatchTable invariant makes the stray case unreachable
+ * in practice.
  *
  * ## Auto-standby
  *
@@ -140,15 +150,32 @@ private:
 
     /**
      * Policy for a command arriving while suspended: queue it for
-     * post-resume replay or reject. Main thread only.
+     * post-resume replay or reject. Main thread only. The caller has
+     * already located the dispatch spec; pass it by reference to save
+     * a second linear lookup.
      */
-    Message handleSuspendedInline(const Message& command);
+    Message handleSuspendedInline(const Message& command,
+                                   const DispatchSpec& spec);
 
     /**
-     * Phase-2 body: runs on the worker thread against the supplied
-     * adapter reference. Shared between live dispatch and @c replay.
+     * Submit @p command to the worker for @c DispatchClass::AdapterCall
+     * dispatch; post the resulting @c Message back to the main thread
+     * via @c MainThreadWork. Main thread only.
      */
-    Message executeOnAdapter(ICecAdapter& adapter, const Message& command);
+    void submitAdapterWork(const DispatchSpec& spec,
+                           Message command,
+                           ResponseSink reply);
+
+    /**
+     * Worker-thread body: invokes @c spec.adapterHandler under the
+     * @c isConnected gate dictated by @c spec.requiresAdapterConnection,
+     * catches exceptions, and returns @c RESP_SUCCESS / @c RESP_ERROR.
+     * Shared between live dispatch (@c submitAdapterWork) and
+     * @c replay.
+     */
+    Message executeOnAdapter(ICecAdapter& adapter,
+                             const Message& command,
+                             const DispatchSpec& spec);
 
     AdapterWorker&    m_worker;
     MainThreadWork&   m_work;

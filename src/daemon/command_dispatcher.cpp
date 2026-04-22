@@ -1,5 +1,6 @@
 #include "command_dispatcher.h"
 
+#include <string_view>
 #include <utility>
 
 #include "../common/command_registry.h"
@@ -9,7 +10,7 @@
 #include "app_config.h"
 #include "cec/adapter_interface.h"
 #include "cec/adapter_worker.h"
-#include "cec/operations.h"
+#include "command_dispatch.h"
 
 namespace cec_control {
 
@@ -38,9 +39,9 @@ bool CommandDispatcher::isShutdown() const noexcept {
 
 void CommandDispatcher::dispatch(Message command, ResponseSink reply) {
     // Every branch below is responsible for invoking @p reply exactly
-    // once. Adapter-driven commands hand the sink to a worker job that
-    // posts the invocation back through MainThreadWork; every other
-    // branch replies synchronously on the main thread.
+    // once. DispatchClass::AdapterCall commands hand the sink to a
+    // worker job that posts the invocation back through MainThreadWork;
+    // every other branch replies synchronously on the main thread.
     if (!reply) return;  // defensive: a caller without a sink is malformed
 
     if (m_shutdownComplete) {
@@ -48,81 +49,70 @@ void CommandDispatcher::dispatch(Message command, ResponseSink reply) {
         return;
     }
 
-    if (command.type == MessageType::CMD_RESTART_ADAPTER) {
-        if (m_lifecycle.isSuspended()) {
-            LOG_WARNING("CMD_RESTART_ADAPTER rejected: lifecycle is suspended");
-            reply(Message(MessageType::RESP_ERROR));
-            return;
-        }
-        LOG_INFO("Scheduling adapter restart");
-        // Mirror the adapter-driven pattern below: submit a worker job
-        // that posts the real RESP_SUCCESS / RESP_ERROR back through
-        // m_work once reopenConnection() has actually completed. The
-        // previous fire-and-forget shape replied RESP_SUCCESS before
-        // the worker ran, masking genuine reopen failures.
-        m_worker.submit([this, reply = std::move(reply)]
-                        (ICecAdapter& adapter) mutable {
-            Message response(MessageType::RESP_ERROR);
-            try {
-                if (adapter.reopenConnection()) {
-                    LOG_INFO("Adapter restart completed successfully");
-                    response = Message(MessageType::RESP_SUCCESS);
-                } else {
-                    LOG_ERROR("Failed to restart adapter");
-                }
-            } catch (const std::exception& e) {
-                LOG_ERROR("Exception during adapter restart: ", e.what());
-            }
-            m_work.post([reply = std::move(reply),
-                         response = std::move(response)]() mutable {
-                reply(std::move(response));
-            });
-        });
+    const DispatchSpec* spec = findDispatchByType(command.type);
+    if (spec == nullptr) {
+        // validateDispatchTable at startup ensures every kCommands
+        // type has a row here, so the only way in is a response code
+        // on the wire (client protocol violation) or an unregistered
+        // new CMD_*. Either way, reject.
+        LOG_ERROR("Unknown command type at dispatcher: ",
+                  static_cast<int>(command.type));
+        reply(Message(MessageType::RESP_ERROR));
+        return;
+    }
+
+    if (spec->dispatch == DispatchClass::SupervisorIntercepted) {
+        // CECDaemon::handleCommand short-circuits these before the
+        // dispatcher sees them; reaching this branch means that
+        // intercept is broken. Fail loudly rather than silently
+        // routing to the adapter path.
+        LOG_ERROR("SupervisorIntercepted command reached dispatcher: type=",
+                  static_cast<int>(command.type));
+        reply(Message(MessageType::RESP_ERROR));
         return;
     }
 
     if (m_lifecycle.isSuspended()) {
-        reply(handleSuspendedInline(command));
+        reply(handleSuspendedInline(command, *spec));
         return;
     }
 
-    if (command.type == MessageType::CMD_AUTO_STANDBY) {
+    switch (spec->dispatch) {
+    case DispatchClass::StateOnly:
+        // Only CMD_AUTO_STANDBY today.
         reply(applyAutoStandbyInline(command));
         return;
+    case DispatchClass::AdapterCall:
+        submitAdapterWork(*spec, std::move(command), std::move(reply));
+        return;
+    case DispatchClass::SupervisorIntercepted:
+        // Handled above; listed here so -Wswitch stays honest over
+        // the enumerator.
+        break;
     }
 
-    // Adapter-driven. Submit and hop back through m_work so the sink
-    // is always invoked on the main thread.
-    m_worker.submit([this, command = std::move(command),
-                     reply = std::move(reply)](ICecAdapter& adapter) mutable {
-        Message response(MessageType::RESP_ERROR);
-        try {
-            if (adapter.isConnected()) {
-                response = executeOnAdapter(adapter, command);
-            } else {
-                LOG_ERROR("Cannot process command: CEC adapter not connected");
-            }
-        } catch (const std::exception& e) {
-            LOG_ERROR("Exception during dispatch: ", e.what());
-        }
-        m_work.post([reply = std::move(reply),
-                     response = std::move(response)]() mutable {
-            reply(std::move(response));
-        });
-    });
+    // Unreachable if validateDispatchTable passed at startup.
+    LOG_ERROR("Unhandled DispatchClass for type=",
+              static_cast<int>(command.type));
+    reply(Message(MessageType::RESP_ERROR));
 }
 
 void CommandDispatcher::replay(std::vector<Message> commands) {
     if (commands.empty()) return;
     LOG_INFO("Processing ", commands.size(), " queued commands");
     for (auto& command : commands) {
-        m_worker.submit([this, command = std::move(command)]
+        const DispatchSpec* spec = findDispatchByType(command.type);
+        if (spec == nullptr || spec->dispatch != DispatchClass::AdapterCall) {
+            // Only AdapterCall rows carry queueableWhileSuspended=true
+            // in today's table, so non-AdapterCall should never have
+            // been queued. Defensive log; skip without submitting.
+            LOG_ERROR("Replay: unexpected non-AdapterCall type=",
+                      static_cast<int>(command.type));
+            continue;
+        }
+        m_worker.submit([this, command = std::move(command), spec]
                         (ICecAdapter& adapter) mutable {
-            try {
-                (void)executeOnAdapter(adapter, command);
-            } catch (const std::exception& e) {
-                LOG_ERROR("Exception processing queued command: ", e.what());
-            }
+            (void)executeOnAdapter(adapter, command, *spec);
         });
     }
 }
@@ -154,62 +144,69 @@ Message CommandDispatcher::applyAutoStandbyInline(const Message& command) {
     return Message(MessageType::RESP_SUCCESS);
 }
 
-Message CommandDispatcher::handleSuspendedInline(const Message& command) {
-    const auto* spec = findByType(command.type);
-    if (m_queueCommandsDuringSuspend &&
-        spec && spec->queueableWhileSuspended) {
+Message CommandDispatcher::handleSuspendedInline(const Message& command,
+                                                  const DispatchSpec& spec) {
+    // Resolve the command's human-readable name from the client-side
+    // registry for the log lines below. Two linear scans (one here
+    // via findByType, one earlier via findDispatchByType) cost ~20 ns
+    // over the registry's dozen entries — worth paying for operator-
+    // legible diagnostics over a bare type integer.
+    const CommandSpec* nameSpec = findByType(command.type);
+    const std::string_view name =
+        nameSpec != nullptr ? nameSpec->name
+                            : std::string_view("unknown");
+
+    if (m_queueCommandsDuringSuspend && spec.queueableWhileSuspended) {
         // We observed isSuspended() true a moment ago on the same
         // (main) thread, so the append is guaranteed; enqueue repeats
         // the check internally as a belt-and-braces safety net for
         // future callers.
         m_lifecycle.enqueue(command);
-        LOG_INFO("Queued command type=", static_cast<int>(command.type),
-                 " for execution after resume");
+        LOG_INFO("Queued command '", name,
+                 "' for execution after resume");
         return Message(MessageType::RESP_SUCCESS);
     }
-    LOG_WARNING("Command type=", static_cast<int>(command.type),
-                " received while suspended and cannot be queued");
+    LOG_WARNING("Command '", name,
+                "' received while suspended and cannot be queued");
     return Message(MessageType::RESP_ERROR);
 }
 
-Message CommandDispatcher::executeOnAdapter(ICecAdapter& adapter,
-                                             const Message& command) {
-    bool success = false;
-    switch (command.type) {
-    case MessageType::CMD_VOLUME_UP:
-        success = ops::setVolume(adapter, m_throttler, command.deviceId, true);
-        break;
-    case MessageType::CMD_VOLUME_DOWN:
-        success = ops::setVolume(adapter, m_throttler, command.deviceId, false);
-        break;
-    case MessageType::CMD_VOLUME_MUTE:
-        success = ops::setMute(adapter, m_throttler, command.deviceId, true);
-        break;
-    case MessageType::CMD_POWER_ON:
-        success = ops::powerOnDevice(adapter, m_throttler, command.deviceId);
-        break;
-    case MessageType::CMD_POWER_OFF:
-        success = ops::powerOffDevice(adapter, m_throttler, command.deviceId);
-        break;
-    case MessageType::CMD_CHANGE_SOURCE:
-        if (command.data.empty()) {
-            // The registry's parser guarantees a single-byte payload; an
-            // empty data vector here means a hand-rolled wire message
-            // bypassed the parser. Log so it is distinguishable from a
-            // CEC-layer failure, then surface RESP_ERROR below.
-            LOG_WARNING("CMD_CHANGE_SOURCE received with empty payload; "
-                        "expected source byte in data[0] (malformed client)");
-            break;
-        }
-        success = ops::setSource(adapter, m_throttler, command.data[0]);
-        break;
-    default:
-        LOG_ERROR("Unknown command type: ", static_cast<int>(command.type));
-        return Message(MessageType::RESP_ERROR);
-    }
+void CommandDispatcher::submitAdapterWork(const DispatchSpec& spec,
+                                           Message command,
+                                           ResponseSink reply) {
+    // DispatchSpec rows live in kDispatchTable's static storage, so
+    // capturing a raw pointer to @p spec is safe across the worker-
+    // then-main hop below.
+    m_worker.submit([this, command = std::move(command),
+                     reply = std::move(reply),
+                     specPtr = &spec](ICecAdapter& adapter) mutable {
+        Message response = executeOnAdapter(adapter, command, *specPtr);
+        m_work.post([reply = std::move(reply),
+                     response = std::move(response)]() mutable {
+            reply(std::move(response));
+        });
+    });
+}
 
-    return success ? Message(MessageType::RESP_SUCCESS)
-                   : Message(MessageType::RESP_ERROR);
+Message CommandDispatcher::executeOnAdapter(ICecAdapter& adapter,
+                                             const Message& command,
+                                             const DispatchSpec& spec) {
+    // Runs on the worker thread. The outer try/catch owns the
+    // RESP_ERROR fallback; handlers are free to propagate exceptions
+    // from ops::* or libcec.
+    try {
+        if (spec.requiresAdapterConnection && !adapter.isConnected()) {
+            LOG_ERROR("Cannot process command: CEC adapter not connected");
+            return Message(MessageType::RESP_ERROR);
+        }
+        if (spec.adapterHandler != nullptr &&
+            spec.adapterHandler(adapter, m_throttler, command)) {
+            return Message(MessageType::RESP_SUCCESS);
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception during dispatch: ", e.what());
+    }
+    return Message(MessageType::RESP_ERROR);
 }
 
 } // namespace cec_control
