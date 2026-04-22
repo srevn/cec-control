@@ -81,9 +81,8 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
 }
 
 bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
-    // Check if running under systemd
-    bool runningUnderSystemd = isRunningUnderSystemd();
-    
+    const bool runningUnderSystemd = SystemdEnv::isUnderSystemd();
+
     // Determine if we should daemonize
     if (runAsDaemon && !runningUnderSystemd) {
         LOG_INFO("Running as normal executable, will daemonize");
@@ -116,10 +115,6 @@ bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
     }
     
     return true;
-}
-
-bool DaemonBootstrap::isRunningUnderSystemd() {
-    return SystemdEnv::isUnderSystemd();
 }
 
 bool DaemonBootstrap::daemonize() {

@@ -21,9 +21,6 @@ private:
     /** Setup the process (daemonization, service mode, etc.). */
     [[nodiscard]] static bool setupProcess(bool runAsDaemon);
 
-    /** Check if running under systemd. */
-    [[nodiscard]] static bool isRunningUnderSystemd();
-
     /** Daemonize the process by forking into background. */
     [[nodiscard]] static bool daemonize();
 

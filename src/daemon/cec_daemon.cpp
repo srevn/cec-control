@@ -260,9 +260,7 @@ void CECDaemon::stop() {
 void CECDaemon::onSignalReadable() {
     while (auto info = m_signals.readOne()) {
         const int signum = static_cast<int>(info->ssi_signo);
-        ++m_terminationSignalCount;
-        LOG_INFO("Received signal ", signum,
-                 " (count=", m_terminationSignalCount, ")");
+        LOG_INFO("Received signal ", signum);
 
         // First signal requests a clean shutdown. Further signals are
         // logged but the loop has already been asked to exit; a truly

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <vector>
 
 #include "../../common/messages.h"
@@ -14,9 +13,9 @@ namespace cec_control {
  *
  * This is the small amount of state that pivots on the router's
  * suspend / resume cycle. Ownership lives here so the router does
- * not carry a loose (atomic, vector) pair and coordinate their
+ * not carry a loose flag/vector pair and coordinate their
  * transitions by hand; the transitions are named (@c enterSuspended,
- * @c exitSuspended, @c tryPush, @c drain) and the atomic flag is
+ * @c exitSuspended, @c tryPush, @c drain) and the flag is
  * inaccessible except through @c isSuspended.
  *
  * ## Ownership boundary
@@ -35,17 +34,9 @@ namespace cec_control {
  *
  * ## Thread-safety
  *
- *  - @c isSuspended is a lock-free acquire load on an internal
- *    atomic. The atomic is kept because the flag is read from
- *    libcec-thread-adjacent paths (e.g. @c CommandRouter::onTvStandby
- *    queries it transitively) without coordinating with the main
- *    thread.
- *  - @c enterSuspended, @c exitSuspended, @c tryPush, and @c drain
- *    are NOT internally synchronised. The only caller is
- *    @c CommandRouter, which invokes them on the main thread as part
- *    of @c dispatch, @c suspendAsync's phase-1, and
- *    @c onResumeWorkerComplete. That single-threaded access provides
- *    the required ordering for free.
+ * Every public method must be called on the main thread. The single-
+ * threaded access model of @c CommandRouter (the sole caller) provides
+ * the ordering guarantees; no internal synchronisation is needed.
  */
 class SuspendQueue {
 public:
@@ -65,7 +56,7 @@ public:
      */
     void exitSuspended() noexcept;
 
-    /** Lock-free read of the suspend flag. */
+    /** Read the suspend flag. */
     [[nodiscard]] bool isSuspended() const noexcept;
 
     /**
@@ -80,7 +71,7 @@ public:
     [[nodiscard]] std::vector<Message> drain();
 
 private:
-    std::atomic<bool>    m_suspended{false};
+    bool                 m_suspended = false;
     std::vector<Message> m_queued;
 };
 

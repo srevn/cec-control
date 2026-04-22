@@ -25,8 +25,8 @@ CommandRouter::CommandRouter(const AppConfig& config,
       m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
 void CommandRouter::shutdown() {
-    if (m_shutdownComplete.load(std::memory_order_relaxed)) return;
-    m_shutdownComplete.store(true, std::memory_order_release);
+    if (m_shutdownComplete) return;
+    m_shutdownComplete = true;
 
     auto toDiscard = m_suspendQueue.drain();
 
@@ -44,7 +44,7 @@ void CommandRouter::dispatch(Message command, ResponseSink reply) {
     // branch replies synchronously on the main thread.
     if (!reply) return;  // defensive: a caller without a sink is malformed
 
-    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+    if (m_shutdownComplete) {
         reply(Message(MessageType::RESP_ERROR));
         return;
     }
@@ -101,7 +101,7 @@ void CommandRouter::dispatch(Message command, ResponseSink reply) {
 void CommandRouter::suspendAsync(std::function<void(std::chrono::milliseconds)> onDone) {
     // Main-thread phase-1: flip the flag so dispatches arriving during
     // the worker-side close enter handleSuspendedInline.
-    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+    if (m_shutdownComplete) {
         LOG_DEBUG("suspend() called after shutdown; ignoring");
         if (onDone) onDone(std::chrono::milliseconds(0));
         return;
@@ -136,7 +136,7 @@ void CommandRouter::suspendAsync(std::function<void(std::chrono::milliseconds)> 
 }
 
 void CommandRouter::resumeAsync(std::function<void(bool)> onDone) {
-    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+    if (m_shutdownComplete) {
         LOG_DEBUG("resume() called after shutdown; ignoring");
         if (onDone) onDone(false);
         return;
@@ -173,7 +173,7 @@ void CommandRouter::resumeAsync(std::function<void(bool)> onDone) {
 }
 
 void CommandRouter::reconnectAsync(std::function<void(bool)> onDone) {
-    if (m_shutdownComplete.load(std::memory_order_relaxed)) {
+    if (m_shutdownComplete) {
         LOG_DEBUG("reconnect() called after shutdown; ignoring");
         if (onDone) onDone(false);
         return;

@@ -5,15 +5,15 @@
 namespace cec_control {
 
 void SuspendQueue::enterSuspended() noexcept {
-    m_suspended.store(true, std::memory_order_release);
+    m_suspended = true;
 }
 
 void SuspendQueue::exitSuspended() noexcept {
-    m_suspended.store(false, std::memory_order_release);
+    m_suspended = false;
 }
 
 bool SuspendQueue::isSuspended() const noexcept {
-    return m_suspended.load(std::memory_order_acquire);
+    return m_suspended;
 }
 
 bool SuspendQueue::tryPush(const Message& command) {

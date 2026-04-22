@@ -184,11 +184,9 @@ private:
     MainThreadWork&  m_work;
     CommandThrottler m_throttler;
 
-    // Shutdown gate. Main-thread writes, main-thread reads — the
-    // atomic survives because Phase F's planned SIGHUP reload may want
-    // a cheap cross-section snapshot for diagnostics, and removing it
-    // buys nothing.
-    std::atomic<bool> m_shutdownComplete{false};
+    // Shutdown gate. Main-thread only — see the class-level doc comment
+    // for the single-threaded access model.
+    bool m_shutdownComplete = false;
 
     // Queue-during-suspend policy. Main-thread-only reader (dispatch
     // is main-thread), main-thread-only writer (only a future SIGHUP

@@ -219,8 +219,6 @@ private:
     // SIGHUP reload diffs a freshly-loaded AppConfig against this.
     AppConfig m_config;
 
-    int m_terminationSignalCount = 0;
-
     // True between start() returning success and stop() completing.
     bool m_started = false;
 };
