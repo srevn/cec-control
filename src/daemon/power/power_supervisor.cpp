@@ -18,12 +18,14 @@ PowerSupervisor::PowerSupervisor(CommandDispatcher& dispatcher,
                                  AdapterLifecycle&  lifecycle,
                                  AdapterWorker&     worker,
                                  TimerSource&       suspendSafety,
-                                 TimerSource&       reconnectRetry) noexcept
+                                 TimerSource&       reconnectRetry,
+                                 AdapterUnrecoverableCallback onAdapterUnrecoverable) noexcept
     : m_dispatcher(dispatcher),
       m_lifecycle(lifecycle),
       m_worker(worker),
       m_suspendSafetyTimer(suspendSafety),
-      m_reconnectRetryTimer(reconnectRetry) {}
+      m_reconnectRetryTimer(reconnectRetry),
+      m_onAdapterUnrecoverable(std::move(onAdapterUnrecoverable)) {}
 
 void PowerSupervisor::setDBusMonitor(DBusMonitor* dbusMonitor) noexcept {
     m_dbusMonitor = dbusMonitor;
@@ -251,8 +253,15 @@ void PowerSupervisor::execute(AdapterReconnect::Output out) {
         m_reconnectRetryTimer.disarm();
         break;
     case E::AbandonCycle:
-        LOG_WARNING("CEC reconnect abandoned after ", out.totalAttempts,
-                    " attempts; waiting for next connection-lost event");
+        // "Waiting for next connection-lost event" is a dead state:
+        // once libcec has been destroyed by the failed reopens, its
+        // alert thread is gone and no further CEC_ALERT_CONNECTION_LOST
+        // can fire. Escalate to the owner instead; the daemon's policy
+        // is to request a clean shutdown so a service manager restarts
+        // us into a fresh libcec state.
+        LOG_ERROR("CEC reconnect abandoned after ", out.totalAttempts,
+                  " attempts; requesting daemon shutdown for supervisor restart");
+        if (m_onAdapterUnrecoverable) m_onAdapterUnrecoverable();
         break;
     }
 }

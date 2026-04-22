@@ -122,9 +122,19 @@ bool CECDaemon::start() {
         // worker and timers. The dbus pointer is wired in
         // setupPowerMonitor below (or stays null when power
         // monitoring is disabled).
+        //
+        // The unrecoverable-adapter callback fires on the main thread
+        // from the supervisor's own event handler (connection-lost
+        // reconnect abandonment); requestUnrecoverableShutdown latches
+        // the exit status and asks the event loop to stop so run()
+        // returns and the ordered stop() sequence tears everything
+        // down. Capturing @c this by value is safe: the supervisor
+        // lives inside @c this, so the pointer is valid for every
+        // invocation of the callback.
         m_supervisor = std::make_unique<PowerSupervisor>(
             *m_dispatcher, *m_lifecycle, *m_worker,
-            m_suspendSafetyTimer, m_reconnectRetryTimer);
+            m_suspendSafetyTimer, m_reconnectRetryTimer,
+            [this]() { this->requestUnrecoverableShutdown(); });
 
         m_worker->start();
 
@@ -349,6 +359,20 @@ bool CECDaemon::setupPowerMonitor() {
         m_dbusMonitor.reset();
         return false;
     }
+}
+
+void CECDaemon::requestUnrecoverableShutdown() {
+    // Latch-on-first-fire. A second invocation is representable — a
+    // manual CMD_RESTART_ADAPTER could succeed, the adapter could be
+    // lost again, and the reconnect FSM could abandon a second cycle
+    // all before the loop has actually returned — but the first
+    // failure is the one that should propagate, and a second log line
+    // would obscure the original trigger.
+    if (m_exitStatus == EXIT_FAILURE) return;
+    LOG_ERROR("Adapter unrecoverable; initiating daemon shutdown "
+              "to allow supervisor restart");
+    m_exitStatus = EXIT_FAILURE;
+    m_loop.stop();
 }
 
 void CECDaemon::handleCommand(Message command, ResponseSink reply) {

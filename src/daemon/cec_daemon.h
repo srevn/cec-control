@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <memory>
 
 #include "../common/event_loop.h"
@@ -97,6 +98,18 @@ public:
     /** Tear everything down. Idempotent; safe after a failed @c start(). */
     void stop();
 
+    /**
+     * Process exit status to return from @c main. @c EXIT_FAILURE iff
+     * the daemon terminated itself due to an unrecoverable subsystem
+     * condition (currently: @c PowerSupervisor abandoning the CEC
+     * reconnect cycle after its backoff schedule is exhausted);
+     * @c EXIT_SUCCESS for a clean signal-driven stop. Meaningful only
+     * after @c run() has returned. Latched one-way: a SIGTERM arriving
+     * after the failure latch does not promote the status back to
+     * success.
+     */
+    [[nodiscard]] int exitStatus() const noexcept { return m_exitStatus; }
+
 private:
     /** Handler for signalfd readability. */
     void onSignalReadable();
@@ -129,6 +142,18 @@ private:
 
     /** Ensure a DBus monitor is up; returns @c true on success. */
     [[nodiscard]] bool setupPowerMonitor();
+
+    /**
+     * Signal a daemon-level shutdown driven by an unrecoverable
+     * subsystem condition. Latches @c m_exitStatus to @c EXIT_FAILURE
+     * (first-fire wins; subsequent invocations are absorbed so a
+     * second abandonment cycle cannot rewrite the reason) and asks
+     * the event loop to stop. The main-thread teardown then unwinds
+     * via @c run() returning and @c stop() running its ordered
+     * sequence. Main thread only — the wired supervisor callback runs
+     * inside the supervisor's own main-thread event handler.
+     */
+    void requestUnrecoverableShutdown();
 
     // Event loop and single-threaded primitives. Declared first so
     // they outlive every subsystem that might register handlers
@@ -186,6 +211,12 @@ private:
 
     // True between start() returning success and stop() completing.
     bool m_started = false;
+
+    // Process exit status surfaced via exitStatus(). Latched one-way
+    // from EXIT_SUCCESS to EXIT_FAILURE by requestUnrecoverableShutdown
+    // the first time an unrecoverable subsystem condition is raised;
+    // subsequent latch attempts are no-ops.
+    int m_exitStatus = EXIT_SUCCESS;
 };
 
 } // namespace cec_control

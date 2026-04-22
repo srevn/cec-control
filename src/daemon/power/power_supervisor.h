@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 
 #include "../../common/backoff_schedule.h"
 #include "adapter_reconnect.h"
@@ -70,9 +71,30 @@ class TimerSource;
  * schedule-driven retries). Prior to unification this path ran a
  * separate single-shot retry timer alongside the alert-driven FSM;
  * both could fire concurrently. The unified model eliminates the race.
+ *
+ * ## Unrecoverable escalation
+ *
+ * When @c AdapterReconnect abandons its cycle after exhausting the
+ * backoff schedule, the supervisor invokes the install-once
+ * @c AdapterUnrecoverableCallback supplied at construction. The
+ * callback's owner (the daemon) decides what "unrecoverable" means
+ * in policy terms — today: request a clean process shutdown so a
+ * service manager such as systemd can restart us into a fresh libcec
+ * state. The supervisor itself only signals; no policy lives here.
  */
 class PowerSupervisor {
 public:
+    /**
+     * Fires on the main thread when @c AdapterReconnect abandons its
+     * cycle after exhausting the backoff schedule. Invoked inside the
+     * supervisor's own event handler, so the callback may call any
+     * main-thread API including @c EventLoop::stop. Install-once: set
+     * at construction and never reassigned. May be empty, in which
+     * case the abandon path only logs — useful for future isolated
+     * tests of the supervisor.
+     */
+    using AdapterUnrecoverableCallback = std::function<void()>;
+
     /**
      * Capture references to every subsystem the supervisor must
      * coordinate. The references must outlive @c this; the daemon
@@ -84,12 +106,18 @@ public:
      * wired post-construction via @c setDBusMonitor once
      * @c setupPowerMonitor decides whether power monitoring is even
      * enabled this run.
+     *
+     * @p onAdapterUnrecoverable is stored by value (move-in) and is
+     * immutable thereafter. See @c AdapterUnrecoverableCallback for
+     * the contract; empty is acceptable and makes abandonment a
+     * log-only event.
      */
     PowerSupervisor(CommandDispatcher& dispatcher,
                     AdapterLifecycle&  lifecycle,
                     AdapterWorker&     worker,
                     TimerSource&       suspendSafety,
-                    TimerSource&       reconnectRetry) noexcept;
+                    TimerSource&       reconnectRetry,
+                    AdapterUnrecoverableCallback onAdapterUnrecoverable) noexcept;
 
     ~PowerSupervisor() = default;
 
@@ -200,6 +228,12 @@ private:
     // Wired post-construction; null until setupPowerMonitor succeeds,
     // and reset back to null on attach failure or shutdown teardown.
     DBusMonitor* m_dbusMonitor = nullptr;
+
+    // Install-once notification hook for reconnect abandonment. Moved
+    // in at construction, never reassigned. @c const documents the
+    // install-once contract; the invocation site null-checks so an
+    // empty callback is legal.
+    const AdapterUnrecoverableCallback m_onAdapterUnrecoverable;
 
     // Pure decision types driving suspend/resume arbitration and the
     // connection-lost reconnect cycle. Both main-thread only; no

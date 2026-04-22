@@ -75,8 +75,19 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
         LOG_INFO("CEC daemon initialized successfully, starting main loop");
         daemon.run();
 
-        LOG_INFO("CEC daemon exited normally");
-        return EXIT_SUCCESS;
+        // run() returns either on a clean signal-driven stop (exit
+        // status EXIT_SUCCESS) or after a subsystem latched an
+        // unrecoverable condition through requestUnrecoverableShutdown
+        // (exit status EXIT_FAILURE). Propagate verbatim so a service
+        // manager (systemd's Restart=on-failure) can distinguish the
+        // two and restart on the failure path.
+        const int status = daemon.exitStatus();
+        if (status == EXIT_SUCCESS) {
+            LOG_INFO("CEC daemon exited normally");
+        } else {
+            LOG_ERROR("CEC daemon exited with failure status ", status);
+        }
+        return status;
     }
     catch (const std::exception& e) {
         LOG_FATAL("Exception in CEC daemon: ", e.what());
