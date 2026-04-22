@@ -26,6 +26,16 @@ class CommandThrottler;
  */
 namespace ops {
 
+/**
+ * HDMI source IDs accepted on the wire. Source values in
+ * [@c kFirstHdmiSource, @c kLastHdmiSource] map to HDMI 1..4 via the CEC
+ * physical-address layout @c 0xN000 (where @c N is the port number).
+ * Kept public so help rendering can guard against drift without
+ * redeclaring the range.
+ */
+inline constexpr uint8_t kFirstHdmiSource = 2;
+inline constexpr uint8_t kLastHdmiSource  = 5;
+
 /** Wake @p logicalAddress via @c ICecAdapter::powerOnDevice, throttled. */
 [[nodiscard]] bool powerOnDevice(ICecAdapter& adapter,
                                  CommandThrottler& throttler,

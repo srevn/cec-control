@@ -4,6 +4,7 @@
 #include "../command_throttler.h"
 #include "adapter_interface.h"
 
+#include <array>
 #include <chrono>
 #include <ios>
 #include <thread>
@@ -14,23 +15,28 @@ namespace cec_control::ops {
 
 namespace {
 
-// HDMI source IDs as documented in --help: 2..5 map to HDMI 1..4. The CEC
-// physical address byte layout is 0xN000 where N is the HDMI port number.
-constexpr uint8_t kFirstHdmiSource = 2;
-constexpr uint8_t kLastHdmiSource  = 5;
+// Number-key user-control codes for HDMI 1..4, indexed by
+// (source - kFirstHdmiSource). Falls back to UNKNOWN on an out-of-range
+// source; the caller already validates the range before we reach here,
+// so the fallback is defence in depth.
+constexpr std::array<CEC::cec_user_control_code,
+                     kLastHdmiSource - kFirstHdmiSource + 1>
+    kHdmiNumberKeys = {
+        CEC::CEC_USER_CONTROL_CODE_NUMBER1,
+        CEC::CEC_USER_CONTROL_CODE_NUMBER2,
+        CEC::CEC_USER_CONTROL_CODE_NUMBER3,
+        CEC::CEC_USER_CONTROL_CODE_NUMBER4,
+};
 
 uint16_t hdmiPhysicalAddress(uint8_t source) noexcept {
     return static_cast<uint16_t>((source - kFirstHdmiSource + 1) << 12);
 }
 
 CEC::cec_user_control_code hdmiNumberKey(uint8_t source) noexcept {
-    switch (source) {
-        case 2: return CEC::CEC_USER_CONTROL_CODE_NUMBER1;
-        case 3: return CEC::CEC_USER_CONTROL_CODE_NUMBER2;
-        case 4: return CEC::CEC_USER_CONTROL_CODE_NUMBER3;
-        case 5: return CEC::CEC_USER_CONTROL_CODE_NUMBER4;
+    if (source < kFirstHdmiSource || source > kLastHdmiSource) {
+        return CEC::CEC_USER_CONTROL_CODE_UNKNOWN;
     }
-    return CEC::CEC_USER_CONTROL_CODE_UNKNOWN;
+    return kHdmiNumberKeys[source - kFirstHdmiSource];
 }
 
 } // namespace

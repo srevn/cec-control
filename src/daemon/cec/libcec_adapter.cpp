@@ -8,6 +8,18 @@
 
 namespace cec_control {
 
+namespace {
+
+// Window for the USB subsystem to re-enumerate ttyACM* nodes after a
+// Close() + CECDestroy() cycle. Matters most after suspend/wake, when
+// the kernel's udev rebind is still in flight; empirically covers the
+// settle time on the Pulse-Eight USB-CEC adapter. Longer is safe;
+// shorter races the rebind and surfaces as a "no adapter found"
+// DetectAdapters() result.
+constexpr auto kUsbSettleDelay = std::chrono::milliseconds(500);
+
+} // namespace
+
 LibCecAdapter::LibCecAdapter(AdapterConfig config, Callbacks callbacks)
     : m_config(std::move(config)),
       m_connected(false),
@@ -212,10 +224,7 @@ bool LibCecAdapter::reopenConnection() {
     }
     m_adapter.reset();  // invokes CECDestroy via the AdapterDeleter
 
-    // Let the USB subsystem settle before the fresh Initialise +
-    // Detect + Open cycle — matters after sleep/wake when ttyACM*
-    // may still be rebinding.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(kUsbSettleDelay);
 
     m_adapter = AdapterPtr(::CECInitialise(&m_libcecConfig));
     if (!m_adapter) {

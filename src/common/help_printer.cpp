@@ -3,12 +3,22 @@
 #include "command_registry.h"
 #include "system_paths.h"
 
+#include "../daemon/cec/operations.h"
+
 #include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 namespace cec_control {
+
+// The source-ID block in printClientHelp hard-codes the HDMI range
+// [kFirstHdmiSource..kLastHdmiSource]. These asserts catch any drift
+// in the range at build time so the help text stays in sync.
+static_assert(ops::kFirstHdmiSource == 2,
+              "Source ID help text hard-codes the HDMI source range");
+static_assert(ops::kLastHdmiSource == 5,
+              "Source ID help text hard-codes the HDMI source range");
 
 namespace {
 
