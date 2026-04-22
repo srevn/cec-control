@@ -7,6 +7,7 @@ An application for controlling HDMI devices over the CEC (Consumer Electronics C
 - **Power Management**: Turn devices on/off
 - **Volume Control**: Adjust volume, mute, and unmute
 - **Input Source Switching**: Change inputs on TVs and receivers
+- **Remote-Control Keys**: Send colour / function keys (red, green, blue, yellow) to interactive TV services
 - **System Integration**: Automatic handling of system sleep/wake events
 - **Daemon/Client Architecture**: Run as a background service with command-line control
 - **Automatic Power Handling**: Can automatically power off devices when putting PC to sleep
@@ -78,6 +79,12 @@ cec-control volume mute 5
 # Change input source to HDMI 1
 cec-control source 0 2
 
+# Press the red colour key on the TV (device 0 is implied)
+cec-control key red
+
+# Press the yellow colour key on device 5
+cec-control key yellow 5
+
 # Restart the CEC adapter
 cec-control restart
 
@@ -97,6 +104,7 @@ Commands:
   volume (up|down|mute) DEVICE_ID   Control volume
   power (on|off) DEVICE_ID          Power device on or off
   source DEVICE_ID SOURCE_ID        Change input source
+  key NAME [DEVICE_ID]              Send a CEC remote-control key press
   restart                           Restart CEC adapter
   suspend                           Suspend CEC operations (system sleep)
   resume                            Resume CEC operations (system wake)
@@ -113,6 +121,12 @@ SOURCE_ID mapping:
   3   - HDMI 2
   4   - HDMI 3
   5   - HDMI 4
+
+KEY NAME mapping (for the `key` command; DEVICE_ID defaults to 0 / TV):
+  blue    - F1 blue colour key
+  red     - F2 red colour key
+  green   - F3 green colour key
+  yellow  - F4 yellow colour key
 
 DEVICE_ID typically ranges from 0-15 and maps to CEC logical addresses:
   0   - TV

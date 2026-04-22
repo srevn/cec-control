@@ -63,7 +63,7 @@ struct CommandSpec {
  * Authoritative command table. Order is the order help text renders in, and
  * is also the order new readers will encounter. Keep related commands grouped.
  */
-extern const std::array<CommandSpec, 7> kCommands;
+extern const std::array<CommandSpec, 8> kCommands;
 
 /** Linear lookup by canonical name. Returns nullptr if no match. */
 const CommandSpec* findByName(std::string_view name) noexcept;

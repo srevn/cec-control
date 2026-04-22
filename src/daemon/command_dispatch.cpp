@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstddef>
+#include <ios>
 
 #include "../common/command_registry.h"
+#include "../common/key_codes.h"
 #include "../common/logger.h"
 #include "cec/adapter_interface.h"
 #include "cec/operations.h"
@@ -62,6 +64,29 @@ bool handleChangeSource(ICecAdapter& adapter, CommandThrottler& throttler,
     return ops::setSource(adapter, throttler, command.data[0]);
 }
 
+bool handleKey(ICecAdapter& adapter, CommandThrottler& throttler,
+                const Message& command) {
+    if (command.data.empty()) {
+        // The registry's parser guarantees a single-byte payload; an
+        // empty data vector here means a hand-rolled wire message
+        // bypassed the parser.
+        LOG_WARNING("CMD_KEY received with empty payload; expected key "
+                    "code byte in data[0] (malformed client)");
+        return false;
+    }
+    const uint8_t code = command.data[0];
+    if (findKeyByCode(code) == nullptr) {
+        // Allowlist the wire payload against kKeyCodes so an arbitrary
+        // byte cannot drive an unvetted libcec user-control code onto
+        // the bus. Mirrors setSource's HDMI-range gate.
+        LOG_WARNING("CMD_KEY received with unknown key code 0x",
+                    std::hex, static_cast<int>(code),
+                    " (malformed client)");
+        return false;
+    }
+    return ops::sendKey(adapter, throttler, command.deviceId, code);
+}
+
 bool handleRestartAdapter(ICecAdapter& adapter, CommandThrottler& /*throttler*/,
                           const Message& /*command*/) {
     // CMD_RESTART_ADAPTER bypasses the isConnected() gate (see the
@@ -104,6 +129,11 @@ constexpr std::array kDispatchTable = {
                  /*queueableWhileSuspended=*/false,
                  /*requiresAdapterConnection=*/true,
                  handleChangeSource},
+    DispatchSpec{MessageType::CMD_KEY,
+                 DispatchClass::AdapterCall,
+                 /*queueableWhileSuspended=*/false,
+                 /*requiresAdapterConnection=*/true,
+                 handleKey},
     DispatchSpec{MessageType::CMD_RESTART_ADAPTER,
                  DispatchClass::AdapterCall,
                  /*queueableWhileSuspended=*/false,

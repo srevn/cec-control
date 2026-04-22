@@ -42,6 +42,7 @@ target_sources(cec-control PRIVATE
     src/common/event_loop.cpp
     src/common/event_poller.cpp
     src/common/help_printer.cpp
+    src/common/key_codes.cpp
     src/common/logger.cpp
     src/common/main_thread_work.cpp
     src/common/messages.cpp

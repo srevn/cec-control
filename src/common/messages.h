@@ -20,6 +20,7 @@ enum class MessageType : uint8_t {
     CMD_SUSPEND,
     CMD_RESUME,
     CMD_AUTO_STANDBY,
+    CMD_KEY,
 
     // Response messages (daemon -> client)
     RESP_SUCCESS = 100,

@@ -1,6 +1,7 @@
 #include "help_printer.h"
 
 #include "command_registry.h"
+#include "key_codes.h"
 #include "system_paths.h"
 
 #include "../daemon/cec/operations.h"
@@ -120,8 +121,8 @@ void HelpPrinter::printClientHelp(const char* programName) {
               << "  " << programName << " volume up 5        Increase volume on device 5\n"
               << "  " << programName << " power on 0         Turn on TV (device 0)\n"
               << "  " << programName << " source 0 4         Switch TV to HDMI 3\n"
+              << "  " << programName << " key blue           Press the blue colour key on the TV\n"
               << "  " << programName << " suspend            Prepare for system sleep\n"
-              << "  CEC_CONTROL_SOCKET=/run/cec-control/socket " << programName << " power on 0\n"
               << "\n"
               << "DEVICE IDs (CEC logical addresses):\n"
               << "  0  - TV                                  5  - Audio System\n"
@@ -131,6 +132,9 @@ void HelpPrinter::printClientHelp(const char* programName) {
               << "  0  - General AV input                    3  - HDMI 2\n"
               << "  1  - Audio input                         4  - HDMI 3\n"
               << "  2  - HDMI 1                              5  - HDMI 4\n"
+              << "\n"
+              << "KEY NAMES (for `key`):\n"
+              << "  " << formatKeyNamesList(", ") << "\n"
               << std::endl;
 }
 

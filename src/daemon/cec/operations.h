@@ -74,6 +74,23 @@ inline constexpr uint8_t kLastHdmiSource  = 5;
                              uint8_t source);
 
 /**
+ * Throttled CEC user-control press-and-release targeting
+ * @p logicalAddress. Emits one @c SendKeypress followed by
+ * @c SendKeyRelease after a short inter-step delay; release is
+ * best-effort (CEC 1.4b §13.13 guarantees receivers auto-release
+ * within ~500 ms, so a failed release does not leave the target
+ * stuck — matching the @c setSource precedent).
+ *
+ * @p code is the raw CEC user-control byte; callers are expected to
+ * validate against @ref kKeyCodes at the wire gate (see
+ * @c handleKey in @c command_dispatch.cpp).
+ */
+[[nodiscard]] bool sendKey(ICecAdapter& adapter,
+                           CommandThrottler& throttler,
+                           uint8_t logicalAddress,
+                           uint8_t code);
+
+/**
  * Log a one-shot snapshot of active CEC devices and their power status.
  * Used during daemon start-up to capture the bus at boot. Not a wire
  * command — kept alongside the command bodies because it also operates

@@ -1,5 +1,7 @@
 #include "command_registry.h"
 
+#include "key_codes.h"
+
 #include <algorithm>
 #include <string>
 
@@ -115,6 +117,28 @@ std::optional<Message> parseSource(const std::vector<std::string_view>& args,
     return Message(MessageType::CMD_CHANGE_SOURCE, id, {source});
 }
 
+std::optional<Message> parseKey(const std::vector<std::string_view>& args,
+                                 std::string& err) {
+    // One-or-two arity: NAME is required, DEVICE_ID defaults to 0 (TV)
+    // when omitted. Inline check rather than a new requireArityRange
+    // helper — this is the only variable-arity command today.
+    if (args.empty() || args.size() > 2) {
+        err = "key requires 1 or 2 arguments: NAME [DEVICE_ID]";
+        return std::nullopt;
+    }
+    const KeySpec* spec = findKeyByName(args[0]);
+    if (spec == nullptr) {
+        err = "Invalid key name: '" + std::string(args[0]) +
+              "' (expected " + formatKeyNamesList("|") + ")";
+        return std::nullopt;
+    }
+    uint8_t id = 0;
+    if (args.size() == 2 && !parseDeviceId(args[1], id, err)) {
+        return std::nullopt;
+    }
+    return Message(MessageType::CMD_KEY, id, {spec->code});
+}
+
 std::optional<Message> parseAutoStandby(const std::vector<std::string_view>& args,
                                          std::string& err) {
     if (!requireArity(args, 1, "auto-standby", "(on|off)", err)) {
@@ -153,7 +177,7 @@ std::optional<Message> parseResume(const std::vector<std::string_view>& args,
 
 // The size of this array is reflected in command_registry.h. If you add an
 // entry, bump the std::array<CommandSpec, N> declaration there.
-const std::array<CommandSpec, 7> kCommands = {{
+const std::array<CommandSpec, 8> kCommands = {{
     {MessageType::CMD_POWER_ON,
      {MessageType::CMD_POWER_ON, MessageType::CMD_POWER_OFF},
      "power", "(on|off) DEVICE_ID", "Power a device on or off",
@@ -168,6 +192,10 @@ const std::array<CommandSpec, 7> kCommands = {{
      {MessageType::CMD_CHANGE_SOURCE},
      "source", "DEVICE_ID SOURCE_ID", "Change the active input source",
      parseSource},
+    {MessageType::CMD_KEY,
+     {MessageType::CMD_KEY},
+     "key", "NAME [DEVICE_ID]", "Send a CEC remote-control key press",
+     parseKey},
     {MessageType::CMD_AUTO_STANDBY,
      {MessageType::CMD_AUTO_STANDBY},
      "auto-standby", "(on|off)", "Suspend this PC when the TV powers off",

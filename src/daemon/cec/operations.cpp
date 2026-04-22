@@ -1,5 +1,6 @@
 #include "operations.h"
 
+#include "../../common/key_codes.h"
 #include "../../common/logger.h"
 #include "../command_throttler.h"
 #include "adapter_interface.h"
@@ -7,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <ios>
+#include <string_view>
 #include <thread>
 
 #include <libcec/cec.h>
@@ -27,6 +29,33 @@ constexpr std::array<CEC::cec_user_control_code,
         CEC::CEC_USER_CONTROL_CODE_NUMBER3,
         CEC::CEC_USER_CONTROL_CODE_NUMBER4,
 };
+
+// Delay between a SendKeypress and its matching SendKeyRelease. Long
+// enough for the receiver to register the press; far below the CEC
+// 1.4b §13.13 auto-release window (~500 ms), so a dropped release
+// self-heals.
+constexpr auto kPressToReleaseDelay = std::chrono::milliseconds(50);
+
+// Delay between two consecutive SendKeypress calls in a multi-press
+// sequence (the HDMI fallback path when SetStreamPath is refused).
+// Longer than kPressToReleaseDelay because a second press inside the
+// first press's window is interpreted by receivers as a repeat of the
+// same key rather than a distinct new press.
+constexpr auto kInterPressDelay = std::chrono::milliseconds(100);
+
+// kKeyCodes (in common/key_codes.cpp) carries raw wire bytes so the
+// common/ layer can stay libcec-free. These asserts pin each row to
+// its libcec enumerator: a divergence here surfaces at compile time
+// rather than as a wrong CEC message on the bus. Extend the block
+// when kKeyCodes grows.
+static_assert(0x71 == CEC::CEC_USER_CONTROL_CODE_F1_BLUE,
+              "kKeyCodes 'blue' value drift");
+static_assert(0x72 == CEC::CEC_USER_CONTROL_CODE_F2_RED,
+              "kKeyCodes 'red' value drift");
+static_assert(0x73 == CEC::CEC_USER_CONTROL_CODE_F3_GREEN,
+              "kKeyCodes 'green' value drift");
+static_assert(0x74 == CEC::CEC_USER_CONTROL_CODE_F4_YELLOW,
+              "kKeyCodes 'yellow' value drift");
 
 uint16_t hdmiPhysicalAddress(uint8_t source) noexcept {
     return static_cast<uint16_t>((source - kFirstHdmiSource + 1) << 12);
@@ -90,17 +119,18 @@ bool setSource(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t source
         // Sources 0 and 1 are TV-internal inputs without a CEC physical
         // address; SetStreamPath cannot reach them, so go straight to a
         // function-key keypress.
-        auto sendKey = [&adapter](CEC::cec_user_control_code key) {
+        auto pressAndReleaseTv = [&adapter](CEC::cec_user_control_code key) {
             if (!adapter.sendKeypress(CEC::CECDEVICE_TV, key, false)) {
                 return false;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            (void)adapter.sendKeypress(CEC::CECDEVICE_TV, CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
+            std::this_thread::sleep_for(kPressToReleaseDelay);
+            (void)adapter.sendKeypress(CEC::CECDEVICE_TV,
+                                       CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
             return true;
         };
 
-        if (source == 0) return sendKey(CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION);
-        if (source == 1) return sendKey(CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION);
+        if (source == 0) return pressAndReleaseTv(CEC::CEC_USER_CONTROL_CODE_SELECT_AV_INPUT_FUNCTION);
+        if (source == 1) return pressAndReleaseTv(CEC::CEC_USER_CONTROL_CODE_SELECT_AUDIO_INPUT_FUNCTION);
         if (source < kFirstHdmiSource || source > kLastHdmiSource) {
             LOG_WARNING("Invalid source value: ", source);
             return false;
@@ -121,13 +151,38 @@ bool setSource(ICecAdapter& adapter, CommandThrottler& throttler, uint8_t source
                                   CEC::CEC_USER_CONTROL_CODE_INPUT_SELECT, false)) {
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(kInterPressDelay);
 
         if (!adapter.sendKeypress(CEC::CECDEVICE_TV, hdmiNumberKey(source), false)) {
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        (void)adapter.sendKeypress(CEC::CECDEVICE_TV, CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
+        std::this_thread::sleep_for(kPressToReleaseDelay);
+        (void)adapter.sendKeypress(CEC::CECDEVICE_TV,
+                                   CEC::CEC_USER_CONTROL_CODE_UNKNOWN, true);
+        return true;
+    });
+}
+
+bool sendKey(ICecAdapter& adapter, CommandThrottler& throttler,
+             uint8_t logicalAddress, uint8_t code) {
+    if (!adapter.isConnected()) return false;
+
+    const KeySpec* spec = findKeyByCode(code);
+    const std::string_view name =
+        spec != nullptr ? spec->name : std::string_view{"?"};
+    LOG_INFO("Sending key '", name, "' (code 0x",
+             std::hex, static_cast<int>(code),
+             std::dec, ") to device ", static_cast<int>(logicalAddress));
+
+    return throttler.executeWithThrottle([&adapter, logicalAddress, code]() {
+        const auto addr = static_cast<CEC::cec_logical_address>(logicalAddress);
+        const auto key  = static_cast<CEC::cec_user_control_code>(code);
+        if (!adapter.sendKeypress(addr, key, /*release=*/false)) {
+            return false;
+        }
+        std::this_thread::sleep_for(kPressToReleaseDelay);
+        (void)adapter.sendKeypress(addr, CEC::CEC_USER_CONTROL_CODE_UNKNOWN,
+                                   /*release=*/true);
         return true;
     });
 }
