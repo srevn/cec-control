@@ -469,49 +469,92 @@ void DBusMonitor::onTimerFire() {
 
 void DBusMonitor::onReconnectTimer() {
     m_reconnectTimer.consume();
-    if (m_state != BusState::Reconnecting) return;
 
-    // m_currentAttemptNumber was captured from the Attempt returned
-    // by the nextDelay() that armed this timer, so it already names
-    // the attempt about to run.
-    LOG_INFO("Attempting D-Bus reconnection (",
-             m_currentAttemptNumber, "/",
-             m_reconnectSchedule.size(), ")");
+    if (m_state == BusState::Reconnecting) {
+        // m_currentAttemptNumber was captured from the Attempt returned
+        // by the nextDelay() that armed this timer, so it already names
+        // the attempt about to run.
+        LOG_INFO("Attempting D-Bus reconnection (",
+                 m_currentAttemptNumber, "/",
+                 m_reconnectSchedule.size(), ")");
 
+        if (attemptReconnect()) {
+            LOG_INFO("D-Bus reconnected successfully; power monitoring resumed");
+            return;
+        }
+
+        const auto attempt = m_reconnectSchedule.nextDelay();
+        if (!attempt) {
+            LOG_WARNING("D-Bus reconnection abandoned after ",
+                        m_reconnectSchedule.size(),
+                        " scheduled attempts; entering heartbeat mode "
+                        "(retrying every ",
+                        std::chrono::duration_cast<std::chrono::minutes>(
+                            kHeartbeatInterval).count(),
+                        " minutes)");
+            m_state = BusState::Disabled;
+            armHeartbeat();
+            return;
+        }
+
+        LOG_WARNING("D-Bus reconnect attempt failed; next try in ",
+                    attempt->delay.count(), "ms");
+        if (!m_reconnectTimer.armOnce(attempt->delay)) {
+            // A timerfd arm failure mid-schedule implies the fd is in
+            // a broken state; we cannot recover. No heartbeat either
+            // — both would use the same fd.
+            LOG_ERROR("Failed to arm reconnect timer; "
+                      "power monitoring disabled for this session");
+            m_state = BusState::Disabled;
+            return;
+        }
+        m_currentAttemptNumber = attempt->index;
+        return;
+    }
+
+    if (m_state == BusState::Disabled) {
+        // Heartbeat attempt. Silent at DEBUG; success promotes to
+        // Operational with an INFO log so operators can see recovery.
+        LOG_DEBUG("D-Bus heartbeat: attempting reconnection");
+        if (attemptReconnect()) {
+            LOG_INFO("D-Bus reconnected after outage; power monitoring resumed");
+            return;
+        }
+        armHeartbeat();
+        return;
+    }
+
+    // Operational path: the reconnect timer is never armed while
+    // Operational. A fire here would indicate a stale timer read;
+    // safely ignore.
+}
+
+bool DBusMonitor::attemptReconnect() {
     if (reconnectBus() && registerBusWithLoop()) {
         m_state = BusState::Operational;
         m_reconnectSchedule.reset();
         m_currentAttemptNumber = 0;
-        LOG_INFO("D-Bus reconnected successfully; power monitoring resumed");
         // Drain any events accumulated before we registered and resync
         // the sd-bus timer to whatever deadline the library is carrying.
         processBus();
         updateLoopRegistration();
-        return;
+        return true;
     }
 
     // Clean up any half-initialised connection state before the next
-    // attempt. tearDownBusState is idempotent on already-null members.
+    // attempt. tearDownBusState is idempotent on already-null members
+    // and leaves m_state untouched for the caller.
     tearDownBusState();
+    return false;
+}
 
-    const auto attempt = m_reconnectSchedule.nextDelay();
-    if (!attempt) {
-        LOG_WARNING("D-Bus reconnection abandoned after ",
-                    m_reconnectSchedule.size(),
-                    " attempts; power monitoring disabled for this session");
-        m_state = BusState::Disabled;
-        return;
-    }
-
-    LOG_WARNING("D-Bus reconnect attempt failed; next try in ",
-                attempt->delay.count(), "ms");
-    if (!m_reconnectTimer.armOnce(attempt->delay)) {
-        LOG_ERROR("Failed to arm reconnect timer; "
+void DBusMonitor::armHeartbeat() {
+    if (!m_reconnectTimer.armOnce(kHeartbeatInterval)) {
+        // Same pathology as a mid-schedule armOnce failure: timerfd is
+        // broken, no further retries are possible this session.
+        LOG_ERROR("Failed to arm D-Bus heartbeat timer; "
                   "power monitoring disabled for this session");
-        m_state = BusState::Disabled;
-        return;
     }
-    m_currentAttemptNumber = attempt->index;
 }
 
 void DBusMonitor::handleBusDisconnect() {

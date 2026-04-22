@@ -23,9 +23,11 @@ namespace cec_control {
  * registration of the bus fd is dropped, a backoff timer arms, and
  * each firing retries sd_bus_default_system + add_match + take-lock.
  * CEC-side work keeps running throughout. If every retry in
- * m_reconnectSchedule fails, the monitor moves to Disabled and power
- * monitoring stays off for the rest of the session (no further
- * periodic log noise).
+ * m_reconnectSchedule fails, the monitor transitions to Disabled and
+ * enters a slow heartbeat mode that retries every kHeartbeatInterval
+ * (silent at DEBUG; an INFO log confirms recovery). This covers
+ * outages longer than the scheduled retry window without requiring
+ * operator intervention.
  *
  * ---------------------------------------------------------------
  * sd-bus integration invariant — never sd_bus_call* on the loop.
@@ -138,8 +140,10 @@ private:
      * view. Starts Operational; a fatal sd_bus_process / sd_bus_get_fd
      * error transitions to Reconnecting (bus torn down, backoff timer
      * armed). Successful reconnect returns to Operational; exhausting
-     * m_reconnectSchedule promotes to Disabled (no further bus activity
-     * this session — CEC work continues regardless).
+     * m_reconnectSchedule promotes to Disabled, where a slow heartbeat
+     * (kHeartbeatInterval) keeps retrying silently until the bus is
+     * available again, at which point the monitor returns to
+     * Operational. CEC work continues in every state.
      */
     enum class BusState {
         Operational,
@@ -175,6 +179,25 @@ private:
 
     /** Register the freshly reconnected bus fd with m_loop. */
     [[nodiscard]] bool registerBusWithLoop();
+
+    /**
+     * One reconnect attempt: @c reconnectBus + @c registerBusWithLoop.
+     * On success, promote @c m_state to Operational, reset the
+     * schedule, drain queued bus events, and return @c true. On
+     * failure, tear down any half-initialised connection state and
+     * return @c false — @c m_state is left unchanged so the caller
+     * can decide whether this is a scheduled retry or a heartbeat.
+     */
+    [[nodiscard]] bool attemptReconnect();
+
+    /**
+     * Arm @c m_reconnectTimer for @c kHeartbeatInterval. Called when
+     * the reconnect schedule exhausts (to enter heartbeat mode) and
+     * after each failed heartbeat attempt. An @c armOnce failure here
+     * leaves the monitor in @c Disabled with no further fires
+     * scheduled — recovery then requires a process restart.
+     */
+    void armHeartbeat();
 
     /** Unref the signal slot and bus; clear both pointers. */
     void tearDownBusState() noexcept;
@@ -228,13 +251,21 @@ private:
     // Delays between reconnect attempts after a bus disconnect. Tuned so
     // a quick dbus-daemon / logind restart (sub-second downtime) is
     // caught by the first retry; a genuine outage falls onto exponential
-    // backoff. Exhausting the schedule transitions to Disabled.
+    // backoff. Exhausting the schedule transitions to Disabled, where a
+    // slow heartbeat at kHeartbeatInterval keeps retrying.
     BackoffSchedule m_reconnectSchedule{
         std::chrono::seconds(2),
         std::chrono::seconds(10),
         std::chrono::seconds(30),
         std::chrono::seconds(60),
     };
+
+    // Heartbeat cadence in the Disabled state. Set well above the
+    // scheduled-retry window (~102s) so a short outage is caught by
+    // the schedule, while a long one (dbus-daemon restart that
+    // happens hours later) still recovers without operator action.
+    // Silent at default log levels; an INFO line fires on recovery.
+    static constexpr auto kHeartbeatInterval = std::chrono::minutes(30);
 
     // 1-based position of the pending reconnect attempt. Captured on
     // the BackoffSchedule::Attempt returned from nextDelay() when the
