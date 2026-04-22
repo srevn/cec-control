@@ -133,6 +133,26 @@ private:
      */
     bool detectAdapter();
 
+    /**
+     * Invoke @p fn iff the adapter is initialised and the
+     * connection hint reports connected; otherwise return
+     * @p fallback unchanged. Centralises the identical two-line
+     * pre-flight that otherwise fronts every public command and
+     * query in this class.
+     *
+     * Const-qualified so both const and non-const members can
+     * invoke it. @c std::unique_ptr 's non-propagating const on the
+     * pointee (@c operator->() returns @c T* regardless) lets the
+     * lambda call non-const libcec methods even from a const
+     * context — the pattern libcec itself encourages.
+     */
+    template <typename R, typename Fn>
+    R callIfConnected(R fallback, Fn&& fn) const {
+        if (!m_adapter || !m_connected.load(std::memory_order_acquire))
+            return fallback;
+        return fn();
+    }
+
     // libcec callback trampolines
     static void cecLogCallback(void* cbParam, const CEC::cec_log_message* message);
     static void cecCommandCallback(void* cbParam, const CEC::cec_command* command);

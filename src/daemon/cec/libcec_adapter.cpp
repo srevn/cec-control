@@ -246,91 +246,78 @@ bool LibCecAdapter::isConnected() const {
 }
 
 bool LibCecAdapter::powerOnDevice(CEC::cec_logical_address address) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->PowerOnDevices(address);
+    return callIfConnected(false, [&] { return m_adapter->PowerOnDevices(address); });
 }
 
 bool LibCecAdapter::standbyDevice(CEC::cec_logical_address address) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->StandbyDevices(address);
+    return callIfConnected(false, [&] { return m_adapter->StandbyDevices(address); });
 }
 
 bool LibCecAdapter::volumeUp() {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->VolumeUp();
+    return callIfConnected(false, [&] { return m_adapter->VolumeUp(); });
 }
 
 bool LibCecAdapter::volumeDown() {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->VolumeDown();
+    return callIfConnected(false, [&] { return m_adapter->VolumeDown(); });
 }
 
 bool LibCecAdapter::toggleMute() {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->AudioToggleMute();
+    return callIfConnected(false, [&] { return m_adapter->AudioToggleMute(); });
 }
 
 bool LibCecAdapter::sendKeypress(CEC::cec_logical_address address,
                                   CEC::cec_user_control_code key,
                                   bool release) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    if (release) {
-        return m_adapter->SendKeyRelease(address);
-    }
-    return m_adapter->SendKeypress(address, key, false);
+    return callIfConnected(false, [&] {
+        if (release) return m_adapter->SendKeyRelease(address);
+        return m_adapter->SendKeypress(address, key, false);
+    });
 }
 
 bool LibCecAdapter::setStreamPath(uint16_t physicalAddress) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->SetStreamPath(physicalAddress);
+    return callIfConnected(false, [&] { return m_adapter->SetStreamPath(physicalAddress); });
 }
 
 uint16_t LibCecAdapter::getDevicePhysicalAddress(CEC::cec_logical_address address) const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return 0;
-    return m_adapter->GetDevicePhysicalAddress(address);
+    return callIfConnected(uint16_t{0},
+        [&] { return m_adapter->GetDevicePhysicalAddress(address); });
 }
 
 bool LibCecAdapter::isDeviceActive(CEC::cec_logical_address address) const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
-    return m_adapter->IsActiveDevice(address);
+    return callIfConnected(false, [&] { return m_adapter->IsActiveDevice(address); });
 }
 
 CEC::cec_power_status LibCecAdapter::getDevicePowerStatus(CEC::cec_logical_address address) const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return CEC::CEC_POWER_STATUS_UNKNOWN;
-    return m_adapter->GetDevicePowerStatus(address);
+    return callIfConnected(CEC::CEC_POWER_STATUS_UNKNOWN,
+        [&] { return m_adapter->GetDevicePowerStatus(address); });
 }
 
 std::string LibCecAdapter::getDeviceOSDName(CEC::cec_logical_address address) const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return "";
-    return m_adapter->GetDeviceOSDName(address);
+    return callIfConnected(std::string{},
+        [&] { return m_adapter->GetDeviceOSDName(address); });
 }
 
 CEC::cec_logical_addresses LibCecAdapter::getActiveDevices() const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) {
-        CEC::cec_logical_addresses empty;
-        empty.Clear();
-        return empty;
-    }
-    return m_adapter->GetActiveDevices();
+    CEC::cec_logical_addresses empty;
+    empty.Clear();
+    return callIfConnected(empty, [&] { return m_adapter->GetActiveDevices(); });
 }
 
 CEC::cec_logical_address LibCecAdapter::getActiveSource() const {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return CEC::CECDEVICE_UNKNOWN;
-    return m_adapter->GetActiveSource();
+    return callIfConnected(CEC::CECDEVICE_UNKNOWN,
+        [&] { return m_adapter->GetActiveSource(); });
 }
 
 bool LibCecAdapter::standbyDevices(CEC::cec_logical_address address) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
     // libcec automatically uses powerOffDevices list when
     // CECDEVICE_BROADCAST is used.
-    return m_adapter->StandbyDevices(address);
+    return callIfConnected(false, [&] { return m_adapter->StandbyDevices(address); });
 }
 
 bool LibCecAdapter::powerOnDevices(CEC::cec_logical_address address) {
-    if (!m_adapter || !m_connected.load(std::memory_order_acquire)) return false;
     // libcec automatically uses wakeDevices list when
     // CECDEVICE_BROADCAST is used.
-    return m_adapter->PowerOnDevices(address);
+    return callIfConnected(false, [&] { return m_adapter->PowerOnDevices(address); });
 }
 
 // libcec callback trampolines ----------------------------------------
