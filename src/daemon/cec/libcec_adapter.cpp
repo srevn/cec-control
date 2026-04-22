@@ -202,29 +202,33 @@ void LibCecAdapter::closeConnection() {
 bool LibCecAdapter::reopenConnection() {
     LOG_INFO("Reopening CEC adapter connection");
 
-    if (!m_adapter) {
-        LOG_ERROR("Cannot reopen connection - libCEC not loaded");
-        return false;
+    // A null m_adapter here means a prior reopen failed at the detect
+    // step and reset it; skip the teardown (nothing to close, no USB
+    // state to settle) and fall straight through to re-init + detect.
+    // Without this guard the reconnect schedule degenerates into a
+    // single useful attempt — every retry after the first would bail
+    // at the top, and the FSM would abandon without ever trying again.
+    //
+    // When we do have a live instance, destroy-and-reinitialise is
+    // mandatory: libcec (>= 7) binds per-client state to the
+    // ICECAdapter instance that CECInitialise returned, and a
+    // Close+Open cycle on the same instance leaves the internal
+    // processor half-initialised — Open then reports "failed to
+    // register a new CEC client: CEC processor is not initialised"
+    // followed by a crash deep inside libcec. Destroy-and-reinitialise
+    // is the pattern other libcec consumers use (kodi, cec-client,
+    // libcec's own tests) and is what recovers cleanly after restart,
+    // connection loss, and suspend/wake.
+    if (m_adapter) {
+        m_connected.store(false, std::memory_order_release);
+        try {
+            m_adapter->Close();
+        } catch (const std::exception& e) {
+            LOG_WARNING("Exception during adapter Close on reopen: ", e.what());
+        }
+        m_adapter.reset();  // invokes CECDestroy via the AdapterDeleter
+        std::this_thread::sleep_for(kUsbSettleDelay);
     }
-
-    // Full teardown and re-initialisation: libcec (>= 7) binds
-    // per-client state to the ICECAdapter instance that CECInitialise
-    // returned, and a Close+Open cycle on the same instance leaves
-    // the internal processor half-initialised — Open then reports
-    // "failed to register a new CEC client: CEC processor is not
-    // initialised" followed by a crash deep inside libcec.
-    // Destroy-and-reinitialise is the pattern other libcec consumers
-    // use (kodi, cec-client, libcec's own tests) and is what recovers
-    // cleanly after restart, connection loss, and suspend/wake.
-    m_connected.store(false, std::memory_order_release);
-    try {
-        m_adapter->Close();
-    } catch (const std::exception& e) {
-        LOG_WARNING("Exception during adapter Close on reopen: ", e.what());
-    }
-    m_adapter.reset();  // invokes CECDestroy via the AdapterDeleter
-
-    std::this_thread::sleep_for(kUsbSettleDelay);
 
     m_adapter = AdapterPtr(::CECInitialise(&m_libcecConfig));
     if (!m_adapter) {
