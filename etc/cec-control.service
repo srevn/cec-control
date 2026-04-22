@@ -2,6 +2,9 @@
 Description=CEC Control Daemon
 After=network.target
 
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=@INSTALL_USER@
