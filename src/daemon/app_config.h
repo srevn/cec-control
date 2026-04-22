@@ -8,6 +8,29 @@ namespace cec_control {
 class ConfigManager;
 
 /**
+ * Router-level policy flags. Each field is a seed value for a live
+ * store on @c CommandRouter — @c autoStandbyEnabled in particular is
+ * mirrored into an atomic there and toggled at runtime by
+ * @c CMD_AUTO_STANDBY; this struct remains the file's original value.
+ * See @c AppConfig's class comment for the snapshot-vs-live-state
+ * split.
+ */
+struct RouterConfig {
+    bool queueCommandsDuringSuspend = true;
+    bool autoStandbyEnabled         = false;
+};
+
+/**
+ * Daemon-level toggles. Read once at startup by @c CECDaemon::start
+ * to decide whether to scan devices and whether to bring up the
+ * D-Bus power monitor.
+ */
+struct DaemonConfig {
+    bool enablePowerMonitor   = true;
+    bool scanDevicesAtStartup = false;
+};
+
+/**
  * Typed, read-only snapshot of the configuration file.
  *
  * Loaded once at startup via @c loadAppConfig, handed to consumers
@@ -15,6 +38,11 @@ class ConfigManager;
  * policy (e.g. the wire-toggleable auto-standby flag) lives on the
  * consuming subsystem, seeded from this snapshot at construction —
  * @c AppConfig is the file's mirror, not the live policy store.
+ *
+ * Every field is itself a typed sub-struct scoped to one consumer
+ * (adapter / throttler / router / daemon). File-layout-to-struct-
+ * layout is mapped by @c loadAppConfig; a reader who wants to know
+ * which INI section populates a given field should read that.
  *
  * A future SIGHUP reload would re-run @c loadAppConfig to produce a
  * fresh @c AppConfig, diff against the stored snapshot, and call the
@@ -24,11 +52,8 @@ class ConfigManager;
 struct AppConfig {
     AdapterConfig   adapter;
     ThrottlerConfig throttler;
-
-    bool enablePowerMonitor         = true;
-    bool scanDevicesAtStartup       = false;
-    bool queueCommandsDuringSuspend = true;
-    bool autoStandbyEnabled         = false;
+    RouterConfig    router;
+    DaemonConfig    daemon;
 };
 
 /**

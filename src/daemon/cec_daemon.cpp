@@ -101,7 +101,7 @@ bool CECDaemon::start() {
             return false;
         }
 
-        if (m_config.scanDevicesAtStartup) {
+        if (m_config.daemon.scanDevicesAtStartup) {
             LOG_INFO("Scanning for CEC devices...");
             m_worker->submit([](ICecAdapter& adapter) {
                 ops::logDeviceSnapshot(adapter);
@@ -121,7 +121,7 @@ bool CECDaemon::start() {
             return false;
         }
 
-        if (m_config.enablePowerMonitor) {
+        if (m_config.daemon.enablePowerMonitor) {
             if (!setupPowerMonitor()) {
                 LOG_WARNING("Failed to set up power monitoring. "
                             "Sleep/wake events will not be handled automatically.");

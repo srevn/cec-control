@@ -20,8 +20,8 @@ CommandRouter::CommandRouter(const AppConfig& config,
     : m_worker(worker),
       m_work(work),
       m_throttler(config.throttler),
-      m_queueCommandsDuringSuspend(config.queueCommandsDuringSuspend),
-      m_autoStandbyEnabled(config.autoStandbyEnabled),
+      m_queueCommandsDuringSuspend(config.router.queueCommandsDuringSuspend),
+      m_autoStandbyEnabled(config.router.autoStandbyEnabled),
       m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
 void CommandRouter::shutdown() {
