@@ -22,8 +22,9 @@ namespace cec_control {
  *
  * Semantics to note:
  *  - The first attempt of a cycle is triggered by @c ConnectionLost
- *    and does not draw from the schedule. Total attempts is therefore
- *    @c schedule.size() + 1.
+ *    (immediate) or @c seedCycle (delayed). Neither draws from the
+ *    schedule; the schedule covers attempts 2..N. Total attempts is
+ *    therefore @c schedule.size() + 1 for both entry points.
  *  - @c StartAttempt implies that any armed retry timer is stale. The
  *    dispatcher must @c disarm() the timer before submitting the
  *    attempt; @c TimerSource::disarm is idempotent so the effect
@@ -33,6 +34,16 @@ namespace cec_control {
  *    already moved to @c Idle in response to @c SystemSuspend /
  *    @c SystemResume, and @c Idle answers every non-@c ConnectionLost
  *    event with @c Effect::None.
+ *
+ * ## Scope vs. CMD_RESTART_ADAPTER
+ *
+ * CMD_RESTART_ADAPTER bypasses this FSM entirely. Operator-triggered
+ * restart is demand with no backoff and no retry policy; it submits a
+ * single reopen on the worker FIFO and replies inline. A restart
+ * landing while this FSM is mid-cycle simply queues behind any
+ * in-flight reopen on the worker; the FSM's pending attempt resolves
+ * with whatever state the adapter ends up in. Not unified with this
+ * FSM because "recovery" and "demand" have different failure policies.
  */
 class AdapterReconnect {
 public:
@@ -90,6 +101,26 @@ public:
 
     /** Feed an event; receive the resulting effect. */
     [[nodiscard]] Output onEvent(Event event) noexcept;
+
+    /**
+     * Seed a reconnect cycle whose first attempt is delayed by
+     * @p initialDelay. Covers the post-resume path where the resume
+     * worker's reopen returned a disconnected adapter and a delayed
+     * retry is needed to let USB re-enumeration settle.
+     *
+     * The seeded attempt bypasses @c schedule.nextDelay(); on failure
+     * the full schedule runs from attempt 2 onward, yielding
+     * @c totalAttempts() attempts total — identical shape to the
+     * @c ConnectionLost-driven cycle, so the only difference is
+     * whether attempt 1 fires immediately or after a delay.
+     *
+     * Distinct from @c onEvent(ConnectionLost): @c seedCycle absorbs
+     * silently (returns @c Effect::None) if the FSM is non-Idle — a
+     * cycle is already covering the same adapter-gone condition —
+     * whereas @c ConnectionLost from @c WaitingForRetry supersedes
+     * the pending retry with an immediate attempt.
+     */
+    [[nodiscard]] Output seedCycle(std::chrono::milliseconds initialDelay) noexcept;
 
 private:
     /**

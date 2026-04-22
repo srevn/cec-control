@@ -12,9 +12,14 @@ namespace cec_control {
  * One lifecycle event is in flight at a time; subsequent events queue
  * until the active phase returns to Idle. Events flow in via per-method
  * handlers and produce a typed @c Output describing the side effects
- * the daemon must carry out (start work on the pool, arm / disarm
- * timers, release / take the logind inhibit lock, notify the reconnect
- * FSM, submit a late reconnect attempt).
+ * the daemon must carry out (start work on the pool, arm / disarm the
+ * suspend-safety timer, release / take the logind inhibit lock, notify
+ * the reconnect FSM).
+ *
+ * Post-resume reconnect retries are NOT owned here. The supervisor
+ * reads the @c adapterValid flag from @c onResumeCompleted and, on
+ * failure, seeds the @c AdapterReconnect FSM directly — unifying the
+ * post-resume retry with the connection-lost reconnect cycle.
  *
  * Thread-safety: main-thread only. Callers serialise implicitly via
  * the event loop; no mutex is held.
@@ -87,20 +92,14 @@ public:
 
         Timer  safetyTimer = Timer::None;
         std::chrono::milliseconds safetyDelay{};
-        Timer  resumeRetry = Timer::None;
-        std::chrono::milliseconds resumeRetryDelay{};
 
-        bool   submitLateReconnect = false;
-        Notify reconnectNotify     = Notify::None;
+        Notify reconnectNotify = Notify::None;
 
         SafetyOutcome safety = SafetyOutcome::Inert;
     };
 
     /** Deadline after which the safety timer releases the inhibit lock. */
     static constexpr auto kSuspendSafetyDeadline = std::chrono::seconds(10);
-
-    /** Delay before the single post-resume reconnect attempt. */
-    static constexpr auto kResumeRetryDelay = std::chrono::seconds(10);
 
     PowerLifecycle() noexcept = default;
 
@@ -116,20 +115,20 @@ public:
     /** The suspend pool task has completed (duration logged by caller). */
     [[nodiscard]] Output onSuspendCompleted() noexcept;
 
-    /** The resume pool task has completed; @p adapterValid is isConnected(). */
+    /**
+     * The resume pool task has completed; @p adapterValid is
+     * @c isConnected(). The supervisor inspects @p adapterValid after
+     * applying the returned output and, if @c false, seeds a reconnect
+     * cycle on @c AdapterReconnect — reconnect retries are not owned
+     * by this FSM.
+     */
     [[nodiscard]] Output onResumeCompleted(bool adapterValid) noexcept;
 
     /** The suspend-safety timerfd became readable. */
     [[nodiscard]] Output onSafetyTimerFired() noexcept;
 
-    /** The resume-retry timerfd became readable. */
-    [[nodiscard]] Output onResumeRetryTimerFired() noexcept;
-
     /** Dispatcher feedback: arming the safety timerfd failed. */
     [[nodiscard]] Output onSafetyTimerArmFailed() noexcept;
-
-    /** Dispatcher feedback: arming the resume-retry timerfd failed. */
-    [[nodiscard]] Output onResumeRetryArmFailed() noexcept;
 
     /**
      * If Idle with a non-empty queue, pop and emit the entry Output
@@ -158,7 +157,6 @@ private:
     Phase  m_phase = Phase::Idle;
     Source m_phaseSource = Source::DBus;
     bool   m_safetyFiredFirst = false;
-    bool   m_resumeRetryArmed = false;
     std::deque<Pending> m_pending;
 };
 

@@ -12,7 +12,6 @@ class AdapterLifecycle;
 class AdapterWorker;
 class CommandDispatcher;
 class DBusMonitor;
-class MainThreadWork;
 class TimerSource;
 
 /**
@@ -24,11 +23,11 @@ class TimerSource;
  * Both FSMs are pure decision types: they emit @c Output values
  * describing the side effects to execute. This class is the executor.
  * It holds non-owning references to the timers, the adapter worker,
- * the adapter lifecycle, the command dispatcher, and the main-thread
- * work queue, plus a may-be-null pointer to the D-Bus monitor (which
- * is constructed conditionally on the @c [Daemon] config flag and may
- * also be torn down on attach failure). The supervisor is itself
- * owned by @c CECDaemon and never outlives any of those subsystems.
+ * the adapter lifecycle, and the command dispatcher, plus a may-be-
+ * null pointer to the D-Bus monitor (which is constructed conditionally
+ * on the @c [Daemon] config flag and may also be torn down on attach
+ * failure). The supervisor is itself owned by @c CECDaemon and never
+ * outlives any of those subsystems.
  *
  * ## Threading
  *
@@ -49,19 +48,28 @@ class TimerSource;
  *     warnings land after "starting X" in the log);
  *  2. disarm stale timers before re-arming them on the same axis;
  *  3. notify the reconnect FSM (a @c SystemSuspend / @c SystemResume
- *     there cancels any armed reconnect retry);
- *  4. arm new timers, feeding @c onSafetyTimerArmFailed /
- *     @c onResumeRetryArmFailed back into the lifecycle FSM on syscall
- *     failure;
+ *     there cancels any armed reconnect retry, including a seeded
+ *     post-resume retry waiting on its delay);
+ *  4. arm new timers, feeding @c onSafetyTimerArmFailed back into
+ *     the lifecycle FSM on syscall failure;
  *  5. apply inhibit-lock operations (no-op when @c m_dbusMonitor is
  *     null);
- *  6. submit adapter-side work (suspend / resume) and the
- *     post-resume late-reconnect attempt.
+ *  6. submit adapter-side work (suspend / resume).
  *
  * Preserve this ordering verbatim: subtle invariants ride on it (e.g.
  * the safety timer must be disarmed before the lock release that
  * follows the FSM's overrun branch, or a stale fire could re-trigger
  * the warning path after the lock has already been dropped).
+ *
+ * ## Post-resume reconnect
+ *
+ * When @c onResumeCompleted observes @c adapterValid == false, the
+ * supervisor seeds @c AdapterReconnect with @c kPostResumeRetryDelay
+ * as the initial-attempt delay. From that point the unified reconnect
+ * cycle owns the backoff (attempt 1 after the seed delay, then
+ * schedule-driven retries). Prior to unification this path ran a
+ * separate single-shot retry timer alongside the alert-driven FSM;
+ * both could fire concurrently. The unified model eliminates the race.
  */
 class PowerSupervisor {
 public:
@@ -79,9 +87,7 @@ public:
     PowerSupervisor(CommandDispatcher& dispatcher,
                     AdapterLifecycle&  lifecycle,
                     AdapterWorker&     worker,
-                    MainThreadWork&    work,
                     TimerSource&       suspendSafety,
-                    TimerSource&       resumeRetry,
                     TimerSource&       reconnectRetry) noexcept;
 
     ~PowerSupervisor() = default;
@@ -123,9 +129,6 @@ public:
     /** The suspend-safety timerfd became readable. */
     void onSafetyTimerFired();
 
-    /** The post-resume retry timerfd became readable. */
-    void onResumeRetryTimerFired();
-
     /** The reconnect-retry timerfd became readable. */
     void onReconnectRetryTimerFired();
 
@@ -158,8 +161,8 @@ private:
     void applyLifecycle(PowerLifecycle::Output output);
 
     /**
-     * Flat dispatcher over the lifecycle output's six axes. The
-     * execution order is documented at the class level — preserve it.
+     * Flat dispatcher over the lifecycle output's axes. The execution
+     * order is documented at the class level — preserve it.
      */
     void executeEffects(const PowerLifecycle::Output& output);
 
@@ -174,27 +177,23 @@ private:
      */
     void submitResumeWork();
 
-    /**
-     * Fire-and-forget reconnect attempt triggered by the post-resume
-     * retry timer. Distinct from the @c AdapterReconnect cycle; covers
-     * the USB re-enumeration race after wake. Gated so it no-ops if
-     * the adapter is already connected or the lifecycle has re-suspended
-     * before the timer fired.
-     */
-    void submitLateReconnect();
-
     /** Submit one reconnect attempt; the result lands in @c onReconnectResult. */
     void submitReconnectAttempt();
 
     /** Carry out the side effect emitted by the reconnect FSM. */
     void execute(AdapterReconnect::Output out);
 
+    /**
+     * Delay before the seeded post-resume reconnect attempt. Covers
+     * USB re-enumeration settling after wake; subsequent retries
+     * follow @c AdapterReconnect's backoff schedule.
+     */
+    static constexpr auto kPostResumeRetryDelay = std::chrono::seconds(10);
+
     CommandDispatcher& m_dispatcher;
     AdapterLifecycle&  m_lifecycle;
     AdapterWorker&     m_worker;
-    MainThreadWork&    m_work;
     TimerSource&       m_suspendSafetyTimer;
-    TimerSource&       m_resumeRetryTimer;
     TimerSource&       m_reconnectRetryTimer;
 
     // Wired post-construction; null until setupPowerMonitor succeeds,

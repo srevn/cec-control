@@ -54,12 +54,8 @@ PowerLifecycle::makeSuspendEntry(Source /*source*/) noexcept {
     o.safetyTimer = Output::Timer::Arm;
     o.safetyDelay = std::chrono::duration_cast<std::chrono::milliseconds>(
         kSuspendSafetyDeadline);
-    if (m_resumeRetryArmed) {
-        // A pending post-resume retry is stale as soon as a new
-        // suspend starts: the adapter is about to be closed.
-        o.resumeRetry = Output::Timer::Disarm;
-        m_resumeRetryArmed = false;
-    }
+    // SystemSuspend on the reconnect FSM cancels any pending reconnect
+    // retry — including a post-resume seed waiting on its delay.
     o.reconnectNotify = Output::Notify::SystemSuspend;
     return o;
 }
@@ -70,10 +66,8 @@ PowerLifecycle::makeResumeEntry(Source /*source*/) noexcept {
 
     Output o;
     o.work = Output::Work::StartResume;
-    if (m_resumeRetryArmed) {
-        o.resumeRetry = Output::Timer::Disarm;
-        m_resumeRetryArmed = false;
-    }
+    // SystemResume likewise cancels any pending reconnect retry; the
+    // fresh resume cycle supersedes any in-flight recovery cycle.
     o.reconnectNotify = Output::Notify::SystemResume;
     return o;
 }
@@ -100,22 +94,18 @@ PowerLifecycle::Output PowerLifecycle::onSuspendCompleted() noexcept {
 }
 
 PowerLifecycle::Output
-PowerLifecycle::onResumeCompleted(bool adapterValid) noexcept {
+PowerLifecycle::onResumeCompleted(bool /*adapterValid*/) noexcept {
     if (m_phase != Phase::Resuming) return {};
 
     const Source src = m_phaseSource;
     m_phase = Phase::Idle;
 
+    // Reconnect retries belong to AdapterReconnect; the supervisor
+    // seeds that FSM directly on adapterValid==false after applying
+    // this output. The `adapterValid` parameter is retained for
+    // signature symmetry with onSuspendCompleted and so callers still
+    // see a self-documenting call site.
     Output o;
-    if (!adapterValid && !m_resumeRetryArmed) {
-        // One delayed retry covers the window where the first reopen
-        // races USB re-enumeration after wake. Suppressed if another
-        // retry is already armed — a concurrent resume doesn't stack.
-        o.resumeRetry = Output::Timer::Arm;
-        o.resumeRetryDelay = std::chrono::duration_cast<std::chrono::milliseconds>(
-            kResumeRetryDelay);
-        m_resumeRetryArmed = true;
-    }
     if (src == Source::DBus) o.lock = Output::Lock::Take;
     return o;
 }
@@ -130,25 +120,11 @@ PowerLifecycle::Output PowerLifecycle::onSafetyTimerFired() noexcept {
     return o;
 }
 
-PowerLifecycle::Output PowerLifecycle::onResumeRetryTimerFired() noexcept {
-    if (m_phase != Phase::Idle || !m_resumeRetryArmed) return {};
-    m_resumeRetryArmed = false;
-
-    Output o;
-    o.submitLateReconnect = true;
-    return o;
-}
-
 PowerLifecycle::Output PowerLifecycle::onSafetyTimerArmFailed() noexcept {
     // Deliberate no-op. Leaving m_safetyFiredFirst false means the
     // next onSuspendCompleted takes the happy branch and releases the
     // lock — matching the behaviour of the single-flag predecessor
     // where the "safety armed" flag was never reset on arm failure.
-    return {};
-}
-
-PowerLifecycle::Output PowerLifecycle::onResumeRetryArmFailed() noexcept {
-    m_resumeRetryArmed = false;
     return {};
 }
 

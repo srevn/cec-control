@@ -136,7 +136,6 @@ private:
     MainThreadWork m_work;
     EventLoop      m_loop;
     TimerSource    m_suspendSafetyTimer;
-    TimerSource    m_resumeRetryTimer;
     TimerSource    m_reconnectRetryTimer;
 
     // CEC adapter actor. Owns the libcec handle and the single thread

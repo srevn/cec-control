@@ -41,8 +41,7 @@ bool CECDaemon::start() {
         LOG_ERROR("Main-thread work queue not initialised; aborting start");
         return false;
     }
-    if (!m_suspendSafetyTimer.valid() || !m_resumeRetryTimer.valid()
-            || !m_reconnectRetryTimer.valid()) {
+    if (!m_suspendSafetyTimer.valid() || !m_reconnectRetryTimer.valid()) {
         LOG_ERROR("Timer source(s) not initialised; aborting start");
         return false;
     }
@@ -111,8 +110,8 @@ bool CECDaemon::start() {
         // setupPowerMonitor below (or stays null when power
         // monitoring is disabled).
         m_supervisor = std::make_unique<PowerSupervisor>(
-            *m_dispatcher, *m_lifecycle, *m_worker, m_work,
-            m_suspendSafetyTimer, m_resumeRetryTimer, m_reconnectRetryTimer);
+            *m_dispatcher, *m_lifecycle, *m_worker,
+            m_suspendSafetyTimer, m_reconnectRetryTimer);
 
         m_worker->start();
 
@@ -164,11 +163,6 @@ bool CECDaemon::start() {
         if (!m_loop.add(m_suspendSafetyTimer.fd(), READ,
                         [this](uint32_t) { m_supervisor->onSafetyTimerFired(); })) {
             LOG_ERROR("Failed to register suspend-safety timer with event loop");
-            return false;
-        }
-        if (!m_loop.add(m_resumeRetryTimer.fd(), READ,
-                        [this](uint32_t) { m_supervisor->onResumeRetryTimerFired(); })) {
-            LOG_ERROR("Failed to register resume-retry timer with event loop");
             return false;
         }
         if (!m_loop.add(m_reconnectRetryTimer.fd(), READ,

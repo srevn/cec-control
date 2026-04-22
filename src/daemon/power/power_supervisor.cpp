@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "../../common/logger.h"
-#include "../../common/main_thread_work.h"
 #include "../../common/messages.h"
 #include "../../common/timer_source.h"
 #include "../adapter_lifecycle.h"
@@ -18,22 +17,13 @@ namespace cec_control {
 PowerSupervisor::PowerSupervisor(CommandDispatcher& dispatcher,
                                  AdapterLifecycle&  lifecycle,
                                  AdapterWorker&     worker,
-                                 MainThreadWork&    work,
                                  TimerSource&       suspendSafety,
-                                 TimerSource&       resumeRetry,
                                  TimerSource&       reconnectRetry) noexcept
     : m_dispatcher(dispatcher),
       m_lifecycle(lifecycle),
       m_worker(worker),
-      m_work(work),
       m_suspendSafetyTimer(suspendSafety),
-      m_resumeRetryTimer(resumeRetry),
-      m_reconnectRetryTimer(reconnectRetry) {
-    (void)m_work; // Held for parity with the daemon's wiring and for
-                  // future cross-thread post needs (P2.5 unifies the
-                  // reconnect paths through the supervisor); current
-                  // code paths do not invoke it directly.
-}
+      m_reconnectRetryTimer(reconnectRetry) {}
 
 void PowerSupervisor::setDBusMonitor(DBusMonitor* dbusMonitor) noexcept {
     m_dbusMonitor = dbusMonitor;
@@ -65,10 +55,19 @@ void PowerSupervisor::onSuspendCompleted(std::chrono::milliseconds workDuration)
 }
 
 void PowerSupervisor::onResumeCompleted(bool adapterValid) {
-    // After resume, the USB subsystem can still be settling. The FSM
-    // emits a Timer::Arm for one delayed retry (gated on !adapterValid
-    // and not-already-armed); the lock retake happens for DBus sources.
+    // Apply the lifecycle FSM output first (Resuming → Idle, lock
+    // retake on DBus sources). If the adapter is still disconnected
+    // after the worker-side reopen, seed the reconnect FSM with a
+    // delayed first attempt to let USB re-enumeration settle.
+    // Subsequent failures fall through to AdapterReconnect's backoff
+    // schedule — no second timer is involved.
     applyLifecycle(m_powerLifecycle.onResumeCompleted(adapterValid));
+    if (adapterValid) return;
+
+    LOG_INFO("CEC adapter not connected after resume; seeding reconnect cycle");
+    execute(m_adapterReconnect.seedCycle(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            kPostResumeRetryDelay)));
 }
 
 void PowerSupervisor::onSafetyTimerFired() {
@@ -82,11 +81,6 @@ void PowerSupervisor::onSafetyTimerFired() {
     applyLifecycle(out);
 }
 
-void PowerSupervisor::onResumeRetryTimerFired() {
-    m_resumeRetryTimer.consume();
-    applyLifecycle(m_powerLifecycle.onResumeRetryTimerFired());
-}
-
 void PowerSupervisor::onConnectionLost() {
     LOG_WARNING("CEC connection lost, attempting to reconnect");
     execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::ConnectionLost));
@@ -95,7 +89,11 @@ void PowerSupervisor::onConnectionLost() {
 void PowerSupervisor::onReconnectResult(bool ok) {
     // A result arriving after a SystemSuspend/Resume has already moved
     // the FSM to Idle is absorbed as a no-op; no state check needed.
-    if (ok) LOG_INFO("Successfully reconnected to CEC adapter");
+    if (ok) {
+        LOG_INFO("Successfully reconnected to CEC adapter");
+    } else {
+        LOG_WARNING("CEC reconnect attempt failed");
+    }
     execute(m_adapterReconnect.onEvent(
         ok ? AdapterReconnect::Event::AttemptSucceeded
            : AdapterReconnect::Event::AttemptFailed));
@@ -138,11 +136,11 @@ void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
     // Disarm stale timers first so a subsequent Arm on the same axis
     // starts from a clean slate. TimerSource::disarm is idempotent.
     if (out.safetyTimer == Timer::Disarm) m_suspendSafetyTimer.disarm();
-    if (out.resumeRetry == Timer::Disarm) m_resumeRetryTimer.disarm();
 
     // Notify the reconnect FSM. Its effects are carried out inline by
-    // execute(); a SystemSuspend/SystemResume there disarms the
-    // reconnect retry timer if one was armed.
+    // execute(); a SystemSuspend/SystemResume there cancels any armed
+    // reconnect retry, including a seeded post-resume retry still
+    // waiting on its delay.
     switch (out.reconnectNotify) {
     case Notify::SystemSuspend:
         execute(m_adapterReconnect.onEvent(AdapterReconnect::Event::SystemSuspend));
@@ -165,12 +163,6 @@ void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
             (void)m_powerLifecycle.onSafetyTimerArmFailed();
         }
     }
-    if (out.resumeRetry == Timer::Arm) {
-        if (!m_resumeRetryTimer.armOnce(out.resumeRetryDelay)) {
-            LOG_WARNING("Could not arm resume-retry timer");
-            (void)m_powerLifecycle.onResumeRetryArmFailed();
-        }
-    }
 
     // Inhibit-lock operations. m_dbusMonitor may be absent when power
     // monitoring is disabled by configuration or failed to initialise;
@@ -189,14 +181,15 @@ void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
     case Work::StartResume:  submitResumeWork();  break;
     case Work::None:         break;
     }
-    if (out.submitLateReconnect) submitLateReconnect();
 }
 
 void PowerSupervisor::submitSuspendWork() {
     // The lifecycle holds its own suspended/shutdown gates and may
     // invoke onDone synchronously on the early-return paths; the FSM's
     // coalescing keeps that recursion shallow (typically one step) and
-    // bounded by the queue depth. No defensive m_work hop is needed:
+    // bounded by the queue depth. No cross-thread hop is needed
+    // here: both the worker-completion path and the early-return
+    // synchronous path land on the main thread by construction, and
     // the supervisor's reference to the lifecycle is valid for the
     // supervisor's entire lifetime.
     m_lifecycle.suspendAsync([this](std::chrono::milliseconds elapsed) {
@@ -216,12 +209,6 @@ void PowerSupervisor::submitResumeWork() {
             if (!queued.empty()) m_dispatcher.replay(std::move(queued));
             this->onResumeCompleted(adapterValid);
         });
-}
-
-void PowerSupervisor::submitLateReconnect() {
-    if (m_worker.isAdapterConnected() || m_lifecycle.isSuspended()) return;
-    LOG_INFO("Performing delayed reconnection attempt");
-    m_lifecycle.reconnectAsync(/*onDone*/ {});
 }
 
 void PowerSupervisor::submitReconnectAttempt() {
@@ -246,9 +233,14 @@ void PowerSupervisor::execute(AdapterReconnect::Output out) {
         submitReconnectAttempt();
         break;
     case E::ScheduleRetry:
-        LOG_WARNING("CEC reconnect attempt failed; next retry in ",
-                    out.delay.count(), "ms (attempt ",
-                    out.attemptNumber, "/", out.totalAttempts, ")");
+        // Uniform phrasing: this effect now serves both the seeded
+        // first attempt (from onResumeCompleted) and the failure-driven
+        // retries (from AttemptFailed). The "attempt failed" signal is
+        // logged at onReconnectResult, not here; this message reports
+        // only the scheduling itself.
+        LOG_INFO("CEC reconnect scheduled in ", out.delay.count(),
+                 "ms (attempt ", out.attemptNumber, "/",
+                 out.totalAttempts, ")");
         if (!m_reconnectRetryTimer.armOnce(out.delay)) {
             LOG_ERROR("Failed to arm reconnect-retry timer");
             execute(m_adapterReconnect.onEvent(

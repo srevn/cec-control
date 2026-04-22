@@ -13,6 +13,25 @@ void AdapterReconnect::resetCycle() noexcept {
     m_nextAttemptNumber = 0;
 }
 
+AdapterReconnect::Output
+AdapterReconnect::seedCycle(std::chrono::milliseconds initialDelay) noexcept {
+    // Non-Idle: a cycle is already in flight; absorb. This is the
+    // correct behaviour for the concurrent case where a libcec alert
+    // beats the post-resume completion through MainThreadWork — the
+    // running cycle already covers the adapter-gone condition.
+    if (m_state != State::Idle) return {};
+
+    // Defensive: a clean entry into Idle resets the schedule (see
+    // resetCycle), but explicit reset documents that the seeded cycle
+    // starts at schedule index 0 and mirrors the sibling reset on
+    // ConnectionLost from WaitingForRetry.
+    m_schedule.reset();
+    m_state = State::WaitingForRetry;
+    m_nextAttemptNumber = 1;
+    return {Effect::ScheduleRetry, initialDelay,
+            /*attemptNumber*/ 1, totalAttempts()};
+}
+
 AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
     const std::size_t total = totalAttempts();
 
