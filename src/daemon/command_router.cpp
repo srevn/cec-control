@@ -56,14 +56,29 @@ void CommandRouter::dispatch(Message command, ResponseSink reply) {
             return;
         }
         LOG_INFO("Scheduling adapter restart");
-        m_worker.submit([](ICecAdapter& adapter) {
-            if (adapter.reopenConnection()) {
-                LOG_INFO("Adapter restart completed successfully");
-            } else {
-                LOG_ERROR("Failed to restart adapter");
+        // Mirror the adapter-driven pattern below: submit a worker job
+        // that posts the real RESP_SUCCESS / RESP_ERROR back through
+        // m_work once reopenConnection() has actually completed. The
+        // previous fire-and-forget shape replied RESP_SUCCESS before
+        // the worker ran, masking genuine reopen failures.
+        m_worker.submit([this, reply = std::move(reply)]
+                        (ICecAdapter& adapter) mutable {
+            Message response(MessageType::RESP_ERROR);
+            try {
+                if (adapter.reopenConnection()) {
+                    LOG_INFO("Adapter restart completed successfully");
+                    response = Message(MessageType::RESP_SUCCESS);
+                } else {
+                    LOG_ERROR("Failed to restart adapter");
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("Exception during adapter restart: ", e.what());
             }
+            m_work.post([reply = std::move(reply),
+                         response = std::move(response)]() mutable {
+                reply(std::move(response));
+            });
         });
-        reply(Message(MessageType::RESP_SUCCESS));
         return;
     }
 

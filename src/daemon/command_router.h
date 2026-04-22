@@ -35,12 +35,12 @@ class MainThreadWork;
  *
  *  - @b Gate-only (shutdown rejection, suspended non-queueable) —
  *    replies synchronously on the main thread.
- *  - @b State-only (suspend queue push, @c CMD_AUTO_STANDBY flag flip,
- *    @c CMD_RESTART_ADAPTER fire-and-forget reopen) — replies
- *    synchronously after a minimal state mutation.
- *  - @b Adapter-driven (volume, power, source, mute) — submits a
- *    worker job; the job invokes the sink via @c MainThreadWork::post
- *    on completion.
+ *  - @b State-only (suspend queue push, @c CMD_AUTO_STANDBY flag flip)
+ *    — replies synchronously after a minimal state mutation.
+ *  - @b Adapter-driven (volume, power, source, mute,
+ *    @c CMD_RESTART_ADAPTER) — submits a worker job; the job invokes
+ *    the sink via @c MainThreadWork::post on completion, so the client
+ *    sees the genuine outcome rather than a fire-and-forget ack.
  *
  * ## Suspend / resume coordination
  *
