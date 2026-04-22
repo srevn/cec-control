@@ -215,7 +215,12 @@ void SocketServer::processRequest(SessionId id, Session& session) {
     }
     if (static_cast<std::size_t>(received) > m_readBuffer.size()) {
         // MSG_TRUNC exposed that the datagram was larger than our buffer.
-        LOG_WARNING("Oversized datagram (", received, " bytes) from session ", id);
+        // Every legitimate peer uses MAX_MESSAGE_SIZE as its upper bound; a
+        // larger frame is a protocol-level divergence (mismatched constant,
+        // bespoke client, truncation probe) rather than a malformed message.
+        LOG_WARNING("Oversized datagram from session ", id, ": ", received,
+                    " bytes exceeds MAX_MESSAGE_SIZE=", m_readBuffer.size(),
+                    "; closing session (protocol divergence)");
         closeSession(id);
         return;
     }

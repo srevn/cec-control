@@ -15,7 +15,7 @@ namespace cec_control {
  * suspend / resume cycle. Ownership lives here so the router does
  * not carry a loose flag/vector pair and coordinate their
  * transitions by hand; the transitions are named (@c enterSuspended,
- * @c exitSuspended, @c tryPush, @c drain) and the flag is
+ * @c exitSuspended, @c push, @c drain) and the flag is
  * inaccessible except through @c isSuspended.
  *
  * ## Ownership boundary
@@ -27,7 +27,7 @@ namespace cec_control {
  *  - Queueing policy. Whether a given command is queueable
  *    (per-command spec from @c kCommands) and whether queueing is
  *    enabled at all (@c queueCommandsDuringSuspend config) stay on
- *    the caller; @c tryPush is a pure mechanism that checks the
+ *    the caller; @c push is a pure mechanism that checks the
  *    flag and appends.
  *  - Shutdown gating. Distinct state with a distinct lifecycle,
  *    handled by @c CommandRouter directly.
@@ -45,11 +45,11 @@ public:
     SuspendQueue(const SuspendQueue&) = delete;
     SuspendQueue& operator=(const SuspendQueue&) = delete;
 
-    /** Enter the suspended state. Subsequent @c tryPush calls append. */
+    /** Enter the suspended state. Subsequent @c push calls append. */
     void enterSuspended() noexcept;
 
     /**
-     * Exit the suspended state. Subsequent @c tryPush calls no-op.
+     * Exit the suspended state. Subsequent @c push calls no-op.
      * Does not drain — the caller drains separately so the queued
      * messages can be handed to the replay path before this flag
      * flip makes future dispatches race the drain.
@@ -60,12 +60,11 @@ public:
     [[nodiscard]] bool isSuspended() const noexcept;
 
     /**
-     * If currently suspended, append @p command and return true;
-     * otherwise no-op and return false. The check is internal so
-     * this primitive is safe to call without a prior @c isSuspended
-     * test.
+     * Append @p command if currently suspended; otherwise no-op. The
+     * check is internal so this primitive is safe to call without a
+     * prior @c isSuspended test.
      */
-    [[nodiscard]] bool tryPush(const Message& command);
+    void push(const Message& command);
 
     /** Take the queued messages; leave the queue empty. */
     [[nodiscard]] std::vector<Message> drain();

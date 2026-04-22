@@ -16,10 +16,9 @@ bool SuspendQueue::isSuspended() const noexcept {
     return m_suspended;
 }
 
-bool SuspendQueue::tryPush(const Message& command) {
-    if (!isSuspended()) return false;
+void SuspendQueue::push(const Message& command) {
+    if (!isSuspended()) return;
     m_queued.push_back(command);
-    return true;
 }
 
 std::vector<Message> SuspendQueue::drain() {

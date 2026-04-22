@@ -35,7 +35,7 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     SystemPaths::ensureParentDirExists(logFile);
     SystemPaths::ensureParentDirExists(socketPath);
 
-    setupLogging(action);
+    setupLogging(action, logFile);
 
     // Configuration is a local value; once we've extracted the AppConfig
     // snapshot it falls out of scope. No ambient/singleton access after
@@ -167,7 +167,8 @@ bool DaemonBootstrap::daemonize() {
     return true; // We're the daemon process
 }
 
-void DaemonBootstrap::setupLogging(const RunDaemon& action) {
+void DaemonBootstrap::setupLogging(const RunDaemon& action,
+                                    const std::string& logFile) {
     // Daemon logging routes by severity:
     //   - INFO/DEBUG/TRAFFIC -> stdout (journald captures as PRIORITY=info)
     //   - WARNING/ERROR/FATAL -> stderr (journald captures as PRIORITY=err)
@@ -175,8 +176,6 @@ void DaemonBootstrap::setupLogging(const RunDaemon& action) {
     // foreground operator (or a deployment without journald) still has a
     // durable log even if the standard streams are redirected to /dev/null
     // by daemonize().
-    const std::string logFile = action.logFile.empty() ? SystemPaths::getLogPath()
-                                                       : action.logFile;
     LogConfig cfg;
     cfg.lowLevelSink  = LogSink::Stdout;
     cfg.highLevelSink = LogSink::Stderr;

@@ -242,9 +242,10 @@ Message CommandRouter::handleSuspendedInline(const Message& command) {
     if (m_queueCommandsDuringSuspend &&
         spec && spec->queueableWhileSuspended) {
         // We observed isSuspended() true a moment ago on the same
-        // (main) thread, so the append is guaranteed; the cast
-        // silences [[nodiscard]].
-        (void)m_suspendQueue.tryPush(command);
+        // (main) thread, so the append is guaranteed; push() repeats
+        // the check internally as a belt-and-braces safety net for
+        // future callers.
+        m_suspendQueue.push(command);
         LOG_INFO("Queued command type=", static_cast<int>(command.type),
                  " for execution after resume");
         return Message(MessageType::RESP_SUCCESS);

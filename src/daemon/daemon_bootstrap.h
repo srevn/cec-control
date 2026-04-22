@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "../common/argument_parser.h"
 
 namespace cec_control {
@@ -24,8 +26,13 @@ private:
     /** Daemonize the process by forking into background. */
     [[nodiscard]] static bool daemonize();
 
-    /** Initialize logging with the given configuration. */
-    static void setupLogging(const RunDaemon& action);
+    /**
+     * Initialize logging with the given configuration. @p logFile is the
+     * resolved log path (already defaulted by the caller if @c action.logFile
+     * was empty) and is used as-is without re-running the default-path
+     * resolution.
+     */
+    static void setupLogging(const RunDaemon& action, const std::string& logFile);
 };
 
 } // namespace cec_control
