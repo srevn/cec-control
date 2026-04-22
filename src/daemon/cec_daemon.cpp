@@ -11,10 +11,11 @@
 // Placed here so this TU can construct, call into, and destroy each
 // one; cec_daemon.h stays thin and does not transitively pull libcec
 // or sd-bus through these headers.
+#include "adapter_lifecycle.h"
 #include "cec/adapter_worker.h"
 #include "cec/libcec_adapter.h"
 #include "cec/operations.h"
-#include "command_router.h"
+#include "command_dispatcher.h"
 #include "dbus_monitor.h"
 #include "power/power_supervisor.h"
 #include "socket_server.h"
@@ -85,25 +86,32 @@ bool CECDaemon::start() {
 
         m_worker = std::make_unique<AdapterWorker>(std::move(adapter));
 
-        // Router's only outbound hook is the TV-standby-driven system
-        // suspend. Fires on libcec's command thread (via the daemon
-        // forwarder) so it MUST hop through m_work: sd-bus is
+        // Lifecycle goes first: it owns the suspend queue and exposes
+        // isSuspended/enqueue, both of which the dispatcher needs.
+        m_lifecycle = std::make_unique<AdapterLifecycle>(*m_worker, m_work);
+
+        // Dispatcher's only outbound hook is the TV-standby-driven
+        // system suspend. Fires on libcec's command thread (via the
+        // daemon forwarder) so it MUST hop through m_work: sd-bus is
         // main-thread owned.
-        CommandRouter::Callbacks routerCallbacks{
+        CommandDispatcher::Callbacks dispatcherCallbacks{
             /*onSuspendRequested*/ [this]() {
                 m_work.post([this]() {
                     if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
                 });
             },
         };
-        m_router = std::make_unique<CommandRouter>(
-            m_config, *m_worker, m_work, std::move(routerCallbacks));
+        m_dispatcher = std::make_unique<CommandDispatcher>(
+            m_config, *m_worker, m_work, *m_lifecycle,
+            std::move(dispatcherCallbacks));
 
-        // Build the supervisor over the router/worker/timers. The
-        // dbus pointer is wired in setupPowerMonitor below (or stays
-        // null when power monitoring is disabled).
+        // Build the supervisor over the dispatcher (for replay) and
+        // the lifecycle (for suspend/resume/reconnect), plus the
+        // worker and timers. The dbus pointer is wired in
+        // setupPowerMonitor below (or stays null when power
+        // monitoring is disabled).
         m_supervisor = std::make_unique<PowerSupervisor>(
-            *m_router, *m_worker, m_work,
+            *m_dispatcher, *m_lifecycle, *m_worker, m_work,
             m_suspendSafetyTimer, m_resumeRetryTimer, m_reconnectRetryTimer);
 
         m_worker->start();
@@ -214,16 +222,21 @@ void CECDaemon::stop() {
     //   1. detach DBusMonitor so no further bus events reach us
     //   2. stop the socket server: close the listener and every
     //      session fd, so no new requests enter handleCommand
-    //   3. flip the router's shutdown gate and drop queued commands
+    //   3. flip the dispatcher's shutdown gate so any straggler call
+    //      replies with RESP_ERROR (purely defensive — step 2 already
+    //      cut off the wire path)
+    //   4. flip the lifecycle's shutdown gate and drop queued commands
     //      (main-thread only; no adapter touch — the worker owns it)
-    //   4. stop the worker: finishes the in-flight job, drops
+    //   5. stop the worker: finishes the in-flight job, drops
     //      pending, closes the adapter on its exit path, joins. After
     //      this returns, libcec's internal threads are quiet and
     //      cannot reach any daemon forwarder
-    //   5. stop DBusMonitor (bus was detached at step 1)
-    //   6. destroy subsystems with the supervisor first so its
-    //      non-owning references / pointer to dbus, router, worker
-    //      cannot dangle.
+    //   6. stop DBusMonitor (bus was detached at step 1)
+    //   7. destroy subsystems with the supervisor first so its
+    //      non-owning references / pointer to dbus, dispatcher,
+    //      lifecycle, worker cannot dangle. Reset the dispatcher
+    //      before the lifecycle (it holds a ref to it) and both
+    //      before the worker (both hold refs to it).
     try {
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
@@ -237,8 +250,12 @@ void CECDaemon::stop() {
             LOG_INFO("Socket server teardown: ", ms, "ms");
         }
 
-        if (m_router) {
-            m_router->shutdown();
+        if (m_dispatcher) {
+            m_dispatcher->shutdown();
+        }
+
+        if (m_lifecycle) {
+            m_lifecycle->shutdown();
         }
 
         if (m_worker) {
@@ -257,14 +274,17 @@ void CECDaemon::stop() {
     }
 
     // Reset in an order that prevents dangling references / pointer
-    // dereferences. m_supervisor holds non-owning refs to m_router /
-    // m_worker / m_work / the timers, plus a raw pointer to
+    // dereferences. m_supervisor holds non-owning refs to m_dispatcher,
+    // m_lifecycle, m_worker, m_work, the timers, plus a raw pointer to
     // m_dbusMonitor; destroying it first means none of those can be
-    // touched again from supervisor code paths.
+    // touched again from supervisor code paths. m_dispatcher holds a
+    // ref to m_lifecycle, and both hold refs to m_worker — so the
+    // chain is supervisor → dispatcher → lifecycle → worker.
     m_supervisor.reset();
     m_dbusMonitor.reset();
     m_socketServer.reset();
-    m_router.reset();
+    m_dispatcher.reset();
+    m_lifecycle.reset();
     m_worker.reset();
 
     LOG_INFO("Shutdown sequence complete");
@@ -339,27 +359,27 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
         break;
     }
 
-    if (!m_router) {
-        LOG_ERROR("Command router not initialized");
+    if (!m_dispatcher) {
+        LOG_ERROR("Command dispatcher not initialized");
         reply(Message(MessageType::RESP_ERROR));
         return;
     }
 
-    // The router internally chooses between an inline main-thread
+    // The dispatcher internally chooses between an inline main-thread
     // reply (gate-only, state-only paths) and a worker hop with the
     // reply posted back via m_work.
-    m_router->dispatch(std::move(command), std::move(reply));
+    m_dispatcher->dispatch(std::move(command), std::move(reply));
 }
 
 void CECDaemon::onAdapterTvStandby() {
     // Fires on libcec's command thread. libcec's internal threads
     // spawn inside openConnection() on the main thread before the
-    // router is built; a callback arriving in the narrow window
-    // between Open() returning and m_router being assigned is
+    // dispatcher is built; a callback arriving in the narrow window
+    // between Open() returning and m_dispatcher being assigned is
     // silently dropped by the null check. The window is microseconds
     // and in practice no TV-standby event fires during startup.
-    if (auto* router = m_router.get()) {
-        router->onTvStandby();
+    if (auto* dispatcher = m_dispatcher.get()) {
+        dispatcher->onTvStandby();
     }
 }
 

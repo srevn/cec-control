@@ -65,7 +65,6 @@ target_sources(cec-control PRIVATE
     src/daemon/cec/operations.cpp
     src/daemon/cec_daemon.cpp
     src/daemon/command_dispatcher.cpp
-    src/daemon/command_router.cpp
     src/daemon/command_throttler.cpp
     src/daemon/daemon_bootstrap.cpp
     src/daemon/dbus_monitor.cpp

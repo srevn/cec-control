@@ -8,8 +8,9 @@
 
 namespace cec_control {
 
+class AdapterLifecycle;
 class AdapterWorker;
-class CommandRouter;
+class CommandDispatcher;
 class DBusMonitor;
 class MainThreadWork;
 class TimerSource;
@@ -23,22 +24,22 @@ class TimerSource;
  * Both FSMs are pure decision types: they emit @c Output values
  * describing the side effects to execute. This class is the executor.
  * It holds non-owning references to the timers, the adapter worker,
- * the command router, and the main-thread work queue, plus a
- * may-be-null pointer to the D-Bus monitor (which is constructed
- * conditionally on the @c [Daemon] config flag and may also be torn
- * down on attach failure). The supervisor is itself owned by
- * @c CECDaemon and never outlives any of those subsystems.
+ * the adapter lifecycle, the command dispatcher, and the main-thread
+ * work queue, plus a may-be-null pointer to the D-Bus monitor (which
+ * is constructed conditionally on the @c [Daemon] config flag and may
+ * also be torn down on attach failure). The supervisor is itself
+ * owned by @c CECDaemon and never outlives any of those subsystems.
  *
  * ## Threading
  *
  * Main-thread only. Every public entry point runs on the thread that
  * drives the event loop. Worker-completion callbacks installed by
  * @c submitSuspendWork / @c submitResumeWork / @c submitReconnectAttempt
- * are routed back to the main thread by @c CommandRouter (which posts
- * via @c MainThreadWork inside each worker job), so the lambdas this
- * class hands the router execute on main as well. The supervisor
- * introduces no new threading; it is pure choreography over the
- * daemon's pre-existing single-threaded effect surface.
+ * are routed back to the main thread by @c AdapterLifecycle (which
+ * posts via @c MainThreadWork inside each worker job), so the lambdas
+ * this class hands the lifecycle execute on main as well. The
+ * supervisor introduces no new threading; it is pure choreography
+ * over the daemon's pre-existing single-threaded effect surface.
  *
  * ## Effect ordering
  *
@@ -75,12 +76,13 @@ public:
      * @c setupPowerMonitor decides whether power monitoring is even
      * enabled this run.
      */
-    PowerSupervisor(CommandRouter&  router,
-                    AdapterWorker&  worker,
-                    MainThreadWork& work,
-                    TimerSource&    suspendSafety,
-                    TimerSource&    resumeRetry,
-                    TimerSource&    reconnectRetry) noexcept;
+    PowerSupervisor(CommandDispatcher& dispatcher,
+                    AdapterLifecycle&  lifecycle,
+                    AdapterWorker&     worker,
+                    MainThreadWork&    work,
+                    TimerSource&       suspendSafety,
+                    TimerSource&       resumeRetry,
+                    TimerSource&       reconnectRetry) noexcept;
 
     ~PowerSupervisor() = default;
 
@@ -139,10 +141,10 @@ public:
 
     /**
      * @c true iff the adapter is currently considered suspended. Reads
-     * @c CommandRouter's @c SuspendQueue flag — the actual gate that
-     * routes inbound dispatches into the queue; the lifecycle FSM's
-     * @c Phase is a finer-grained "in-progress" view that does not
-     * match this boundary post-completion.
+     * @c AdapterLifecycle's @c SuspendQueue flag — the actual gate
+     * that routes inbound dispatches into the queue; the lifecycle
+     * FSM's @c Phase is a finer-grained "in-progress" view that does
+     * not match this boundary post-completion.
      */
     [[nodiscard]] bool isSuspended() const noexcept;
 
@@ -161,17 +163,22 @@ private:
      */
     void executeEffects(const PowerLifecycle::Output& output);
 
-    /** Kick off @c CommandRouter::suspendAsync with completion wiring. */
+    /** Kick off @c AdapterLifecycle::suspendAsync with completion wiring. */
     void submitSuspendWork();
 
-    /** Kick off @c CommandRouter::resumeAsync with completion wiring. */
+    /**
+     * Kick off @c AdapterLifecycle::resumeAsync. The completion lambda
+     * receives the drained queue alongside the adapter validity and
+     * hands it to @c CommandDispatcher::replay before forwarding the
+     * adapter validity to @c onResumeCompleted for the FSM transition.
+     */
     void submitResumeWork();
 
     /**
      * Fire-and-forget reconnect attempt triggered by the post-resume
      * retry timer. Distinct from the @c AdapterReconnect cycle; covers
      * the USB re-enumeration race after wake. Gated so it no-ops if
-     * the adapter is already connected or the router has re-suspended
+     * the adapter is already connected or the lifecycle has re-suspended
      * before the timer fired.
      */
     void submitLateReconnect();
@@ -182,12 +189,13 @@ private:
     /** Carry out the side effect emitted by the reconnect FSM. */
     void execute(AdapterReconnect::Output out);
 
-    CommandRouter&  m_router;
-    AdapterWorker&  m_worker;
-    MainThreadWork& m_work;
-    TimerSource&    m_suspendSafetyTimer;
-    TimerSource&    m_resumeRetryTimer;
-    TimerSource&    m_reconnectRetryTimer;
+    CommandDispatcher& m_dispatcher;
+    AdapterLifecycle&  m_lifecycle;
+    AdapterWorker&     m_worker;
+    MainThreadWork&    m_work;
+    TimerSource&       m_suspendSafetyTimer;
+    TimerSource&       m_resumeRetryTimer;
+    TimerSource&       m_reconnectRetryTimer;
 
     // Wired post-construction; null until setupPowerMonitor succeeds,
     // and reset back to null on attach failure or shutdown teardown.
@@ -196,8 +204,9 @@ private:
     // Pure decision types driving suspend/resume arbitration and the
     // connection-lost reconnect cycle. Both main-thread only; no
     // atomics or mutexes. The supervisor is the sole executor of their
-    // outputs.
-    PowerLifecycle   m_lifecycle;
+    // outputs. Named to match their class types so they are unambiguous
+    // alongside @c m_lifecycle (the @c AdapterLifecycle reference).
+    PowerLifecycle   m_powerLifecycle;
     AdapterReconnect m_adapterReconnect{BackoffSchedule{
         std::chrono::seconds(5),
         std::chrono::seconds(10),

@@ -19,11 +19,11 @@ namespace cec_control {
  * command means appending one CommandSpec — nowhere else needs to learn about
  * it.
  *
- * Daemon-side dispatch deliberately lives in CommandRouter, not here. Putting
- * a handler pointer into the registry would force every TU that includes this
- * header to forward-declare a daemon class, blurring the client/daemon
- * boundary for no benefit: the daemon already owns one switch on MessageType
- * and that is the simplest possible authority.
+ * Daemon-side dispatch deliberately lives in CommandDispatcher, not here.
+ * Putting a handler pointer into the registry would force every TU that
+ * includes this header to forward-declare a daemon class, blurring the
+ * client/daemon boundary for no benefit: the daemon already owns one switch
+ * on MessageType and that is the simplest possible authority.
  */
 struct CommandSpec {
     /**

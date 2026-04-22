@@ -1,23 +1,29 @@
 #include "power_supervisor.h"
 
 #include <chrono>
+#include <utility>
+#include <vector>
 
 #include "../../common/logger.h"
 #include "../../common/main_thread_work.h"
+#include "../../common/messages.h"
 #include "../../common/timer_source.h"
+#include "../adapter_lifecycle.h"
 #include "../cec/adapter_worker.h"
-#include "../command_router.h"
+#include "../command_dispatcher.h"
 #include "../dbus_monitor.h"
 
 namespace cec_control {
 
-PowerSupervisor::PowerSupervisor(CommandRouter&  router,
-                                 AdapterWorker&  worker,
-                                 MainThreadWork& work,
-                                 TimerSource&    suspendSafety,
-                                 TimerSource&    resumeRetry,
-                                 TimerSource&    reconnectRetry) noexcept
-    : m_router(router),
+PowerSupervisor::PowerSupervisor(CommandDispatcher& dispatcher,
+                                 AdapterLifecycle&  lifecycle,
+                                 AdapterWorker&     worker,
+                                 MainThreadWork&    work,
+                                 TimerSource&       suspendSafety,
+                                 TimerSource&       resumeRetry,
+                                 TimerSource&       reconnectRetry) noexcept
+    : m_dispatcher(dispatcher),
+      m_lifecycle(lifecycle),
       m_worker(worker),
       m_work(work),
       m_suspendSafetyTimer(suspendSafety),
@@ -34,18 +40,18 @@ void PowerSupervisor::setDBusMonitor(DBusMonitor* dbusMonitor) noexcept {
 }
 
 void PowerSupervisor::onSuspendRequested(PowerLifecycle::Source source) {
-    applyLifecycle(m_lifecycle.onSuspendRequested(source));
+    applyLifecycle(m_powerLifecycle.onSuspendRequested(source));
 }
 
 void PowerSupervisor::onResumeRequested(PowerLifecycle::Source source) {
-    applyLifecycle(m_lifecycle.onResumeRequested(source));
+    applyLifecycle(m_powerLifecycle.onResumeRequested(source));
 }
 
 void PowerSupervisor::onSuspendCompleted(std::chrono::milliseconds workDuration) {
     // Whichever path (completion vs. safety timer) fires first
     // discharges the inhibit-lock release; the other path takes the
     // overrun branch.
-    auto out = m_lifecycle.onSuspendCompleted();
+    auto out = m_powerLifecycle.onSuspendCompleted();
     if (out.safety == PowerLifecycle::Output::SafetyOutcome::Overrun) {
         LOG_WARNING("CEC suspend completed in ", workDuration.count(),
                     "ms but safety timer had already released the inhibit lock");
@@ -62,12 +68,12 @@ void PowerSupervisor::onResumeCompleted(bool adapterValid) {
     // After resume, the USB subsystem can still be settling. The FSM
     // emits a Timer::Arm for one delayed retry (gated on !adapterValid
     // and not-already-armed); the lock retake happens for DBus sources.
-    applyLifecycle(m_lifecycle.onResumeCompleted(adapterValid));
+    applyLifecycle(m_powerLifecycle.onResumeCompleted(adapterValid));
 }
 
 void PowerSupervisor::onSafetyTimerFired() {
     m_suspendSafetyTimer.consume();
-    auto out = m_lifecycle.onSafetyTimerFired();
+    auto out = m_powerLifecycle.onSafetyTimerFired();
     if (out.safety == PowerLifecycle::Output::SafetyOutcome::Fired) {
         LOG_WARNING("Suspend did not complete within ",
                     PowerLifecycle::kSuspendSafetyDeadline.count(),
@@ -78,7 +84,7 @@ void PowerSupervisor::onSafetyTimerFired() {
 
 void PowerSupervisor::onResumeRetryTimerFired() {
     m_resumeRetryTimer.consume();
-    applyLifecycle(m_lifecycle.onResumeRetryTimerFired());
+    applyLifecycle(m_powerLifecycle.onResumeRetryTimerFired());
 }
 
 void PowerSupervisor::onConnectionLost() {
@@ -101,12 +107,12 @@ void PowerSupervisor::onReconnectRetryTimerFired() {
 }
 
 bool PowerSupervisor::isSuspended() const noexcept {
-    return m_router.isSuspended();
+    return m_lifecycle.isSuspended();
 }
 
 void PowerSupervisor::applyLifecycle(PowerLifecycle::Output output) {
     executeEffects(output);
-    executeEffects(m_lifecycle.pumpQueue());
+    executeEffects(m_powerLifecycle.pumpQueue());
 }
 
 void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
@@ -156,13 +162,13 @@ void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
         if (!m_suspendSafetyTimer.armOnce(out.safetyDelay)) {
             LOG_WARNING("Could not arm suspend-safety timer; "
                         "inhibit lock will only release on completion");
-            (void)m_lifecycle.onSafetyTimerArmFailed();
+            (void)m_powerLifecycle.onSafetyTimerArmFailed();
         }
     }
     if (out.resumeRetry == Timer::Arm) {
         if (!m_resumeRetryTimer.armOnce(out.resumeRetryDelay)) {
             LOG_WARNING("Could not arm resume-retry timer");
-            (void)m_lifecycle.onResumeRetryArmFailed();
+            (void)m_powerLifecycle.onResumeRetryArmFailed();
         }
     }
 
@@ -187,31 +193,39 @@ void PowerSupervisor::executeEffects(const PowerLifecycle::Output& out) {
 }
 
 void PowerSupervisor::submitSuspendWork() {
-    // The router holds its own suspended/shutdown gates and may invoke
-    // onDone synchronously on the early-return paths; the lifecycle
-    // FSM's coalescing keeps that recursion shallow (typically one
-    // step) and bounded by the queue depth. No defensive m_work hop is
-    // needed: the supervisor's reference to the router is valid for
-    // the supervisor's entire lifetime.
-    m_router.suspendAsync([this](std::chrono::milliseconds elapsed) {
+    // The lifecycle holds its own suspended/shutdown gates and may
+    // invoke onDone synchronously on the early-return paths; the FSM's
+    // coalescing keeps that recursion shallow (typically one step) and
+    // bounded by the queue depth. No defensive m_work hop is needed:
+    // the supervisor's reference to the lifecycle is valid for the
+    // supervisor's entire lifetime.
+    m_lifecycle.suspendAsync([this](std::chrono::milliseconds elapsed) {
         this->onSuspendCompleted(elapsed);
     });
 }
 
 void PowerSupervisor::submitResumeWork() {
-    m_router.resumeAsync([this](bool adapterValid) {
-        this->onResumeCompleted(adapterValid);
-    });
+    // The lifecycle drains the suspend queue inside its completion
+    // path and hands the drained vector back here together with the
+    // adapter validity. Forward the drained commands to the dispatcher
+    // first so the worker submissions land before the FSM transition
+    // observes the resume completion — preserving the pre-refactor
+    // ordering where replays were submitted before onDone fired.
+    m_lifecycle.resumeAsync(
+        [this](bool adapterValid, std::vector<Message> queued) {
+            if (!queued.empty()) m_dispatcher.replay(std::move(queued));
+            this->onResumeCompleted(adapterValid);
+        });
 }
 
 void PowerSupervisor::submitLateReconnect() {
-    if (m_worker.isAdapterConnected() || m_router.isSuspended()) return;
+    if (m_worker.isAdapterConnected() || m_lifecycle.isSuspended()) return;
     LOG_INFO("Performing delayed reconnection attempt");
-    m_router.reconnectAsync(/*onDone*/ {});
+    m_lifecycle.reconnectAsync(/*onDone*/ {});
 }
 
 void PowerSupervisor::submitReconnectAttempt() {
-    m_router.reconnectAsync([this](bool ok) {
+    m_lifecycle.reconnectAsync([this](bool ok) {
         this->onReconnectResult(ok);
     });
 }

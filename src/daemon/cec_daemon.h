@@ -18,8 +18,9 @@ namespace cec_control {
 // into them directly. Keeping those headers out of cec_daemon.h
 // breaks the transitive libcec / sd-bus leak through every TU that
 // just needs to name the CECDaemon type.
+class AdapterLifecycle;
 class AdapterWorker;
-class CommandRouter;
+class CommandDispatcher;
 class DBusMonitor;
 class PowerSupervisor;
 class SocketServer;
@@ -32,10 +33,13 @@ class SocketServer;
  * (signals, main-thread work queue, three timerfds, the socket
  * listener, the sd-bus fd). Spins up every subsystem on @c start():
  * the @c AdapterWorker actor that owns the libcec handle, the
- * @c CommandRouter that translates wire commands into adapter calls,
- * the @c PowerSupervisor that owns the suspend/resume and adapter
- * reconnect FSMs, the @c SocketServer that fronts the Unix domain
- * socket, and (optionally, gated on configuration) the
+ * @c AdapterLifecycle that runs suspend / resume / reconnect over the
+ * worker and parks commands during suspend, the @c CommandDispatcher
+ * that translates wire commands into adapter calls, the
+ * @c PowerSupervisor that owns the suspend/resume and adapter
+ * reconnect FSMs and bridges the lifecycle's drained queue back to the
+ * dispatcher's replay path, the @c SocketServer that fronts the Unix
+ * domain socket, and (optionally, gated on configuration) the
  * @c DBusMonitor that observes logind PrepareForSleep.
  *
  * The daemon does NOT carry any FSM state of its own. All
@@ -53,12 +57,12 @@ class SocketServer;
  * assigned are absorbed by null checks in the daemon's forwarders.
  *
  * Shutdown drives a strict ordering so no thread observes a
- * destroyed subsystem: the socket server stops before the router's
- * shutdown flag is flipped, the worker stops (closing the adapter on
- * its exit path) before subsystems are released, and unique_ptrs are
- * reset with @c m_supervisor first so that its non-owning references
- * to the router / worker / dbus monitor are dropped before any of
- * those is itself destroyed.
+ * destroyed subsystem: the socket server stops before the dispatcher
+ * and lifecycle shutdown gates are flipped, the worker stops (closing
+ * the adapter on its exit path) before subsystems are released, and
+ * unique_ptrs are reset with @c m_supervisor first so that its
+ * non-owning references to the dispatcher / lifecycle / worker / dbus
+ * monitor are dropped before any of those is itself destroyed.
  */
 class CECDaemon {
 public:
@@ -96,18 +100,19 @@ private:
     /**
      * Route an incoming wire command. Runs on the main thread.
      * Suspend and resume delegate directly to @c PowerSupervisor and
-     * reply inline; everything else is forwarded to the router whose
-     * @c dispatch chooses between an inline reply and a worker hop.
+     * reply inline; everything else is forwarded to the dispatcher
+     * whose @c dispatch chooses between an inline reply and a worker
+     * hop.
      */
     void handleCommand(Message command, ResponseSink reply);
 
     /**
      * Adapter callback forwarder: TV standby. Fires on libcec's
-     * command thread; delegates to the router (which reads an atomic
-     * and, if enabled, fires the suspend-request callback). The
-     * daemon owns the forwarder rather than wiring libcec directly to
-     * the router so that the callback target is stable across
-     * router/adapter construction order.
+     * command thread; delegates to the dispatcher (which reads an
+     * atomic and, if enabled, fires the suspend-request callback).
+     * The daemon owns the forwarder rather than wiring libcec directly
+     * to the dispatcher so that the callback target is stable across
+     * dispatcher/adapter construction order.
      */
     void onAdapterTvStandby();
 
@@ -135,28 +140,35 @@ private:
     TimerSource    m_reconnectRetryTimer;
 
     // CEC adapter actor. Owns the libcec handle and the single thread
-    // that is allowed to touch it. Built before the router so the
-    // router can capture a reference; the adapter itself is handed
-    // into the worker at construction. Destroyed in @c stop(), which
-    // joins the worker thread and closes the adapter on its exit path.
+    // that is allowed to touch it. Built before the lifecycle and
+    // dispatcher so they can capture references; the adapter itself
+    // is handed into the worker at construction. Destroyed in
+    // @c stop(), which joins the worker thread and closes the adapter
+    // on its exit path.
     std::unique_ptr<AdapterWorker> m_worker;
 
-    // Domain subsystems.
-    std::unique_ptr<CommandRouter> m_router;
-    std::unique_ptr<SocketServer>  m_socketServer;
-    std::unique_ptr<DBusMonitor>   m_dbusMonitor;
+    // Domain subsystems. Declaration order matters for reverse-of-
+    // declaration destruction: the dispatcher holds a reference to
+    // the lifecycle, and both hold references to the worker, so the
+    // dispatcher must be torn down before the lifecycle and both
+    // before the worker. @c stop() resets them in the same order
+    // explicitly.
+    std::unique_ptr<AdapterLifecycle>  m_lifecycle;
+    std::unique_ptr<CommandDispatcher> m_dispatcher;
+    std::unique_ptr<SocketServer>      m_socketServer;
+    std::unique_ptr<DBusMonitor>       m_dbusMonitor;
 
     // Power lifecycle / reconnect orchestrator. Holds non-owning refs
-    // to the router, worker, work queue, and three timers, plus a
-    // may-be-null pointer to the dbus monitor (wired in
-    // setupPowerMonitor and cleared on attach failure / shutdown).
-    // Declared after the subsystems above so reverse-of-declaration
-    // destruction would tear it down first; @c stop() resets it
-    // explicitly first as well.
+    // to the dispatcher, the adapter lifecycle, the worker, the work
+    // queue, and three timers, plus a may-be-null pointer to the dbus
+    // monitor (wired in setupPowerMonitor and cleared on attach
+    // failure / shutdown). Declared after the subsystems above so
+    // reverse-of-declaration destruction would tear it down first;
+    // @c stop() resets it explicitly first as well.
     std::unique_ptr<PowerSupervisor> m_supervisor;
 
     // Parsed configuration snapshot. Stored by value so consumers can
-    // receive copies (AdapterConfig) or a const-ref (CommandRouter)
+    // receive copies (AdapterConfig) or a const-ref (CommandDispatcher)
     // without any of them invalidating the daemon's view. A future
     // SIGHUP reload diffs a freshly-loaded AppConfig against this.
     AppConfig m_config;

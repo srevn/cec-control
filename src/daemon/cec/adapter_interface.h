@@ -14,8 +14,8 @@ namespace cec_control {
  *
  * Implementations wrap a concrete backend (libcec today; a kernel
  * @c /dev/cecN driver is the intended second citizen) and expose the
- * minimum surface the @c CommandRouter needs — lifecycle, commands,
- * queries, and broadcast helpers.
+ * minimum surface the @c CommandDispatcher and @c AdapterLifecycle
+ * need — lifecycle, commands, queries, and broadcast helpers.
  *
  * Invariants every implementation MUST uphold:
  *

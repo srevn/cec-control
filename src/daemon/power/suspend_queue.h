@@ -11,8 +11,8 @@ namespace cec_control {
  * @brief Pairs the "router is suspended" flag with the vector of
  *        commands parked during that suspension.
  *
- * This is the small amount of state that pivots on the router's
- * suspend / resume cycle. Ownership lives here so the router does
+ * This is the small amount of state that pivots on the lifecycle's
+ * suspend / resume cycle. Ownership lives here so the lifecycle does
  * not carry a loose flag/vector pair and coordinate their
  * transitions by hand; the transitions are named (@c enterSuspended,
  * @c exitSuspended, @c push, @c drain) and the flag is
@@ -27,16 +27,17 @@ namespace cec_control {
  *  - Queueing policy. Whether a given command is queueable
  *    (per-command spec from @c kCommands) and whether queueing is
  *    enabled at all (@c queueCommandsDuringSuspend config) stay on
- *    the caller; @c push is a pure mechanism that checks the
- *    flag and appends.
+ *    @c CommandDispatcher; @c push is a pure mechanism that checks
+ *    the flag and appends.
  *  - Shutdown gating. Distinct state with a distinct lifecycle,
- *    handled by @c CommandRouter directly.
+ *    handled by @c AdapterLifecycle directly.
  *
  * ## Thread-safety
  *
  * Every public method must be called on the main thread. The single-
- * threaded access model of @c CommandRouter (the sole caller) provides
- * the ordering guarantees; no internal synchronisation is needed.
+ * threaded access model of @c AdapterLifecycle (the sole owner)
+ * provides the ordering guarantees; no internal synchronisation is
+ * needed.
  */
 class SuspendQueue {
 public:

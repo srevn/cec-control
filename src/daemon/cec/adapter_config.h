@@ -8,7 +8,7 @@ namespace cec_control {
 /**
  * Startup configuration for the libcec-backed adapter. Consumed once
  * at construction and immutable thereafter; runtime-mutable policy
- * (auto-standby) lives on @c CommandRouter.
+ * (auto-standby) lives on @c CommandDispatcher.
  *
  * Lives in @c daemon/cec/ rather than @c common/ because the
  * @c CEC::cec_logical_addresses members transitively pull in
