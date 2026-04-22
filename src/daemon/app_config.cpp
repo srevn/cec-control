@@ -72,17 +72,20 @@ AppConfig loadAppConfig(const ConfigManager& cfg) {
 
     // Dispatcher policy. QueueCommandsDuringSuspend lives under
     // [Daemon] in the file for backwards compatibility with deployed
-    // configs, but is a dispatcher-scoped flag. PowerOffOnStandby
-    // similarly lives under [Adapter] historically — it names the CEC
-    // standby opcode the policy responds to — but the policy itself is
-    // enforced by the dispatcher, not libcec. See the LibCecAdapter
-    // constructor for why bPowerOffOnStandby is deliberately not
-    // mirrored into libcec's own config.
+    // configs, but is a dispatcher-scoped flag.
     auto& dispatcher = config.dispatcher;
     dispatcher.queueCommandsDuringSuspend =
-        cfg.getBool("Daemon",  "QueueCommandsDuringSuspend", true);
-    dispatcher.autoStandbyEnabled =
-        cfg.getBool("Adapter", "PowerOffOnStandby",         false);
+        cfg.getBool("Daemon", "QueueCommandsDuringSuspend", true);
+
+    // Standby policy. PowerOffOnStandby lives under [Adapter]
+    // historically — it names the CEC standby opcode the policy
+    // responds to — but the policy itself is enforced by
+    // StandbyPolicy, not libcec. See the LibCecAdapter constructor
+    // for why bPowerOffOnStandby is deliberately not mirrored into
+    // libcec's own config.
+    auto& standby = config.standby;
+    standby.enabled =
+        cfg.getBool("Adapter", "PowerOffOnStandby", false);
 
     // Daemon-level toggles.
     auto& daemon = config.daemon;
@@ -102,7 +105,7 @@ void logAppConfig(const AppConfig& config) {
     LOG_INFO("Configuration: EnablePowerMonitor = ",
              (config.daemon.enablePowerMonitor ? "true" : "false"));
     LOG_INFO("Configuration: PowerOffOnStandby = ",
-             (config.dispatcher.autoStandbyEnabled ? "true" : "false"));
+             (config.standby.enabled ? "true" : "false"));
 }
 
 } // namespace cec_control

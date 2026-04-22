@@ -11,6 +11,7 @@
 #include "cec/adapter_interface.h"
 #include "cec/adapter_worker.h"
 #include "command_dispatch.h"
+#include "standby_policy.h"
 
 namespace cec_control {
 
@@ -18,14 +19,13 @@ CommandDispatcher::CommandDispatcher(const AppConfig&  config,
                                      AdapterWorker&    worker,
                                      MainThreadWork&   work,
                                      AdapterLifecycle& lifecycle,
-                                     Callbacks         callbacks)
+                                     StandbyPolicy&    standbyPolicy)
     : m_worker(worker),
       m_work(work),
       m_lifecycle(lifecycle),
+      m_standbyPolicy(standbyPolicy),
       m_throttler(config.throttler),
-      m_queueCommandsDuringSuspend(config.dispatcher.queueCommandsDuringSuspend),
-      m_autoStandbyEnabled(config.dispatcher.autoStandbyEnabled),
-      m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
+      m_queueCommandsDuringSuspend(config.dispatcher.queueCommandsDuringSuspend) {}
 
 void CommandDispatcher::shutdown() {
     if (m_shutdownComplete) return;
@@ -79,8 +79,8 @@ void CommandDispatcher::dispatch(Message command, ResponseSink reply) {
 
     switch (spec->dispatch) {
     case DispatchClass::StateOnly:
-        // Only CMD_AUTO_STANDBY today.
-        reply(applyAutoStandbyInline(command));
+        // CMD_AUTO_STANDBY is the only StateOnly row today.
+        reply(m_standbyPolicy.apply(command));
         return;
     case DispatchClass::AdapterCall:
         submitAdapterWork(*spec, std::move(command), std::move(reply));
@@ -115,33 +115,6 @@ void CommandDispatcher::replay(std::vector<Message> commands) {
             (void)executeOnAdapter(adapter, command, *spec);
         });
     }
-}
-
-void CommandDispatcher::onTvStandby() {
-    // Runs on libcec's command thread. m_autoStandbyEnabled is atomic;
-    // m_suspendCallback is install-once at construction and never
-    // reassigned, so calling it without a lock is safe.
-    if (!m_autoStandbyEnabled.load(std::memory_order_acquire)) {
-        LOG_DEBUG("TV standby observed; auto-standby disabled - ignoring");
-        return;
-    }
-    if (!m_suspendCallback) {
-        LOG_WARNING("TV standby observed but no suspend callback wired");
-        return;
-    }
-    LOG_INFO("TV standby observed with auto-standby enabled; "
-             "initiating system suspend");
-    m_suspendCallback();
-}
-
-Message CommandDispatcher::applyAutoStandbyInline(const Message& command) {
-    if (command.data.empty()) {
-        return Message(MessageType::RESP_ERROR);
-    }
-    const bool enabled = command.data[0] > 0;
-    m_autoStandbyEnabled.store(enabled, std::memory_order_release);
-    LOG_INFO("Auto-standby ", enabled ? "enabled" : "disabled");
-    return Message(MessageType::RESP_SUCCESS);
 }
 
 Message CommandDispatcher::handleSuspendedInline(const Message& command,

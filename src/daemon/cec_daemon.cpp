@@ -20,6 +20,7 @@
 #include "dbus_monitor.h"
 #include "power/power_supervisor.h"
 #include "socket_server.h"
+#include "standby_policy.h"
 
 namespace cec_control {
 
@@ -98,20 +99,23 @@ bool CECDaemon::start() {
         // isSuspended/enqueue, both of which the dispatcher needs.
         m_lifecycle = std::make_unique<AdapterLifecycle>(*m_worker, m_work);
 
-        // Dispatcher's only outbound hook is the TV-standby-driven
-        // system suspend. Fires on libcec's command thread (via the
-        // daemon forwarder) so it MUST hop through m_work: sd-bus is
-        // main-thread owned.
-        CommandDispatcher::Callbacks dispatcherCallbacks{
-            /*onSuspendRequested*/ [this]() {
+        // Standby policy: atomic flag plus an install-once suspend
+        // trigger fired from libcec's command thread (via the daemon
+        // forwarder). The closure hops through m_work so the actual
+        // sd-bus call lands on the main thread — sd-bus is single-
+        // owner. Built before the dispatcher (which holds a reference
+        // to the policy); the forwarder null-guards callbacks fired
+        // during the narrow window between Open() and this assignment.
+        m_standbyPolicy = std::make_unique<StandbyPolicy>(
+            m_config.standby.enabled,
+            [this]() {
                 m_work.post([this]() {
                     if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
                 });
-            },
-        };
+            });
+
         m_dispatcher = std::make_unique<CommandDispatcher>(
-            m_config, *m_worker, m_work, *m_lifecycle,
-            std::move(dispatcherCallbacks));
+            m_config, *m_worker, m_work, *m_lifecycle, *m_standbyPolicy);
 
         // Build the supervisor over the dispatcher (for replay) and
         // the lifecycle (for suspend/resume/reconnect), plus the
@@ -239,7 +243,10 @@ void CECDaemon::stop() {
     //      non-owning references / pointer to dbus, dispatcher,
     //      lifecycle, worker cannot dangle. Reset the dispatcher
     //      before the lifecycle (it holds a ref to it) and both
-    //      before the worker (both hold refs to it).
+    //      before the worker (both hold refs to it). Destroy
+    //      m_standbyPolicy only after the worker has been joined,
+    //      so libcec's command thread cannot still fire the TV-
+    //      standby forwarder into a destroyed policy.
     try {
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
@@ -281,14 +288,19 @@ void CECDaemon::stop() {
     // m_lifecycle, m_worker, m_work, the timers, plus a raw pointer to
     // m_dbusMonitor; destroying it first means none of those can be
     // touched again from supervisor code paths. m_dispatcher holds a
-    // ref to m_lifecycle, and both hold refs to m_worker — so the
-    // chain is supervisor → dispatcher → lifecycle → worker.
+    // ref to m_lifecycle and to m_standbyPolicy; m_lifecycle and
+    // m_dispatcher both hold refs to m_worker; m_standbyPolicy is
+    // fired from libcec's command thread via the adapter forwarder
+    // and must outlive the worker so the worker's join drains that
+    // thread before the policy is destroyed. Chain:
+    // supervisor → dispatcher → lifecycle → worker → standbyPolicy.
     m_supervisor.reset();
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_dispatcher.reset();
     m_lifecycle.reset();
     m_worker.reset();
+    m_standbyPolicy.reset();
 
     LOG_INFO("Shutdown sequence complete");
 }
@@ -390,12 +402,12 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
 void CECDaemon::onAdapterTvStandby() {
     // Fires on libcec's command thread. libcec's internal threads
     // spawn inside openConnection() on the main thread before the
-    // dispatcher is built; a callback arriving in the narrow window
-    // between Open() returning and m_dispatcher being assigned is
+    // policy is built; a callback arriving in the narrow window
+    // between Open() returning and m_standbyPolicy being assigned is
     // silently dropped by the null check. The window is microseconds
     // and in practice no TV-standby event fires during startup.
-    if (auto* dispatcher = m_dispatcher.get()) {
-        dispatcher->onTvStandby();
+    if (auto* policy = m_standbyPolicy.get()) {
+        policy->onTvStandby();
     }
 }
 

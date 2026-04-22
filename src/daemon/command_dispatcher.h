@@ -1,7 +1,5 @@
 #pragma once
 
-#include <atomic>
-#include <functional>
 #include <vector>
 
 #include "../common/messages.h"
@@ -14,13 +12,12 @@ class AdapterLifecycle;
 class AdapterWorker;
 class ICecAdapter;
 class MainThreadWork;
+class StandbyPolicy;
 struct DispatchSpec;
 
 /**
  * @class CommandDispatcher
- * @brief Translates wire commands into adapter calls and owns the
- *        auto-standby policy (wire-side flag flip + libcec-side TV
- *        standby observation).
+ * @brief Translates wire commands into adapter calls.
  *
  * Single-threaded for wire dispatch: every call to @c dispatch happens
  * on the main event loop. @c DispatchClass::AdapterCall commands hand
@@ -37,8 +34,9 @@ struct DispatchSpec;
  *  - @b Gated reject (shutdown gate tripped, unknown type, suspended
  *    + non-queueable) — replies @c RESP_ERROR synchronously on the
  *    main thread.
- *  - @b DispatchClass::StateOnly (@c CMD_AUTO_STANDBY) — mutates
- *    dispatcher-local state and replies synchronously.
+ *  - @b DispatchClass::StateOnly — delegated to @c StandbyPolicy::apply
+ *    and replied synchronously. @c CMD_AUTO_STANDBY is the only
+ *    @c StateOnly row in @c kDispatchTable today.
  *  - @b DispatchClass::AdapterCall (volume, power, source, mute,
  *    @c CMD_RESTART_ADAPTER) — @c submitAdapterWork submits a worker
  *    job; the job invokes the sink via @c MainThreadWork::post on
@@ -52,16 +50,6 @@ struct DispatchSpec;
  * @c validateDispatchTable invariant makes the stray case unreachable
  * in practice.
  *
- * ## Auto-standby
- *
- * The dispatcher owns both sides of auto-standby: @c CMD_AUTO_STANDBY
- * toggles @c m_autoStandbyEnabled (the wire side), and @c onTvStandby
- * reads the flag from libcec's command thread, firing the install-once
- * @c onSuspendRequested callback when enabled (the adapter side).
- * The flag is atomic because @c onTvStandby is called off the main
- * thread; the callback itself is set at construction and never
- * rewired, so calling it without a lock is safe.
- *
  * ## Shutdown
  *
  * The shutdown gate is purely defensive: by the time
@@ -73,37 +61,27 @@ struct DispatchSpec;
 class CommandDispatcher {
 public:
     /**
-     * Outbound hook fired by the dispatcher. Supplied at construction
-     * and never rewired. Invoked on the thread that observed the
-     * trigger — for @c onSuspendRequested that is libcec's command
-     * thread. The installed closure MUST be thread-safe and
-     * non-blocking; in practice a single @c MainThreadWork::post.
-     */
-    struct Callbacks {
-        /** TV-standby plus auto-standby policy agreed the system should sleep. */
-        std::function<void()> onSuspendRequested;
-    };
-
-    /**
-     * @param config      Read-only snapshot; the dispatcher extracts
-     *                    its seed values (throttler tuning, initial
-     *                    policy flags) at construction and does not
-     *                    retain a reference.
-     * @param worker      Non-owning; must outlive @c this. Every
-     *                    adapter call is submitted here.
-     * @param work        Non-owning; must outlive @c this. Used to hop
-     *                    worker-side completions back to the main
-     *                    thread.
-     * @param lifecycle   Non-owning; must outlive @c this. Read for
-     *                    @c isSuspended on the gate paths and written
-     *                    via @c enqueue on the suspended-inline path.
-     * @param callbacks   Install-once outbound hooks; see @c Callbacks.
+     * @param config        Read-only snapshot; the dispatcher extracts
+     *                      its seed values (throttler tuning, queue-
+     *                      during-suspend flag) at construction and
+     *                      does not retain a reference.
+     * @param worker        Non-owning; must outlive @c this. Every
+     *                      adapter call is submitted here.
+     * @param work          Non-owning; must outlive @c this. Used to
+     *                      hop worker-side completions back to the
+     *                      main thread.
+     * @param lifecycle     Non-owning; must outlive @c this. Read for
+     *                      @c isSuspended on the gate paths and
+     *                      written via @c enqueue on the suspended-
+     *                      inline path.
+     * @param standbyPolicy Non-owning; must outlive @c this. Handles
+     *                      @c DispatchClass::StateOnly commands.
      */
     CommandDispatcher(const AppConfig&  config,
                       AdapterWorker&    worker,
                       MainThreadWork&   work,
                       AdapterLifecycle& lifecycle,
-                      Callbacks         callbacks);
+                      StandbyPolicy&    standbyPolicy);
 
     ~CommandDispatcher() = default;
 
@@ -132,22 +110,7 @@ public:
      */
     void replay(std::vector<Message> commands);
 
-    /**
-     * Invoked by the daemon's adapter forwarder when libcec reports a
-     * TV standby command. Runs on libcec's command thread; must be
-     * thread-safe and non-blocking. Reads the auto-standby atomic and,
-     * if enabled, fires the install-once @c onSuspendRequested
-     * callback.
-     */
-    void onTvStandby();
-
 private:
-    /**
-     * Apply @c CMD_AUTO_STANDBY's flag flip. Main thread only; no
-     * adapter touch, so no worker hop.
-     */
-    Message applyAutoStandbyInline(const Message& command);
-
     /**
      * Policy for a command arriving while suspended: queue it for
      * post-resume replay or reject. Main thread only. The caller has
@@ -180,6 +143,7 @@ private:
     AdapterWorker&    m_worker;
     MainThreadWork&   m_work;
     AdapterLifecycle& m_lifecycle;
+    StandbyPolicy&    m_standbyPolicy;
     CommandThrottler  m_throttler;
 
     // Shutdown gate. Main-thread only — see the class-level doc comment.
@@ -190,14 +154,6 @@ private:
     // handler would flip it, also main-thread). A plain bool is
     // enough; promote to atomic only if a cross-thread reader appears.
     bool m_queueCommandsDuringSuspend;
-
-    // Auto-standby policy toggle. Atomic because the reader is libcec's
-    // command thread via onTvStandby.
-    std::atomic<bool> m_autoStandbyEnabled;
-
-    // Install-once outbound hook. Invoked inline from onTvStandby on
-    // libcec's command thread.
-    const std::function<void()> m_suspendCallback;
 };
 
 } // namespace cec_control

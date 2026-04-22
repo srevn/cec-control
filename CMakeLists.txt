@@ -74,6 +74,7 @@ target_sources(cec-control PRIVATE
     src/daemon/power/power_supervisor.cpp
     src/daemon/power/suspend_queue.cpp
     src/daemon/socket_server.cpp
+    src/daemon/standby_policy.cpp
 )
 
 target_sources(cec-control PRIVATE

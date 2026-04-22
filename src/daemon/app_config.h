@@ -8,15 +8,21 @@ namespace cec_control {
 class ConfigManager;
 
 /**
- * Dispatcher-level policy flags. Each field is a seed value for a live
- * store on @c CommandDispatcher — @c autoStandbyEnabled in particular
- * is mirrored into an atomic there and toggled at runtime by
- * @c CMD_AUTO_STANDBY; this struct remains the file's original value.
- * See @c AppConfig's class comment for the snapshot-vs-live-state split.
+ * Dispatcher-level policy flags. See @c AppConfig's class comment for
+ * the snapshot-vs-live-state split.
  */
 struct DispatcherConfig {
     bool queueCommandsDuringSuspend = true;
-    bool autoStandbyEnabled         = false;
+};
+
+/**
+ * Seed for @c StandbyPolicy: whether to suspend the system when the TV
+ * signals standby. Mirrored into an atomic on the policy at
+ * construction and toggled at runtime by @c CMD_AUTO_STANDBY. See
+ * @c AppConfig's class comment for the snapshot-vs-live-state split.
+ */
+struct StandbyConfig {
+    bool enabled = false;
 };
 
 /**
@@ -52,6 +58,7 @@ struct AppConfig {
     AdapterConfig    adapter;
     ThrottlerConfig  throttler;
     DispatcherConfig dispatcher;
+    StandbyConfig    standby;
     DaemonConfig     daemon;
 };
 

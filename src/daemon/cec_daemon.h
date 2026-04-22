@@ -24,6 +24,7 @@ class CommandDispatcher;
 class DBusMonitor;
 class PowerSupervisor;
 class SocketServer;
+class StandbyPolicy;
 
 /**
  * @class CECDaemon
@@ -34,13 +35,15 @@ class SocketServer;
  * listener, the sd-bus fd). Spins up every subsystem on @c start():
  * the @c AdapterWorker actor that owns the libcec handle, the
  * @c AdapterLifecycle that runs suspend / resume / reconnect over the
- * worker and parks commands during suspend, the @c CommandDispatcher
- * that translates wire commands into adapter calls, the
- * @c PowerSupervisor that owns the suspend/resume and adapter
- * reconnect FSMs and bridges the lifecycle's drained queue back to the
- * dispatcher's replay path, the @c SocketServer that fronts the Unix
- * domain socket, and (optionally, gated on configuration) the
- * @c DBusMonitor that observes logind PrepareForSleep.
+ * worker and parks commands during suspend, the @c StandbyPolicy
+ * that owns the auto-suspend-on-TV-standby flag, the
+ * @c CommandDispatcher that translates wire commands into adapter
+ * calls, the @c PowerSupervisor that owns the suspend/resume and
+ * adapter reconnect FSMs and bridges the lifecycle's drained queue
+ * back to the dispatcher's replay path, the @c SocketServer that
+ * fronts the Unix domain socket, and (optionally, gated on
+ * configuration) the @c DBusMonitor that observes logind
+ * PrepareForSleep.
  *
  * The daemon does NOT carry any FSM state of its own. All
  * lifecycle / reconnect arbitration lives on @c PowerSupervisor;
@@ -109,11 +112,11 @@ private:
 
     /**
      * Adapter callback forwarder: TV standby. Fires on libcec's
-     * command thread; delegates to the dispatcher (which reads an
+     * command thread; delegates to @c StandbyPolicy (which reads an
      * atomic and, if enabled, fires the suspend-request callback).
      * The daemon owns the forwarder rather than wiring libcec directly
-     * to the dispatcher so that the callback target is stable across
-     * dispatcher/adapter construction order.
+     * to the policy so that the callback target is stable across
+     * policy/adapter construction order.
      */
     void onAdapterTvStandby();
 
@@ -138,6 +141,14 @@ private:
     EventLoop      m_loop;
     TimerSource    m_suspendSafetyTimer;
     TimerSource    m_reconnectRetryTimer;
+
+    // Auto-suspend-on-TV-standby policy. Declared before m_worker so
+    // reverse-of-declaration destruction tears down the worker (and
+    // with it, libcec's command thread) first — no adapter callback
+    // can then fire into a destroyed policy. Null until start() builds
+    // it; the daemon forwarder null-guards the brief window between
+    // libcec's Open() and this assignment.
+    std::unique_ptr<StandbyPolicy> m_standbyPolicy;
 
     // CEC adapter actor. Owns the libcec handle and the single thread
     // that is allowed to touch it. Built before the lifecycle and
