@@ -389,7 +389,7 @@ void CECDaemon::onSuspendComplete(std::chrono::milliseconds workDuration) {
     // discharges the inhibit-lock release; the other path takes the
     // overrun branch.
     auto out = m_lifecycle.onSuspendCompleted();
-    if (out.safetyOverrun) {
+    if (out.safety == PowerLifecycle::Output::SafetyOutcome::Overrun) {
         LOG_WARNING("CEC suspend completed in ", workDuration.count(),
                     "ms but safety timer had already released the inhibit lock");
     } else {
@@ -411,7 +411,7 @@ void CECDaemon::onResumeComplete(bool adapterValid) {
 void CECDaemon::onSuspendSafetyTimer() {
     m_suspendSafetyTimer.consume();
     auto out = m_lifecycle.onSafetyTimerFired();
-    if (out.safetyFired) {
+    if (out.safety == PowerLifecycle::Output::SafetyOutcome::Fired) {
         LOG_WARNING("Suspend did not complete within ",
                     PowerLifecycle::kSuspendSafetyDeadline.count(),
                     "s; releasing inhibit lock forcibly");

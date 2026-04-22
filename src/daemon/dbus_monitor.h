@@ -235,6 +235,13 @@ private:
         std::chrono::seconds(30),
         std::chrono::seconds(60),
     };
+
+    // 1-based position of the pending reconnect attempt. Captured on
+    // the BackoffSchedule::Attempt returned from nextDelay() when the
+    // reconnect timer is armed, used by onReconnectTimer() at fire
+    // time to build the "attempt N of M" log line. Zero outside an
+    // active Reconnecting cycle.
+    std::size_t m_currentAttemptNumber = 0;
 };
 
 } // namespace cec_control

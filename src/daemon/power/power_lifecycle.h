@@ -67,6 +67,21 @@ public:
         enum class Timer  { None, Arm, Disarm };
         enum class Notify { None, SystemSuspend, SystemResume };
 
+        /**
+         * Safety-timer outcome on this transition. The "fired XOR
+         * overrun" invariant becomes unrepresentable by construction.
+         *
+         *  - @c Inert    no safety-timer observation this transition.
+         *  - @c Fired    @c onSafetyTimerFired observed a live
+         *                (non-stale) firing. Dispatcher gates the
+         *                "releasing inhibit lock forcibly" warning
+         *                on this.
+         *  - @c Overrun  @c onSuspendCompleted observed that the
+         *                safety timer had already fired this cycle.
+         *                Dispatcher picks the overrun log on this.
+         */
+        enum class SafetyOutcome { Inert, Fired, Overrun };
+
         Work   work = Work::None;
         Lock   lock = Lock::None;
 
@@ -78,13 +93,7 @@ public:
         bool   submitLateReconnect = false;
         Notify reconnectNotify     = Notify::None;
 
-        /// @c onSafetyTimerFired observed a live (non-stale) firing.
-        /// Dispatcher uses this to gate the warning log.
-        bool   safetyFired   = false;
-
-        /// @c onSuspendCompleted observed that safety fired first this
-        /// cycle. Dispatcher uses this to pick the overrun log.
-        bool   safetyOverrun = false;
+        SafetyOutcome safety = SafetyOutcome::Inert;
     };
 
     /** Deadline after which the safety timer releases the inhibit lock. */

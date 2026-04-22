@@ -195,6 +195,7 @@ void DBusMonitor::stop() {
     tearDownBusState();
     m_state = BusState::Operational;
     m_reconnectSchedule.reset();
+    m_currentAttemptNumber = 0;
 
     LOG_INFO("sd-bus D-Bus monitor stopped");
 }
@@ -470,15 +471,17 @@ void DBusMonitor::onReconnectTimer() {
     m_reconnectTimer.consume();
     if (m_state != BusState::Reconnecting) return;
 
-    // attemptsSoFar was incremented by the nextDelay() call that armed
-    // this timer, so it already names the attempt about to run.
+    // m_currentAttemptNumber was captured from the Attempt returned
+    // by the nextDelay() that armed this timer, so it already names
+    // the attempt about to run.
     LOG_INFO("Attempting D-Bus reconnection (",
-             m_reconnectSchedule.attemptsSoFar(), "/",
+             m_currentAttemptNumber, "/",
              m_reconnectSchedule.size(), ")");
 
     if (reconnectBus() && registerBusWithLoop()) {
         m_state = BusState::Operational;
         m_reconnectSchedule.reset();
+        m_currentAttemptNumber = 0;
         LOG_INFO("D-Bus reconnected successfully; power monitoring resumed");
         // Drain any events accumulated before we registered and resync
         // the sd-bus timer to whatever deadline the library is carrying.
@@ -491,22 +494,24 @@ void DBusMonitor::onReconnectTimer() {
     // attempt. tearDownBusState is idempotent on already-null members.
     tearDownBusState();
 
-    const auto delay = m_reconnectSchedule.nextDelay();
-    if (!delay) {
+    const auto attempt = m_reconnectSchedule.nextDelay();
+    if (!attempt) {
         LOG_WARNING("D-Bus reconnection abandoned after ",
-                    m_reconnectSchedule.attemptsSoFar(),
+                    m_reconnectSchedule.size(),
                     " attempts; power monitoring disabled for this session");
         m_state = BusState::Disabled;
         return;
     }
 
     LOG_WARNING("D-Bus reconnect attempt failed; next try in ",
-                delay->count(), "ms");
-    if (!m_reconnectTimer.armOnce(*delay)) {
+                attempt->delay.count(), "ms");
+    if (!m_reconnectTimer.armOnce(attempt->delay)) {
         LOG_ERROR("Failed to arm reconnect timer; "
                   "power monitoring disabled for this session");
         m_state = BusState::Disabled;
+        return;
     }
+    m_currentAttemptNumber = attempt->index;
 }
 
 void DBusMonitor::handleBusDisconnect() {
@@ -532,12 +537,15 @@ void DBusMonitor::handleBusDisconnect() {
 
     m_state = BusState::Reconnecting;
     m_reconnectSchedule.reset();
-    const auto initialDelay = m_reconnectSchedule.nextDelay();
-    if (!initialDelay || !m_reconnectTimer.armOnce(*initialDelay)) {
+    m_currentAttemptNumber = 0;
+    const auto attempt = m_reconnectSchedule.nextDelay();
+    if (!attempt || !m_reconnectTimer.armOnce(attempt->delay)) {
         LOG_ERROR("Failed to arm reconnect timer; "
                   "power monitoring disabled for this session");
         m_state = BusState::Disabled;
+        return;
     }
+    m_currentAttemptNumber = attempt->index;
 }
 
 bool DBusMonitor::reconnectBus() {

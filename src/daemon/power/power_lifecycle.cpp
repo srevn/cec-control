@@ -92,7 +92,7 @@ PowerLifecycle::Output PowerLifecycle::onSuspendCompleted() noexcept {
     // completion; TimerSource::disarm is idempotent when already disarmed.
     o.safetyTimer = Output::Timer::Disarm;
     if (firedFirst) {
-        o.safetyOverrun = true;
+        o.safety = Output::SafetyOutcome::Overrun;
     } else if (src == Source::DBus) {
         o.lock = Output::Lock::Release;
     }
@@ -125,7 +125,7 @@ PowerLifecycle::Output PowerLifecycle::onSafetyTimerFired() noexcept {
     m_safetyFiredFirst = true;
 
     Output o;
-    o.safetyFired = true;
+    o.safety = Output::SafetyOutcome::Fired;
     if (m_phaseSource == Source::DBus) o.lock = Output::Lock::Release;
     return o;
 }

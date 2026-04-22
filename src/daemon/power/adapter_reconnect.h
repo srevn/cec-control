@@ -105,8 +105,20 @@ private:
         return m_schedule.size() + 1;
     }
 
+    /** Return to @c Idle with a fresh schedule and no pending attempt. */
+    void resetCycle() noexcept;
+
     State           m_state = State::Idle;
     BackoffSchedule m_schedule;
+    /**
+     * 1-based overall attempt number captured when the retry timer
+     * is armed, consumed when the timer fires. Zero outside of an
+     * active cycle. Kept on the FSM because the arming
+     * (@c AttemptFailed) and firing (@c RetryTimerFired) happen in
+     * different @c onEvent invocations; the schedule deliberately
+     * exposes no post-advance peek API.
+     */
+    std::size_t m_nextAttemptNumber = 0;
 };
 
 } // namespace cec_control

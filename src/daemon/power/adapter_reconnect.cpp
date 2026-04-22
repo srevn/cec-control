@@ -7,6 +7,12 @@ namespace cec_control {
 AdapterReconnect::AdapterReconnect(BackoffSchedule schedule) noexcept
     : m_schedule(std::move(schedule)) {}
 
+void AdapterReconnect::resetCycle() noexcept {
+    m_state = State::Idle;
+    m_schedule.reset();
+    m_nextAttemptNumber = 0;
+}
+
 AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
     const std::size_t total = totalAttempts();
 
@@ -18,6 +24,7 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
         // already at rest).
         if (event == Event::ConnectionLost) {
             m_state = State::Attempting;
+            m_nextAttemptNumber = 1;
             return {Effect::StartAttempt, {}, /*attemptNumber*/ 1, total};
         }
         return {};
@@ -25,21 +32,22 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
     case State::Attempting:
         switch (event) {
         case Event::AttemptSucceeded:
-            m_state = State::Idle;
-            m_schedule.reset();
+            resetCycle();
             return {};
 
         case Event::AttemptFailed: {
-            const auto delay = m_schedule.nextDelay();
-            if (delay) {
-                // attemptsSoFar() was incremented by nextDelay(); +1
-                // names the attempt number the retry timer will fire.
+            const auto attempt = m_schedule.nextDelay();
+            if (attempt) {
+                // Overall attempt number is one higher than the
+                // schedule-local index: the immediate attempt after
+                // ConnectionLost is overall attempt 1 and does not
+                // draw from the schedule.
                 m_state = State::WaitingForRetry;
-                return {Effect::ScheduleRetry, *delay,
-                        m_schedule.attemptsSoFar() + 1, total};
+                m_nextAttemptNumber = attempt->index + 1;
+                return {Effect::ScheduleRetry, attempt->delay,
+                        m_nextAttemptNumber, total};
             }
-            m_state = State::Idle;
-            m_schedule.reset();
+            resetCycle();
             return {Effect::AbandonCycle, {}, 0, total};
         }
 
@@ -47,8 +55,7 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
         case Event::SystemResume:
             // No timer armed in this state; the in-flight pool task
             // will land and be absorbed as a stale result by Idle.
-            m_state = State::Idle;
-            m_schedule.reset();
+            resetCycle();
             return {};
 
         case Event::ConnectionLost:
@@ -72,25 +79,24 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
             // disarmed by the dispatcher.
             m_schedule.reset();
             m_state = State::Attempting;
+            m_nextAttemptNumber = 1;
             return {Effect::StartAttempt, {}, /*attemptNumber*/ 1, total};
 
         case Event::RetryTimerFired:
-            // attemptsSoFar() is unchanged since we armed this timer;
-            // +1 names the attempt we are about to run.
+            // m_nextAttemptNumber was captured when this timer was
+            // armed in the preceding AttemptFailed transition.
             m_state = State::Attempting;
             return {Effect::StartAttempt, {},
-                    m_schedule.attemptsSoFar() + 1, total};
+                    m_nextAttemptNumber, total};
 
         case Event::SystemSuspend:
         case Event::SystemResume:
-            m_state = State::Idle;
-            m_schedule.reset();
+            resetCycle();
             return {Effect::CancelRetry, {}, 0, 0};
 
         case Event::TimerArmFailed:
             // Dispatcher could not arm the timer; the cycle is over.
-            m_state = State::Idle;
-            m_schedule.reset();
+            resetCycle();
             return {Effect::AbandonCycle, {}, 0, total};
 
         case Event::AttemptSucceeded:
