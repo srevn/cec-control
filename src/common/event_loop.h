@@ -58,7 +58,11 @@ public:
 
     /**
      * Run until stop() is observed or the poller reports an unrecoverable
-     * error. Blocks the calling thread. Safe to call exactly once.
+     * error. Blocks the calling thread. Single-entry: calling @c run()
+     * a second time on the same instance is a programming error and
+     * fires an @c assert in debug builds; release builds fall through
+     * a no-op because @c m_stopRequested is latched from the prior
+     * @c stop().
      */
     void run();
 
@@ -73,6 +77,7 @@ private:
     EventPoller m_poller;
     std::unordered_map<int, Handler> m_handlers;
     bool m_stopRequested = false;
+    bool m_ran           = false;  // Guards single-entry invariant on run().
 };
 
 } // namespace cec_control

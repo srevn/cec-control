@@ -1,6 +1,7 @@
 #include "event_loop.h"
 #include "logger.h"
 
+#include <cassert>
 #include <utility>
 
 namespace cec_control {
@@ -38,6 +39,13 @@ void EventLoop::remove(int fd) {
 }
 
 void EventLoop::run() {
+    // Single-entry: a second call is either a bug (same instance used
+    // twice) or a shape the class is not designed for. Catch it in
+    // debug; in release the latched m_stopRequested from the prior
+    // stop() makes the loop body no-op anyway.
+    assert(!m_ran && "EventLoop::run called twice on the same instance");
+    m_ran = true;
+
     while (!m_stopRequested) {
         auto events = m_poller.wait(-1);
         if (!events) {
@@ -61,7 +69,6 @@ void EventLoop::run() {
             if (m_stopRequested) break;
         }
     }
-    m_stopRequested = false;  // Reset so run() could be called again.
 }
 
 } // namespace cec_control

@@ -71,6 +71,13 @@ bool ConfigManager::load() {
     return true;
 }
 
+const ConfigManager::SectionContent&
+ConfigManager::section(const std::string& name) const noexcept {
+    static const SectionContent kEmpty;
+    auto it = m_config.find(name);
+    return it != m_config.end() ? it->second : kEmpty;
+}
+
 std::string ConfigManager::getString(const std::string& section, const std::string& key,
                                     const std::string& defaultValue) const {
     auto sectionIt = m_config.find(section);

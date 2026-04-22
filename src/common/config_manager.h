@@ -14,6 +14,11 @@ namespace cec_control {
  */
 class ConfigManager {
 public:
+    /** A single section's parsed key-value map. */
+    using SectionContent = std::unordered_map<std::string, std::string>;
+    /** Full parsed file: section name → section content. */
+    using SectionMap     = std::unordered_map<std::string, SectionContent>;
+
     /**
      * @param configPath Path to the configuration file. Empty selects the
      *                   default from SystemPaths::getConfigPath().
@@ -41,11 +46,27 @@ public:
                const std::string& key,
                int defaultValue = 0) const;
 
+    /**
+     * Every section observed while parsing the file, keyed by name.
+     * Values are the parsed key-value maps. Intended for callers that
+     * want to iterate the file (e.g. validating against a known
+     * schema); prefer @c getString / @c getBool / @c getInt for
+     * named-key reads.
+     */
+    [[nodiscard]] const SectionMap& sections() const noexcept { return m_config; }
+
+    /**
+     * Section content for @p name, or a static empty map if the
+     * section was not present. Lets callers write a single allocation-
+     * free iteration without nullability bookkeeping.
+     */
+    [[nodiscard]] const SectionContent& section(const std::string& name) const noexcept;
+
     const std::string& getConfigPath() const noexcept { return m_configPath; }
 
 private:
-    std::string m_configPath;
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_config;
+    std::string  m_configPath;
+    SectionMap   m_config;
 
     static void trim(std::string& s);
 };
