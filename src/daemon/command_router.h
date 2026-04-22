@@ -70,14 +70,6 @@ public:
     };
 
     /**
-     * Response delivery target for @c dispatch. The router invokes it
-     * at most once per @c dispatch call, either synchronously on the
-     * main thread (gate-only / state-only paths) or asynchronously via
-     * @c MainThreadWork::post (adapter-driven path).
-     */
-    using ResponseSink = std::function<void(Message)>;
-
-    /**
      * @param config      Read-only snapshot; the router extracts its
      *                    seed values (throttler tuning, initial policy
      *                    flags) at construction and does not retain a

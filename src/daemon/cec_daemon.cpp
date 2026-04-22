@@ -7,7 +7,16 @@
 #include "../common/logger.h"
 #include "../common/system_paths.h"
 #include "../common/systemd_env.h"
+// Full definitions of the subsystems cec_daemon.h forward-declares.
+// Placed here so this TU can construct, call into, and destroy each
+// one; cec_daemon.h stays thin and does not transitively pull libcec
+// or sd-bus through these headers.
+#include "cec/adapter_worker.h"
+#include "cec/libcec_adapter.h"
 #include "cec/operations.h"
+#include "command_router.h"
+#include "dbus_monitor.h"
+#include "socket_server.h"
 
 namespace cec_control {
 
@@ -103,7 +112,7 @@ bool CECDaemon::start() {
         m_socketServer = std::make_unique<SocketServer>(
             m_loop, SystemPaths::getSocketPath());
         m_socketServer->setCommandHandler(
-            [this](Message command, SocketServer::ResponseSink reply) {
+            [this](Message command, ResponseSink reply) {
                 this->handleCommand(std::move(command), std::move(reply));
             });
         if (!m_socketServer->start()) {
@@ -507,7 +516,7 @@ bool CECDaemon::setupPowerMonitor() {
     }
 }
 
-void CECDaemon::handleCommand(Message command, SocketServer::ResponseSink reply) {
+void CECDaemon::handleCommand(Message command, ResponseSink reply) {
     LOG_DEBUG("Received command: type=", static_cast<int>(command.type),
               ", deviceId=", static_cast<int>(command.deviceId));
 

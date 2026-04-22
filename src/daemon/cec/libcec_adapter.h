@@ -101,17 +101,38 @@ private:
     };
     using AdapterPtr = std::unique_ptr<CEC::ICECAdapter, AdapterDeleter>;
 
-    // Configuration
+    // ---------------------------------------------------------------
+    // Member declaration order is a correctness invariant.
+    //
+    // libcec's internal command and alert threads, spawned by
+    // ICECAdapter::Open(), read:
+    //   - m_callbacks      (via the pointer stored in m_libcecConfig)
+    //   - m_libcecConfig   (libcec keeps its own pointer to the
+    //                       configuration we hand to CECInitialise)
+    //   - m_connected                 (via cbParam → this → &field)
+    //   - m_tvStandbyCallback         (ditto)
+    //   - m_connectionLostCallback    (ditto)
+    //
+    // Those threads are joined by ICECAdapter::Close(), which runs as
+    // part of the AdapterDeleter — i.e. inside m_adapter's destructor.
+    // Declaring m_adapter last means it is destroyed FIRST, joining
+    // every libcec thread before any of the fields above are torn
+    // down. ~LibCecAdapter() also calls closeConnection() explicitly
+    // as a first line of defence; member declaration order is the
+    // structural invariant that survives a refactor of the destructor
+    // body.
+    // ---------------------------------------------------------------
+
+    // Configuration, read-only after construction.
     AdapterConfig m_config;
     std::string   m_portName;
 
-    // libcec adapter. m_callbacks is a plain non-owning struct whose
-    // address we hand to libcec via m_libcecConfig.callbacks; libcec
-    // treats the pointer as borrowed (consistent with AdapterDeleter's
-    // CECDestroy note — libcec never free()s anything we hand it).
-    // Value-initialised so every function slot starts out nullptr;
-    // the constructor fills in the ones we use.
-    AdapterPtr                 m_adapter;
+    // libcec's non-owning view of our callback struct. m_callbacks is
+    // value-initialised so every function slot starts out nullptr; the
+    // constructor fills in the ones we use and hands the address to
+    // libcec via m_libcecConfig.callbacks. libcec treats the pointer
+    // as borrowed (consistent with AdapterDeleter's CECDestroy note —
+    // libcec never free()s anything we hand it).
     CEC::ICECCallbacks         m_callbacks{};
     CEC::libcec_configuration  m_libcecConfig;
 
@@ -122,10 +143,15 @@ private:
     // callers treat the value as advisory.
     std::atomic<bool> m_connected;
 
-    // Callbacks — install-once at construction; libcec reads them
-    // from its internal threads without a lock. Never reassigned.
+    // Install-once at construction; libcec reads them from its internal
+    // threads without a lock. Never reassigned.
     const std::function<void()> m_tvStandbyCallback;
     const std::function<void()> m_connectionLostCallback;
+
+    // libcec adapter handle. MUST stay last — see the block comment
+    // above. The deleter calls CECDestroy(), which joins libcec's
+    // internal threads before control returns.
+    AdapterPtr m_adapter;
 
     /**
      * Detect available CEC adapter hardware. Caches the first-found

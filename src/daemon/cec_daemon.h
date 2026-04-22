@@ -6,18 +6,26 @@
 #include "../common/backoff_schedule.h"
 #include "../common/event_loop.h"
 #include "../common/main_thread_work.h"
+#include "../common/messages.h"
 #include "../common/signal_source.h"
 #include "../common/timer_source.h"
 #include "app_config.h"
-#include "cec/adapter_worker.h"
-#include "cec/libcec_adapter.h"
-#include "command_router.h"
-#include "dbus_monitor.h"
 #include "power/adapter_reconnect.h"
 #include "power/power_lifecycle.h"
-#include "socket_server.h"
 
 namespace cec_control {
+
+// Daemon subsystems are held by std::unique_ptr with out-of-line
+// destruction (~CECDaemon defined in cec_daemon.cpp), so forward
+// declarations suffice here. The complete definitions are included
+// in cec_daemon.cpp, alongside every .cpp that constructs or calls
+// into them directly. Keeping those headers out of cec_daemon.h
+// breaks the transitive libcec / sd-bus leak through every TU that
+// just needs to name the CECDaemon type.
+class AdapterWorker;
+class CommandRouter;
+class DBusMonitor;
+class SocketServer;
 
 /**
  * @class CECDaemon
@@ -159,7 +167,7 @@ private:
      * reply inline; everything else is forwarded to the router whose
      * @c dispatch chooses between an inline reply and a worker hop.
      */
-    void handleCommand(Message command, SocketServer::ResponseSink reply);
+    void handleCommand(Message command, ResponseSink reply);
 
     /**
      * Adapter callback forwarder: TV standby. Fires on libcec's

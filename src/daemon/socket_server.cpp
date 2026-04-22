@@ -360,7 +360,7 @@ SocketServer::Session* SocketServer::findSession(SessionId id) noexcept {
     return it == m_sessions.end() ? nullptr : it->second.get();
 }
 
-SocketServer::ResponseSink SocketServer::makeSink(SessionId id) {
+ResponseSink SocketServer::makeSink(SessionId id) {
     return [this, id](Message response) {
         sendResponse(id, std::move(response));
     };

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -60,5 +61,15 @@ struct Message {
 
 /** Returns true if @p raw is a known MessageType enumerator. */
 bool isKnownMessageType(uint8_t raw) noexcept;
+
+/**
+ * Response delivery target for a parsed wire command. A sink is
+ * invoked exactly once — either synchronously on the handler's thread
+ * or through a deferred continuation (typically @c MainThreadWork::post).
+ * Single-slot @c std::function matches the one-shot contract at the
+ * type level only loosely; the call-at-most-once discipline is
+ * enforced by convention at every call site.
+ */
+using ResponseSink = std::function<void(Message)>;
 
 } // namespace cec_control

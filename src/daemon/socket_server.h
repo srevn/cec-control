@@ -48,21 +48,16 @@ public:
     using SessionId = std::uint64_t;
 
     /**
-     * Deliver one @c Message back to the originating session. Main thread
-     * only; silently dropped if the session has closed. Worker threads
-     * that produce a response must route the invocation through
-     * @c MainThreadWork::post first — see @c CECDaemon::handleCommand
-     * for the canonical pattern.
-     */
-    using ResponseSink = std::function<void(Message)>;
-
-    /**
      * Invoked on the main thread for each parsed request. The handler
      * must call @p reply exactly once — either synchronously before
      * returning, or by transferring ownership of the sink to a deferred
      * continuation that calls it later. Calling @p reply more than once
      * per request results in a duplicate response; throwing after a
      * successful @p reply is a contract violation.
+     *
+     * Worker threads that produce a response must route the invocation
+     * through @c MainThreadWork::post first — see
+     * @c CECDaemon::handleCommand for the canonical pattern.
      */
     using CommandHandler = std::function<void(Message request, ResponseSink reply)>;
 
