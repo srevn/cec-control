@@ -39,10 +39,6 @@ Action parseDaemonOptions(const std::vector<std::string_view>& args) {
             out.verbose = true;
             continue;
         }
-        if (arg == "--foreground" || arg == "-f") {
-            out.foreground = true;
-            continue;
-        }
         if (arg == "--log" || arg == "-l") {
             if (i + 1 >= args.size()) {
                 return ParseError{"Error: " + std::string(arg) + " requires a file path"};

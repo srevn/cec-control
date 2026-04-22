@@ -38,10 +38,13 @@ struct RunClient {
 /**
  * Run the daemon with the given lifecycle options. Empty file paths mean
  * "use SystemPaths defaults"; the bootstrap layer materialises them.
+ *
+ * The daemon always runs in the foreground; backgrounding is delegated
+ * to the supervisor (systemd, systemd-run, or the shell's @c & ), so
+ * there is no option to control that here.
  */
 struct RunDaemon {
-    bool        verbose    = false;
-    bool        foreground = false;
+    bool        verbose = false;
     std::string logFile;
     std::string configFile;
 };

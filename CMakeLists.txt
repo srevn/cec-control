@@ -5,9 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Default to Release for single-config generators. Multi-config generators
-# (Ninja Multi-Config, Visual Studio) pick the type at build time and must
-# not have the cache variable forced here.
+# Default to Release for single-config generators
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
     message(STATUS "Build type defaulted to Release")
@@ -16,10 +14,7 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 
-# External dependencies via pkg-config. IMPORTED_TARGET produces
-# PkgConfig::LIBCEC / PkgConfig::LIBSYSTEMD, which carry include paths and
-# link flags transitively — no explicit ${..._INCLUDE_DIRS} /
-# ${..._LIBRARIES} plumbing required.
+# External dependencies via pkg-config
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCEC     REQUIRED IMPORTED_TARGET libcec>=5.0.0)
 pkg_check_modules(LIBSYSTEMD REQUIRED IMPORTED_TARGET libsystemd>=239)
@@ -52,7 +47,6 @@ target_sources(cec-control PRIVATE
     src/common/messages.cpp
     src/common/signal_source.cpp
     src/common/system_paths.cpp
-    src/common/systemd_env.cpp
     src/common/systemd_notify.cpp
     src/common/timer_source.cpp
     src/common/unix_socket.cpp

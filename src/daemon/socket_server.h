@@ -22,17 +22,6 @@ namespace cec_control {
  * and writes responses — every syscall runs on the thread that drives the
  * loop.
  *
- * The per-session state machine (main thread only) is:
- *
- *   Reading (READ on)  ── recv ──▶  Processing (READ off, WRITE off)
- *                                        │ handler → reply(resp)
- *                                        ▼
- *                             ┌── send ──▶ Reading    (success)
- *                             └── EAGAIN ▶ Sending   (WRITE on, holds body)
- *                                        │ retry on WRITE-ready
- *                                        ▼
- *                                      Reading
- *
  * Sessions are keyed on a monotonic @c SessionId — never on the fd — so a
  * response queued by a worker that completes after the peer has
  * disconnected is quietly dropped rather than misrouted to a reused fd.

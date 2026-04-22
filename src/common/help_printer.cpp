@@ -86,7 +86,6 @@ void HelpPrinter::printGeneralHelp(const char* programName) {
     std::cout << "\n"
               << "DAEMON OPTIONS:\n"
               << "  -v, --verbose                            Enable verbose logging\n"
-              << "  -f, --foreground                         Run in foreground (don't daemonize)\n"
               << "  -l, --log FILE                           Set log file path\n"
               << "  -c, --config FILE                        Set configuration file\n"
               << "\n"
@@ -143,7 +142,6 @@ void HelpPrinter::printDaemonHelp(const char* programName) {
               << "\n"
               << "OPTIONS:\n"
               << "  -v, --verbose                            Enable verbose logging\n"
-              << "  -f, --foreground                         Run in foreground (don't daemonize)\n"
               << "  -l, --log FILE                           Set log file path\n"
               << "                                           (default: " << SystemPaths::getLogPath() << ")\n"
               << "  -c, --config FILE                        Set configuration file path\n"
@@ -151,8 +149,8 @@ void HelpPrinter::printDaemonHelp(const char* programName) {
               << "  -h, --help                               Show this help message\n"
               << "\n"
               << "EXAMPLES:\n"
-              << "  " << programName << " daemon                            Run daemon in background\n"
-              << "  " << programName << " daemon --verbose --foreground     Run with verbose logging in foreground\n"
+              << "  " << programName << " daemon                            Run daemon in the foreground\n"
+              << "  " << programName << " daemon --verbose                  Run with verbose logging\n"
               << "  " << programName << " daemon -c /path/to/config.conf    Run with custom configuration\n"
               << std::endl;
 }
