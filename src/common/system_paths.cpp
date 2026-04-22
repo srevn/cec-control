@@ -61,19 +61,6 @@ std::string SystemPaths::joinPath(const std::string& base, const std::string& co
     }
 }
 
-bool SystemPaths::pathExists(const std::string& path) {
-    if (path.empty()) {
-        return false;
-    }
-    
-    try {
-        return std::filesystem::exists(path);
-    } catch (const std::exception& e) {
-        LOG_ERROR("Failed to check if path exists: ", path, " - ", e.what());
-        return false;
-    }
-}
-
 std::string SystemPaths::getSystemRuntimeDir() {
     const char* runtimeDir = getenv("RUNTIME_DIRECTORY");
     if (!runtimeDir || !*runtimeDir) {

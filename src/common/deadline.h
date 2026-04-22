@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <limits>
-#include <sys/time.h>
 
 namespace cec_control {
 
@@ -21,16 +20,20 @@ public:
         return Deadline{clock::now() + duration};
     }
 
-    static Deadline never() noexcept {
-        return Deadline{clock::time_point::max()};
+    /** Returns -1 for unbounded, otherwise a non-negative poll()-compatible millisecond value. */
+    int remainingMs() const noexcept {
+        auto r = remaining();
+        if (r.count() < 0) return -1;
+        constexpr auto kMaxInt = std::numeric_limits<int>::max();
+        if (r.count() > kMaxInt) return kMaxInt;
+        return static_cast<int>(r.count());
     }
+
+private:
+    explicit Deadline(clock::time_point expiry) noexcept : m_expiry(expiry) {}
 
     bool isUnbounded() const noexcept {
         return m_expiry == clock::time_point::max();
-    }
-
-    bool expired() const noexcept {
-        return !isUnbounded() && clock::now() >= m_expiry;
     }
 
     std::chrono::milliseconds remaining() const noexcept {
@@ -44,28 +47,6 @@ public:
         return std::chrono::duration_cast<std::chrono::milliseconds>(m_expiry - now);
     }
 
-    /** Returns -1 for unbounded, otherwise a non-negative poll()-compatible millisecond value. */
-    int remainingMs() const noexcept {
-        auto r = remaining();
-        if (r.count() < 0) return -1;
-        constexpr auto kMaxInt = std::numeric_limits<int>::max();
-        if (r.count() > kMaxInt) return kMaxInt;
-        return static_cast<int>(r.count());
-    }
-
-    /** Returns a timeval suitable for SO_RCVTIMEO / SO_SNDTIMEO. Zero means "no timeout" to the kernel. */
-    struct timeval toTimeval() const noexcept {
-        struct timeval tv{0, 0};
-        auto r = remaining();
-        if (r.count() > 0) {
-            tv.tv_sec = static_cast<time_t>(r.count() / 1000);
-            tv.tv_usec = static_cast<suseconds_t>((r.count() % 1000) * 1000);
-        }
-        return tv;
-    }
-
-private:
-    explicit Deadline(clock::time_point expiry) noexcept : m_expiry(expiry) {}
     clock::time_point m_expiry;
 };
 

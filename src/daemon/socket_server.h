@@ -108,8 +108,6 @@ public:
      */
     void sendResponse(SessionId id, Message response);
 
-    [[nodiscard]] bool isRunning() const noexcept { return m_listener.valid(); }
-
 private:
     struct Session;
 

@@ -290,9 +290,16 @@ Message CommandRouter::executeOnAdapter(ICecAdapter& adapter,
         success = ops::powerOffDevice(adapter, m_throttler, command.deviceId);
         break;
     case MessageType::CMD_CHANGE_SOURCE:
-        if (!command.data.empty()) {
-            success = ops::setSource(adapter, m_throttler, command.data[0]);
+        if (command.data.empty()) {
+            // The registry's parser guarantees a single-byte payload; an
+            // empty data vector here means a hand-rolled wire message
+            // bypassed the parser. Log so it is distinguishable from a
+            // CEC-layer failure, then surface RESP_ERROR below.
+            LOG_WARNING("CMD_CHANGE_SOURCE received with empty payload; "
+                        "expected source byte in data[0] (malformed client)");
+            break;
         }
+        success = ops::setSource(adapter, m_throttler, command.data[0]);
         break;
     default:
         LOG_ERROR("Unknown command type: ", static_cast<int>(command.type));

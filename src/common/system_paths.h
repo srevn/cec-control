@@ -78,9 +78,6 @@ public:
      * @return True if the directory exists on return (created or pre-existing).
      */
     static bool createDirectories(const std::string& path, mode_t mode = 0755);
-
-    /** Returns true if @p path refers to an existing filesystem entry. */
-    static bool pathExists(const std::string& path);
 };
 
 } // namespace cec_control
