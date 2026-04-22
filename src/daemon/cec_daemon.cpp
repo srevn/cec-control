@@ -49,7 +49,7 @@ bool CECDaemon::start() {
     try {
         // Build the adapter on the main thread. Callbacks target
         // daemon forwarders so the wiring does not depend on the
-        // router's construction order, and so libcec-thread entry
+        // dispatcher's construction order, and so libcec-thread entry
         // points are stable for the lifetime of the adapter.
         ICecAdapter::Callbacks adapterCallbacks{
             /*onTvStandby*/      [this]() { this->onAdapterTvStandby(); },

@@ -11,7 +11,7 @@ namespace {
 constexpr int kMaxLogicalAddress = 15;
 
 // Source IDs accepted on the wire range over a single byte; the daemon-side
-// router decides which subset map to which physical inputs.
+// dispatcher decides which subset map to which physical inputs.
 constexpr int kMaxSourceId = 255;
 
 /**

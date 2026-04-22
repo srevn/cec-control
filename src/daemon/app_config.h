@@ -8,15 +8,13 @@ namespace cec_control {
 class ConfigManager;
 
 /**
- * Router-level policy flags. Each field is a seed value for a live
+ * Dispatcher-level policy flags. Each field is a seed value for a live
  * store on @c CommandDispatcher — @c autoStandbyEnabled in particular
  * is mirrored into an atomic there and toggled at runtime by
  * @c CMD_AUTO_STANDBY; this struct remains the file's original value.
- * See @c AppConfig's class comment for the snapshot-vs-live-state
- * split. The struct keeps its legacy name for backwards-compatible
- * config-file mapping; the runtime owner is the dispatcher.
+ * See @c AppConfig's class comment for the snapshot-vs-live-state split.
  */
-struct RouterConfig {
+struct DispatcherConfig {
     bool queueCommandsDuringSuspend = true;
     bool autoStandbyEnabled         = false;
 };
@@ -41,7 +39,7 @@ struct DaemonConfig {
  * @c AppConfig is the file's mirror, not the live policy store.
  *
  * Every field is itself a typed sub-struct scoped to one consumer
- * (adapter / throttler / router / daemon). File-layout-to-struct-
+ * (adapter / throttler / dispatcher / daemon). File-layout-to-struct-
  * layout is mapped by @c loadAppConfig; a reader who wants to know
  * which INI section populates a given field should read that.
  *
@@ -51,10 +49,10 @@ struct DaemonConfig {
  * replaced wholesale, never patched in place.
  */
 struct AppConfig {
-    AdapterConfig   adapter;
-    ThrottlerConfig throttler;
-    RouterConfig    router;
-    DaemonConfig    daemon;
+    AdapterConfig    adapter;
+    ThrottlerConfig  throttler;
+    DispatcherConfig dispatcher;
+    DaemonConfig     daemon;
 };
 
 /**

@@ -70,18 +70,18 @@ AppConfig loadAppConfig(const ConfigManager& cfg) {
     throttler.maxIntervalMs    = cfg.getInt("Throttler", "MaxIntervalMs", 1000);
     throttler.maxRetryAttempts = cfg.getInt("Throttler", "MaxRetryAttempts", 3);
 
-    // Router policy. QueueCommandsDuringSuspend lives under [Daemon]
-    // in the file for backwards compatibility with deployed configs,
-    // but is a router-scoped flag. PowerOffOnStandby similarly lives
-    // under [Adapter] historically — it names the CEC standby opcode
-    // the policy responds to — but the policy itself is enforced by
-    // the router, not libcec. See the LibCecAdapter constructor for
-    // why bPowerOffOnStandby is deliberately not mirrored into
-    // libcec's own config.
-    auto& router = config.router;
-    router.queueCommandsDuringSuspend =
+    // Dispatcher policy. QueueCommandsDuringSuspend lives under
+    // [Daemon] in the file for backwards compatibility with deployed
+    // configs, but is a dispatcher-scoped flag. PowerOffOnStandby
+    // similarly lives under [Adapter] historically — it names the CEC
+    // standby opcode the policy responds to — but the policy itself is
+    // enforced by the dispatcher, not libcec. See the LibCecAdapter
+    // constructor for why bPowerOffOnStandby is deliberately not
+    // mirrored into libcec's own config.
+    auto& dispatcher = config.dispatcher;
+    dispatcher.queueCommandsDuringSuspend =
         cfg.getBool("Daemon",  "QueueCommandsDuringSuspend", true);
-    router.autoStandbyEnabled =
+    dispatcher.autoStandbyEnabled =
         cfg.getBool("Adapter", "PowerOffOnStandby",         false);
 
     // Daemon-level toggles.
@@ -98,11 +98,11 @@ void logAppConfig(const AppConfig& config) {
     LOG_INFO("Configuration: ScanDevicesAtStartup = ",
              (config.daemon.scanDevicesAtStartup ? "true" : "false"));
     LOG_INFO("Configuration: QueueCommandsDuringSuspend = ",
-             (config.router.queueCommandsDuringSuspend ? "true" : "false"));
+             (config.dispatcher.queueCommandsDuringSuspend ? "true" : "false"));
     LOG_INFO("Configuration: EnablePowerMonitor = ",
              (config.daemon.enablePowerMonitor ? "true" : "false"));
     LOG_INFO("Configuration: PowerOffOnStandby = ",
-             (config.router.autoStandbyEnabled ? "true" : "false"));
+             (config.dispatcher.autoStandbyEnabled ? "true" : "false"));
 }
 
 } // namespace cec_control

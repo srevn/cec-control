@@ -51,10 +51,11 @@ class SocketServer;
  * the main thread, runs @c initialize() and @c openConnection() on
  * the main thread (libcec's @c Open is thread-identity-agnostic),
  * hands the opened adapter to @c AdapterWorker, then builds the
- * router and supervisor. From @c m_worker->start() onwards the worker
- * is the sole thread that invokes any other libcec method; callbacks
- * arriving between @c Open() returning and the supervisor being
- * assigned are absorbed by null checks in the daemon's forwarders.
+ * lifecycle, dispatcher, and supervisor. From @c m_worker->start()
+ * onwards the worker is the sole thread that invokes any other libcec
+ * method; callbacks arriving between @c Open() returning and the
+ * supervisor being assigned are absorbed by null checks in the
+ * daemon's forwarders.
  *
  * Shutdown drives a strict ordering so no thread observes a
  * destroyed subsystem: the socket server stops before the dispatcher
@@ -79,11 +80,11 @@ public:
 
     /**
      * Construct, initialise, and open the adapter on the main thread;
-     * hand the opened adapter to the worker; build the router and the
-     * supervisor; start the worker; register every event-loop source.
-     * Returns @c true on success; a failure path leaves the daemon in
-     * a state where @c stop() will tear down whatever partial state
-     * was committed.
+     * hand the opened adapter to the worker; build the lifecycle,
+     * dispatcher, and supervisor; start the worker; register every
+     * event-loop source. Returns @c true on success; a failure path
+     * leaves the daemon in a state where @c stop() will tear down
+     * whatever partial state was committed.
      */
     [[nodiscard]] bool start();
 

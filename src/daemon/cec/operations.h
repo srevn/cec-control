@@ -15,7 +15,7 @@ class CommandThrottler;
  * Every operation is pure in the sense that it holds no state of its own;
  * it reads the adapter's current connected hint, runs its action through
  * the @c CommandThrottler, and returns whether the throttled attempt
- * succeeded. No router-side locking is required around a call — the
+ * succeeded. No caller-side locking is required around a call — the
  * adapter serialises libcec access internally and the throttler is
  * thread-safe via atomics.
  *

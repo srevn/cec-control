@@ -77,7 +77,8 @@ public:
      * Capture references to every subsystem the supervisor must
      * coordinate. The references must outlive @c this; the daemon
      * achieves this by destroying the supervisor first in @c stop()
-     * and by declaring it after the timers / router / worker.
+     * and by declaring it after the timers / dispatcher / lifecycle /
+     * worker.
      *
      * The D-Bus monitor pointer is intentionally absent here — it is
      * wired post-construction via @c setDBusMonitor once
@@ -116,10 +117,10 @@ public:
 
     /**
      * Worker-completion handler for the suspend phase. Public so the
-     * lambda installed in @c submitSuspendWork (which the router
-     * invokes via @c MainThreadWork::post) can name it. Reads the
-     * lifecycle FSM's outcome to choose between the happy log and the
-     * overrun log, then applies the resulting output.
+     * lambda installed in @c submitSuspendWork (which posts completion
+     * to the main thread via @c MainThreadWork::post) can name it.
+     * Reads the lifecycle FSM's outcome to choose between the happy
+     * log and the overrun log, then applies the resulting output.
      */
     void onSuspendCompleted(std::chrono::milliseconds workDuration);
 

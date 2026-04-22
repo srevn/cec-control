@@ -8,7 +8,7 @@ namespace cec_control {
 
 /**
  * @class SuspendQueue
- * @brief Pairs the "router is suspended" flag with the vector of
+ * @brief Pairs the "lifecycle is suspended" flag with the vector of
  *        commands parked during that suspension.
  *
  * This is the small amount of state that pivots on the lifecycle's

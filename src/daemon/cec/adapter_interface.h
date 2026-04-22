@@ -120,8 +120,8 @@ public:
 
     // Broadcast-style helpers ------------------------------------------
     //
-    // Default argument is resolved statically, but every call site the
-    // router makes goes through an @c ICecAdapter reference or pointer,
+    // Default argument is resolved statically, but every daemon-side
+    // call site goes through an @c ICecAdapter reference or pointer,
     // so the interface's default is the one that applies.
 
     [[nodiscard]] virtual bool standbyDevices(

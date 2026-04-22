@@ -36,10 +36,10 @@ LibCecAdapter::LibCecAdapter(AdapterConfig config, Callbacks callbacks)
     m_libcecConfig.bAutoWakeAVR    = m_config.autoWakeAVR    ? 1 : 0;
     m_libcecConfig.bAutoPowerOn    = m_config.autoPowerOn    ? 1 : 0;
     // bPowerOffOnStandby is deliberately not mirrored here —
-    // auto-standby is a router-level policy, gated on the router's
-    // flag rather than libcec's internal config. Leaving libcec's
-    // flag at its default (0) prevents the library from taking its
-    // own standby-driven actions underneath us.
+    // auto-standby is a dispatcher-level policy, gated on the
+    // dispatcher's flag rather than libcec's internal config. Leaving
+    // libcec's flag at its default (0) prevents the library from
+    // taking its own standby-driven actions underneath us.
     m_libcecConfig.bActivateSource = m_config.activateSource ? 1 : 0;
     m_libcecConfig.wakeDevices     = m_config.wakeDevices;
     m_libcecConfig.powerOffDevices = m_config.powerOffDevices;

@@ -22,8 +22,8 @@ CommandDispatcher::CommandDispatcher(const AppConfig&  config,
       m_work(work),
       m_lifecycle(lifecycle),
       m_throttler(config.throttler),
-      m_queueCommandsDuringSuspend(config.router.queueCommandsDuringSuspend),
-      m_autoStandbyEnabled(config.router.autoStandbyEnabled),
+      m_queueCommandsDuringSuspend(config.dispatcher.queueCommandsDuringSuspend),
+      m_autoStandbyEnabled(config.dispatcher.autoStandbyEnabled),
       m_suspendCallback(std::move(callbacks.onSuspendRequested)) {}
 
 void CommandDispatcher::shutdown() {
