@@ -48,10 +48,18 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     AppConfig config = loadAppConfig(configManager);
     logAppConfig(config);
 
-    // Setup the process (daemonization, service mode, etc.)
-    if (!setupProcess(/*runAsDaemon=*/!action.foreground)) {
+    // Setup the process (daemonization, service mode, etc.). A
+    // Should-Return outcome unwinds the stack-owned configuration
+    // objects above before main() returns, preserving RAII — the
+    // old exit() path skipped them.
+    switch (setupProcess(/*runAsDaemon=*/!action.foreground)) {
+    case BootstrapPhase::ShouldReturnSuccess:
+        return EXIT_SUCCESS;
+    case BootstrapPhase::ShouldReturnFailure:
         LOG_FATAL("Failed to setup daemon process");
         return EXIT_FAILURE;
+    case BootstrapPhase::ShouldRun:
+        break;
     }
 
     LOG_INFO("Running with PID: ", getpid(), " in system service mode");
@@ -80,19 +88,26 @@ int DaemonBootstrap::runDaemon(const RunDaemon& action) {
     }
 }
 
-bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
+DaemonBootstrap::BootstrapPhase
+DaemonBootstrap::setupProcess(bool runAsDaemon) {
     const bool runningUnderSystemd = SystemdEnv::isUnderSystemd();
 
-    // Determine if we should daemonize
     if (runAsDaemon && !runningUnderSystemd) {
         LOG_INFO("Running as normal executable, will daemonize");
-        
-        // daemonize returns false for the parent process that should exit
-        if (!daemonize()) {
-            LOG_INFO("Parent process exiting, daemon started");
-            exit(EXIT_SUCCESS);
+
+        switch (daemonize()) {
+        case BootstrapPhase::ShouldReturnSuccess:
+            // Fork parent — daemonize() already logged the exit
+            // banner for the first-fork parent; the second-fork
+            // parent is intentionally silent (it runs briefly after
+            // setsid with no operator-visible role).
+            return BootstrapPhase::ShouldReturnSuccess;
+        case BootstrapPhase::ShouldReturnFailure:
+            return BootstrapPhase::ShouldReturnFailure;
+        case BootstrapPhase::ShouldRun:
+            break;
         }
-        
+
         LOG_INFO("Daemon process started with PID: ", getpid());
     } else {
         if (runningUnderSystemd) {
@@ -100,8 +115,8 @@ bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
         } else {
             LOG_INFO("Running in foreground mode");
         }
-        
-        // When running as service or in foreground, just redirect stdin
+
+        // When running as service or in foreground, just redirect stdin.
         close(STDIN_FILENO);
         int null = open("/dev/null", O_RDWR);
         if (null >= 0) {
@@ -113,58 +128,60 @@ bool DaemonBootstrap::setupProcess(bool runAsDaemon) {
             LOG_WARNING("Failed to open /dev/null: ", strerror(errno));
         }
     }
-    
-    return true;
+
+    return BootstrapPhase::ShouldRun;
 }
 
-bool DaemonBootstrap::daemonize() {
-    // Set reasonable file permissions
+DaemonBootstrap::BootstrapPhase DaemonBootstrap::daemonize() {
     umask(022);
-    
-    // Fork and let parent exit
+
+    // First fork: the parent process returns to runDaemon so the user's
+    // shell prompt comes back; the child continues into setsid.
     pid_t pid = fork();
     if (pid < 0) {
         std::cerr << "Failed to fork daemon process" << std::endl;
-        exit(EXIT_FAILURE);
+        return BootstrapPhase::ShouldReturnFailure;
     }
-    
-    // Parent exits
     if (pid > 0) {
-        // We're the parent process - exit with successful status
-        return false;
+        // First-fork parent. Log here so the message fires once and
+        // only for this process; the second-fork parent below stays
+        // silent.
+        LOG_INFO("Parent process exiting, daemon started");
+        return BootstrapPhase::ShouldReturnSuccess;
     }
-    
-    // Create new session
+
+    // First-fork child: become session leader so the subsequent fork
+    // truly detaches from any controlling terminal.
     if (setsid() < 0) {
         std::cerr << "Failed to create new session" << std::endl;
-        exit(EXIT_FAILURE);
+        return BootstrapPhase::ShouldReturnFailure;
     }
-    
-    // Second fork to detach from terminal
+
+    // Second fork: prevents the daemon from ever reacquiring a
+    // controlling terminal (it is no longer a session leader).
     pid = fork();
     if (pid < 0) {
         std::cerr << "Failed to fork daemon process (2nd fork)" << std::endl;
-        exit(EXIT_FAILURE);
+        return BootstrapPhase::ShouldReturnFailure;
     }
     if (pid > 0) {
-        // Parent exits
-        exit(EXIT_SUCCESS);
+        // Second-fork parent. No log: this process runs for
+        // microseconds after setsid and has no operator-visible role.
+        return BootstrapPhase::ShouldReturnSuccess;
     }
-    
-    // Change working directory
+
+    // True daemon child. Strip down to a neutral process environment.
     chdir("/");
-    
-    // Normal daemon mode - close all descriptors
+
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    
-    // Redirect standard file descriptors to /dev/null
+
     int null = open("/dev/null", O_RDWR);
     dup2(null, STDIN_FILENO);
     dup2(null, STDOUT_FILENO);
     dup2(null, STDERR_FILENO);
-    return true; // We're the daemon process
+    return BootstrapPhase::ShouldRun;
 }
 
 void DaemonBootstrap::setupLogging(const RunDaemon& action,
