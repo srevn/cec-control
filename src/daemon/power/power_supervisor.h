@@ -219,6 +219,19 @@ private:
      */
     static constexpr auto kPostResumeRetryDelay = std::chrono::seconds(10);
 
+    /**
+     * Delay before the first reconnect attempt after
+     * @c CEC_ALERT_CONNECTION_LOST. Lets the kernel finish the USB
+     * remove/add handling so @c LibCecAdapter::detectAdapter's /sys
+     * scan returns the correct answer — a genuinely-disconnected
+     * adapter then short-circuits in <100ms instead of entering
+     * libcec's multi-second @c Open() ceremony (whose inner
+     * @c CheckAdapter loop is hardcoded to a 10s ceiling and not
+     * exposed through the public API). Subsequent retries follow
+     * @c AdapterReconnect's backoff schedule unchanged.
+     */
+    static constexpr auto kConnectionLostRetryDelay = std::chrono::milliseconds(1500);
+
     CommandDispatcher& m_dispatcher;
     AdapterLifecycle&  m_lifecycle;
     AdapterWorker&     m_worker;
@@ -241,11 +254,14 @@ private:
     // outputs. Named to match their class types so they are unambiguous
     // alongside @c m_lifecycle (the @c AdapterLifecycle reference).
     PowerLifecycle   m_powerLifecycle;
-    AdapterReconnect m_adapterReconnect{BackoffSchedule{
-        std::chrono::seconds(5),
-        std::chrono::seconds(10),
-        std::chrono::seconds(20),
-    }};
+    AdapterReconnect m_adapterReconnect{
+        BackoffSchedule{
+            std::chrono::seconds(5),
+            std::chrono::seconds(10),
+            std::chrono::seconds(20),
+        },
+        kConnectionLostRetryDelay,
+    };
 };
 
 } // namespace cec_control

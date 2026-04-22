@@ -22,7 +22,9 @@ namespace cec_control {
  *
  * Semantics to note:
  *  - The first attempt of a cycle is triggered by @c ConnectionLost
- *    (immediate) or @c seedCycle (delayed). Neither draws from the
+ *    (delayed by the @c connectionLostDelay captured at construction,
+ *    or immediate when that delay is zero) or @c seedCycle (delayed by
+ *    the caller-supplied @p initialDelay). Neither draws from the
  *    schedule; the schedule covers attempts 2..N. Total attempts is
  *    therefore @c schedule.size() + 1 for both entry points.
  *  - @c StartAttempt implies that any armed retry timer is stale. The
@@ -97,7 +99,21 @@ public:
         std::size_t totalAttempts = 0;
     };
 
-    explicit AdapterReconnect(BackoffSchedule schedule) noexcept;
+    /**
+     * @param schedule             backoff schedule covering attempts 2..N.
+     * @param connectionLostDelay  delay to apply before the very first
+     *                             attempt of a cycle triggered by
+     *                             @c Event::ConnectionLost. Zero (the
+     *                             default) preserves the immediate-attempt
+     *                             semantics; non-zero lets hardware/udev
+     *                             settle before libcec is poked — the
+     *                             difference between cheaply discovering
+     *                             the adapter is gone and paying libcec's
+     *                             multi-second @c Open() ceremony.
+     */
+    explicit AdapterReconnect(
+        BackoffSchedule schedule, std::chrono::milliseconds connectionLostDelay =
+                                  std::chrono::milliseconds::zero()) noexcept;
 
     /** Feed an event; receive the resulting effect. */
     [[nodiscard]] Output onEvent(Event event) noexcept;
@@ -141,6 +157,13 @@ private:
 
     State           m_state = State::Idle;
     BackoffSchedule m_schedule;
+    /**
+     * Delay applied to the first attempt when @c ConnectionLost fires
+     * from @c Idle. Immutable after construction. Zero disables the
+     * delay — the FSM then fires @c StartAttempt immediately, matching
+     * the pre-delay behaviour.
+     */
+    const std::chrono::milliseconds m_connectionLostDelay;
     /**
      * 1-based overall attempt number captured when the retry timer
      * is armed, consumed when the timer fires. Zero outside of an

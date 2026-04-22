@@ -164,6 +164,7 @@ MaxRetryAttempts = 3
 - Config File: `/etc/cec-control/config.conf`
 - Log File: `/var/log/cec-control/daemon.log`
 - Socket Path: `/run/cec-control/socket`
+- Systemd Service File: `/usr/lib/systemd/system/cec-control.service`
 
 Environment variables can override these paths:
 - `CEC_CONTROL_CONFIG`: Override the config file path

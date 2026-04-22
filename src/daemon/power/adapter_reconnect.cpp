@@ -4,8 +4,10 @@
 
 namespace cec_control {
 
-AdapterReconnect::AdapterReconnect(BackoffSchedule schedule) noexcept
-    : m_schedule(std::move(schedule)) {}
+AdapterReconnect::AdapterReconnect(BackoffSchedule schedule,
+                                   std::chrono::milliseconds connectionLostDelay) noexcept
+    : m_schedule(std::move(schedule)),
+      m_connectionLostDelay(connectionLostDelay) {}
 
 void AdapterReconnect::resetCycle() noexcept {
     m_state = State::Idle;
@@ -42,8 +44,23 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
         // transition into Idle) or inapplicable (suspend/resume while
         // already at rest).
         if (event == Event::ConnectionLost) {
-            m_state = State::Attempting;
+            // Defensive: entry into Idle already resets the schedule,
+            // but keeping the reset here makes the starting state
+            // locally explicit and mirrors seedCycle.
+            m_schedule.reset();
             m_nextAttemptNumber = 1;
+            if (m_connectionLostDelay > std::chrono::milliseconds::zero()) {
+                // Hand the hardware a settle window before the first
+                // attempt. A physically-removed adapter then short-
+                // circuits inside detectAdapter() on the worker side;
+                // without this delay we race udev's /sys cleanup and
+                // pay libcec's multi-second Open() ceremony on a
+                // stale device-file entry.
+                m_state = State::WaitingForRetry;
+                return {Effect::ScheduleRetry, m_connectionLostDelay,
+                        /*attemptNumber*/ 1, total};
+            }
+            m_state = State::Attempting;
             return {Effect::StartAttempt, {}, /*attemptNumber*/ 1, total};
         }
         return {};
@@ -103,7 +120,8 @@ AdapterReconnect::Output AdapterReconnect::onEvent(Event event) noexcept {
 
         case Event::RetryTimerFired:
             // m_nextAttemptNumber was captured when this timer was
-            // armed in the preceding AttemptFailed transition.
+            // armed — by the ConnectionLost-from-Idle delay path, by
+            // seedCycle, or by the preceding AttemptFailed transition.
             m_state = State::Attempting;
             return {Effect::StartAttempt, {},
                     m_nextAttemptNumber, total};

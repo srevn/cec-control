@@ -3,6 +3,7 @@
 #include "../../common/logger.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <thread>
 
@@ -17,6 +18,14 @@ namespace {
 // shorter races the rebind and surfaces as a "no adapter found"
 // DetectAdapters() result.
 constexpr auto kUsbSettleDelay = std::chrono::milliseconds(500);
+
+// Ceiling on libcec's port-open retry loop (Phase A of ICECAdapter::
+// Open). libcec's default is 10s, which is useful on a cold start
+// where the kernel driver is still binding but excessive on the
+// reconnect path, where the same 10s worst case multiplies across the
+// retry schedule. Healthy Pulse-Eight adapters complete the port open
+// in <100ms; 2s covers unusually slow platforms with headroom.
+constexpr uint32_t kConnectTimeoutMs = 2000;
 
 } // namespace
 
@@ -132,7 +141,7 @@ bool LibCecAdapter::openConnection() {
         }
 
         LOG_INFO("Opening CEC adapter: ", m_portName);
-        if (!m_adapter->Open(m_portName.c_str())) {
+        if (!m_adapter->Open(m_portName.c_str(), kConnectTimeoutMs)) {
             LOG_ERROR("Failed to open CEC adapter");
             return false;
         }
