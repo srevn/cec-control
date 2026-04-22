@@ -154,20 +154,36 @@ std::optional<Message> parseResume(const std::vector<std::string_view>& args,
 // The size of this array is reflected in command_registry.h. If you add an
 // entry, bump the std::array<CommandSpec, N> declaration there.
 const std::array<CommandSpec, 7> kCommands = {{
-    {MessageType::CMD_POWER_ON,         "power",        "(on|off) DEVICE_ID",
-     "Power a device on or off",                                  parsePower,       true},
-    {MessageType::CMD_VOLUME_UP,        "volume",       "(up|down|mute) DEVICE_ID",
-     "Control volume on the audio system",                        parseVolume,      true},
-    {MessageType::CMD_CHANGE_SOURCE,    "source",       "DEVICE_ID SOURCE_ID",
-     "Change the active input source",                            parseSource,      false},
-    {MessageType::CMD_AUTO_STANDBY,     "auto-standby", "(on|off)",
-     "Suspend this PC when the TV powers off",                    parseAutoStandby, false},
-    {MessageType::CMD_RESTART_ADAPTER,  "restart",      "",
-     "Restart the CEC adapter",                                   parseRestart,     false},
-    {MessageType::CMD_SUSPEND,          "suspend",      "",
-     "Prepare for system sleep (run pre-sleep CEC actions)",      parseSuspend,     false},
-    {MessageType::CMD_RESUME,           "resume",       "",
-     "Restore after system wake (run post-wake CEC actions)",     parseResume,      false},
+    {MessageType::CMD_POWER_ON,
+     {MessageType::CMD_POWER_ON, MessageType::CMD_POWER_OFF},
+     "power", "(on|off) DEVICE_ID", "Power a device on or off",
+     parsePower, true},
+    {MessageType::CMD_VOLUME_UP,
+     {MessageType::CMD_VOLUME_UP, MessageType::CMD_VOLUME_DOWN,
+      MessageType::CMD_VOLUME_MUTE},
+     "volume", "(up|down|mute) DEVICE_ID",
+     "Control volume on the audio system",
+     parseVolume, true},
+    {MessageType::CMD_CHANGE_SOURCE,
+     {MessageType::CMD_CHANGE_SOURCE},
+     "source", "DEVICE_ID SOURCE_ID", "Change the active input source",
+     parseSource, false},
+    {MessageType::CMD_AUTO_STANDBY,
+     {MessageType::CMD_AUTO_STANDBY},
+     "auto-standby", "(on|off)", "Suspend this PC when the TV powers off",
+     parseAutoStandby, false},
+    {MessageType::CMD_RESTART_ADAPTER,
+     {MessageType::CMD_RESTART_ADAPTER},
+     "restart", "", "Restart the CEC adapter",
+     parseRestart, false},
+    {MessageType::CMD_SUSPEND,
+     {MessageType::CMD_SUSPEND},
+     "suspend", "", "Prepare for system sleep (run pre-sleep CEC actions)",
+     parseSuspend, false},
+    {MessageType::CMD_RESUME,
+     {MessageType::CMD_RESUME},
+     "resume", "", "Restore after system wake (run post-wake CEC actions)",
+     parseResume, false},
 }};
 
 const CommandSpec* findByName(std::string_view name) noexcept {
@@ -177,24 +193,11 @@ const CommandSpec* findByName(std::string_view name) noexcept {
 }
 
 const CommandSpec* findByType(MessageType type) noexcept {
-    // Note: a single CommandSpec covers a family of MessageTypes for the
-    // volume command (UP/DOWN/MUTE) and the power command (ON/OFF). The
-    // table lists the canonical type per command; lookup matches that
-    // canonical entry plus its sibling types.
-    const auto match = [type](const CommandSpec& c) {
-        if (c.type == type) return true;
-        if (c.name == "volume") {
-            return type == MessageType::CMD_VOLUME_UP ||
-                   type == MessageType::CMD_VOLUME_DOWN ||
-                   type == MessageType::CMD_VOLUME_MUTE;
-        }
-        if (c.name == "power") {
-            return type == MessageType::CMD_POWER_ON ||
-                   type == MessageType::CMD_POWER_OFF;
-        }
-        return false;
-    };
-    const auto it = std::find_if(kCommands.begin(), kCommands.end(), match);
+    const auto it = std::find_if(kCommands.begin(), kCommands.end(),
+        [type](const CommandSpec& c) {
+            return std::find(c.types.begin(), c.types.end(), type)
+                   != c.types.end();
+        });
     return it == kCommands.end() ? nullptr : &*it;
 }
 

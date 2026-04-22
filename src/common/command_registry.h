@@ -39,6 +39,20 @@ struct CommandSpec {
                                                 std::string& err);
 
     MessageType      type;
+
+    /**
+     * Type family covered by this spec (volume: UP/DOWN/MUTE;
+     * power: ON/OFF; single-element otherwise). INVARIANT: `type`
+     * must appear in `types`.
+     *
+     * Backing-array lifetime is tied to this initializer_list
+     * subobject ([dcl.init.list]/6), which is safe only when the
+     * enclosing CommandSpec has static storage duration (as with
+     * kCommands). Do not construct CommandSpec values with a
+     * runtime-built `types` — the member would dangle.
+     */
+    std::initializer_list<MessageType> types;
+
     std::string_view name;        // canonical command name (e.g. "power")
     std::string_view argSyntax;   // help-text syntax (e.g. "(on|off) DEVICE_ID")
     std::string_view help;        // one-line description
