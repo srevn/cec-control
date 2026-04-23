@@ -16,6 +16,13 @@ namespace cec_control {
  * only the main thread via readOne() — no async signal handler, no
  * singleton pointer, no cross-thread dance.
  *
+ * @c SIGCHLD is the expected channel for reaping hook-script children
+ * spawned via @c HookExecutor: add it to the constructor's signal set
+ * and dispatch to @c hook::reapChildren from the signalfd handler.
+ * Same inheritance story — the hook executor thread starts after this
+ * source is constructed, so it inherits SIG_BLOCK for SIGCHLD and the
+ * child-exit notification lands on the main thread.
+ *
  * On destruction the signal mask is left as-is. That is deliberate: the
  * daemon typically wants an operator's second signal during a stuck
  * shutdown to reach the kernel default action (SIG_DFL handles

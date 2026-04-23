@@ -171,6 +171,14 @@ BaseIntervalMs = 200
 MaxIntervalMs = 1000
 # Maximum retry attempts for failed commands
 MaxRetryAttempts = 3
+
+[Hooks]
+# Run when another device announces itself as the active source.
+InputSwitch = /usr/local/bin/cec-input-switch.sh
+# Run when the TV reports that it is going to standby.
+TVStandby = /usr/local/bin/cec-tv-off.sh
+# Run when the TV reports that it has powered on (after standby).
+TVWake =
 ```
 
 ## File Locations

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "cec/adapter_config.h"
 #include "command_throttler.h"
 
@@ -17,9 +19,10 @@ struct DispatcherConfig {
 
 /**
  * Seed for @c StandbyPolicy: whether to suspend the system when the TV
- * signals standby. Mirrored into an atomic on the policy at
- * construction and toggled at runtime by @c CMD_AUTO_STANDBY. See
- * @c AppConfig's class comment for the snapshot-vs-live-state split.
+ * signals standby. Mirrored into a plain @c bool on the policy at
+ * construction and toggled at runtime by @c CMD_AUTO_STANDBY — both
+ * readers and writers are on the main thread, so no atomic is needed.
+ * See @c AppConfig's class comment for the snapshot-vs-live-state split.
  */
 struct StandbyConfig {
     bool enabled = false;
@@ -33,6 +36,24 @@ struct StandbyConfig {
 struct DaemonConfig {
     bool enablePowerMonitor   = true;
     bool scanDevicesAtStartup = false;
+};
+
+/**
+ * User-script hook paths, one per CEC bus event surfaced to userland.
+ * Each field is either an absolute executable path or empty; empty
+ * disables the corresponding hook. Validated at parse time — relative
+ * paths are disabled with a warning, missing @c X_OK is warned but
+ * tolerated (the user may @c chmod+x without restarting).
+ *
+ * The absolute-path requirement exists because the child is launched
+ * with a sanitised environment that does not mirror the daemon's
+ * @c PATH layout (see @c CecHookSubsystem::baseEnv); resolving via
+ * @c $PATH could silently pick up the wrong binary.
+ */
+struct HooksConfig {
+    std::string inputSwitch;
+    std::string tvStandby;
+    std::string tvWake;
 };
 
 /**
@@ -60,6 +81,7 @@ struct AppConfig {
     DispatcherConfig dispatcher;
     StandbyConfig    standby;
     DaemonConfig     daemon;
+    HooksConfig      hooks;
 };
 
 /**

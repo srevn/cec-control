@@ -18,6 +18,8 @@
 #include "command_dispatch.h"
 #include "command_dispatcher.h"
 #include "dbus_monitor.h"
+#include "hook/cec_hook_subsystem.h"
+#include "hook/hook_executor.h"
 #include "power/power_supervisor.h"
 #include "socket_server.h"
 #include "standby_policy.h"
@@ -25,7 +27,7 @@
 namespace cec_control {
 
 CECDaemon::CECDaemon(AppConfig config)
-    : m_signals{SIGINT, SIGTERM, SIGHUP},
+    : m_signals{SIGINT, SIGTERM, SIGHUP, SIGCHLD},
       m_config(std::move(config)) {}
 
 CECDaemon::~CECDaemon() {
@@ -103,13 +105,17 @@ bool CECDaemon::start() {
         // isSuspended/enqueue, both of which the dispatcher needs.
         m_lifecycle = std::make_unique<AdapterLifecycle>(*m_worker, m_work);
 
-        // Standby policy: atomic flag plus an install-once suspend
-        // trigger fired from libcec's command thread (via the daemon
-        // forwarder). The closure hops through m_work so the actual
-        // sd-bus call lands on the main thread — sd-bus is single-
-        // owner. Built before the dispatcher (which holds a reference
-        // to the policy); the forwarder null-guards callbacks fired
-        // during the narrow window between Open() and this assignment.
+        // Standby policy: plain flag plus an install-once suspend
+        // trigger fired from the main thread when a TvStandby
+        // observation arrives and auto-standby is enabled. The
+        // adapter forwarder has already hopped the observation through
+        // @c m_work before @c observe runs, so the trigger itself is
+        // main-thread; the extra @c m_work.post inside it defers the
+        // sd-bus call to the next drain iteration rather than running
+        // it inline under the current observation closure. Built
+        // before the dispatcher (which holds a reference to the
+        // policy); the forwarder null-guards callbacks fired during
+        // the narrow window between @c Open() and this assignment.
         m_standbyPolicy = std::make_unique<StandbyPolicy>(
             m_config.standby.enabled,
             [this]() {
@@ -117,6 +123,16 @@ bool CECDaemon::start() {
                     if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
                 });
             });
+
+        // Hook executor and subsystem. Start the executor here so the
+        // thread exists before the subsystem can submit against it;
+        // the executor inherits the SIG_BLOCK mask set by m_signals
+        // (which also now covers SIGCHLD) because m_signals is
+        // constructed before start() runs.
+        m_hookExecutor = std::make_unique<HookExecutor>();
+        m_hookExecutor->start();
+        m_hooks = std::make_unique<CecHookSubsystem>(
+            m_config.hooks, *m_hookExecutor);
 
         m_dispatcher = std::make_unique<CommandDispatcher>(
             m_config, *m_worker, m_work, *m_lifecycle, *m_standbyPolicy);
@@ -285,10 +301,13 @@ void CECDaemon::stop() {
     //      lifecycle, worker cannot dangle. Reset the dispatcher
     //      before the lifecycle (it holds a ref to it) and both
     //      before the worker (both hold refs to it). Destroy
-    //      m_standbyPolicy only after the worker has been joined
-    //      so no observation closure posted by libcec's command
-    //      thread can still run against a destroyed policy (the
-    //      forwarder's in-closure null check is belt-and-braces).
+    //      @c m_hooks and @c m_hookExecutor after @c m_worker has
+    //      joined so no observation closure posted by libcec's
+    //      command thread can still run against a destroyed hook
+    //      subsystem; @c m_hookExecutor is destroyed after @c m_hooks
+    //      because the subsystem holds a reference to it. Destroy
+    //      @c m_standbyPolicy last by the same rule (the forwarder's
+    //      in-closure null checks on both are belt-and-braces).
     try {
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
@@ -331,17 +350,37 @@ void CECDaemon::stop() {
     // m_dbusMonitor; destroying it first means none of those can be
     // touched again from supervisor code paths. m_dispatcher holds a
     // ref to m_lifecycle and to m_standbyPolicy; m_lifecycle and
-    // m_dispatcher both hold refs to m_worker; m_standbyPolicy is
-    // fired from libcec's command thread via the adapter forwarder
-    // and must outlive the worker so the worker's join drains that
-    // thread before the policy is destroyed. Chain:
-    // supervisor → dispatcher → lifecycle → worker → standbyPolicy.
+    // m_dispatcher both hold refs to m_worker.
+    //
+    // m_standbyPolicy and m_hooks are observed on the main thread via
+    // @c m_work-posted closures the adapter forwarder emits from
+    // libcec's command thread. By the time either subscriber is
+    // destroyed, no such closure can still fire: the loop has stopped
+    // (so new posts sit undrained), and the worker has been joined
+    // (so libcec's threads — the sole source of new posts — are
+    // quiet). Resetting the worker before either subscriber makes
+    // that invariant local rather than relying on the undrained-queue
+    // detail. The forwarder's null checks on both subscribers remain
+    // belt-and-braces for the narrow window between @c Open() and
+    // the subsystem assignments.
+    //
+    // m_hooks is reset before m_hookExecutor because the subsystem
+    // holds a reference to the executor; destroying the executor
+    // first would leave that reference dangling if anything later
+    // called through @c m_hooks in @c stop(). The executor itself
+    // only owns its own thread and queue.
+    //
+    // Chain:
+    // supervisor → dispatcher → lifecycle → worker → hooks →
+    //   hookExecutor → standbyPolicy.
     m_supervisor.reset();
     m_dbusMonitor.reset();
     m_socketServer.reset();
     m_dispatcher.reset();
     m_lifecycle.reset();
     m_worker.reset();
+    m_hooks.reset();
+    m_hookExecutor.reset();
     m_standbyPolicy.reset();
 
     LOG_INFO("Shutdown sequence complete");
@@ -350,11 +389,22 @@ void CECDaemon::stop() {
 void CECDaemon::onSignalReadable() {
     while (auto info = m_signals.readOne()) {
         const int signum = static_cast<int>(info->ssi_signo);
+
+        // SIGCHLD: reap hook-script children. Do NOT log, stop the
+        // loop, or treat as a shutdown signal — it fires on every
+        // child exit during normal operation. The reap loop is a free
+        // function that tolerates the "executor already gone" case,
+        // so a late SIGCHLD during teardown still reaps cleanly.
+        if (signum == SIGCHLD) {
+            hook::reapChildren();
+            continue;
+        }
+
         LOG_INFO("Received signal ", signum);
 
-        // First signal requests a clean shutdown. Further signals are
-        // logged but the loop has already been asked to exit; a truly
-        // stuck shutdown is resolved by systemd's TimeoutStopSec
+        // First shutdown signal requests a clean stop. Further signals
+        // are logged but the loop has already been asked to exit; a
+        // truly stuck shutdown is resolved by systemd's TimeoutStopSec
         // (which ultimately delivers SIGKILL).
         m_loop.stop();
     }
@@ -478,9 +528,16 @@ void CECDaemon::onAdapterObservation(ICecAdapter::Observation obs) {
     // subsystem assignment is absorbed by the in-closure null checks.
     // The window is microseconds and in practice no bus event fires
     // before construction completes.
+    //
+    // Adding a subscriber is a local edit here: this closure is the
+    // single dispatch point and every observer runs on the main
+    // thread with single-threaded semantics.
     m_work.post([this, obs]() {
         if (auto* policy = m_standbyPolicy.get()) {
             policy->observe(obs);
+        }
+        if (auto* hooks = m_hooks.get()) {
+            hooks->observe(obs);
         }
     });
 }

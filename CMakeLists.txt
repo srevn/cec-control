@@ -65,6 +65,8 @@ target_sources(cec-control PRIVATE
     src/daemon/command_throttler.cpp
     src/daemon/daemon_bootstrap.cpp
     src/daemon/dbus_monitor.cpp
+    src/daemon/hook/cec_hook_subsystem.cpp
+    src/daemon/hook/hook_executor.cpp
     src/daemon/power/adapter_reconnect.cpp
     src/daemon/power/power_lifecycle.cpp
     src/daemon/power/power_supervisor.cpp

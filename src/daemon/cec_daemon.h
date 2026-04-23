@@ -22,8 +22,10 @@ namespace cec_control {
 // just needs to name the CECDaemon type.
 class AdapterLifecycle;
 class AdapterWorker;
+class CecHookSubsystem;
 class CommandDispatcher;
 class DBusMonitor;
+class HookExecutor;
 class PowerSupervisor;
 class SocketServer;
 class StandbyPolicy;
@@ -191,6 +193,30 @@ private:
     // braces for the in-construction window between libcec's Open()
     // and this assignment.
     std::unique_ptr<StandbyPolicy> m_standbyPolicy;
+
+    // Hook executor and the CEC hook subsystem that feeds it.
+    //
+    // Destruction ordering — @c stop() below mirrors this explicitly
+    // and the field order here is its fallback:
+    //
+    //   * @c m_hooks holds a reference to @c m_hookExecutor (it
+    //     submits jobs through it), so @c m_hooks must be destroyed
+    //     first. Hence @c m_hookExecutor declared AFTER @c m_hooks is
+    //     wrong; keep them in this order (executor first, subsystem
+    //     second) so reverse-of-declaration gives us subsystem →
+    //     executor.
+    //   * @c m_hookExecutor owns a worker thread that only consumes
+    //     its own queue and never calls back into the daemon — stop()
+    //     joins it independently of libcec and signalfd.
+    //
+    // Also declared before @c m_worker: observation closures that the
+    // worker / libcec path posts through @c m_work land on the main
+    // thread and can touch @c m_hooks, so the hooks must outlive any
+    // such in-flight closure. The @c stop() sequence guarantees this
+    // by resetting @c m_worker (which drains libcec) before @c m_hooks
+    // / @c m_hookExecutor.
+    std::unique_ptr<HookExecutor>     m_hookExecutor;
+    std::unique_ptr<CecHookSubsystem> m_hooks;
 
     // CEC adapter actor. Owns the libcec handle and the single thread
     // that is allowed to touch it. Built before the lifecycle and

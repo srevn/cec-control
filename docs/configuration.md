@@ -90,6 +90,62 @@ MaxIntervalMs = 1000
 MaxRetryAttempts = 3
 ```
 
+### Hooks Section
+
+Map CEC bus events to external scripts. Each entry is the absolute path
+to an executable that the daemon runs, fire-and-forget, when the
+corresponding event is observed on the bus. Empty or missing value =
+hook disabled for that event.
+
+```ini
+[Hooks]
+# Run when another device announces itself as the active source.
+InputSwitch = /usr/local/bin/cec-input-switch.sh
+
+# Run when the TV reports that it is going to standby.
+TVStandby = /usr/local/bin/cec-tv-off.sh
+
+# Run when the TV reports that it has powered on (after standby).
+TVWake =
+```
+
+#### Events
+
+| Event | Trigger |
+|---|---|
+| `InputSwitch` | Another CEC device broadcast `ACTIVE_SOURCE`, i.e. the TV's active input just changed. |
+| `TVStandby`   | The TV reported it is going to standby. |
+| `TVWake`      | The TV reported it has powered on, after having been in standby. |
+
+#### Environment
+
+Scripts are invoked with a sanitised environment. The parent process's
+environment is **not** propagated — only the following five keys, if
+set in the daemon's own environment: `PATH`, `HOME`, `LANG`, `LC_ALL`,
+`USER`. On top of those, the daemon injects:
+
+| Variable | Present for | Value |
+|---|---|---|
+| `CEC_EVENT` | every event | `InputSwitch` \| `TVStandby` \| `TVWake` |
+| `CEC_EVENT_TS` | every event | ISO-8601 UTC timestamp, e.g. `2026-04-23T12:34:56Z` |
+| `CEC_DAEMON_PID` | every event | decimal PID of the daemon, for log correlation |
+| `CEC_SOURCE_PHYSICAL` | `InputSwitch` | dotted nibble form, e.g. `2.0.0.0` |
+| `CEC_SOURCE_PHYSICAL_RAW` | `InputSwitch` | raw 16-bit value, e.g. `0x2000` |
+| `CEC_SOURCE_PREVIOUS_PHYSICAL` | `InputSwitch` | dotted form of the previous active source, or empty string on the first event |
+| `CEC_TV_POWER` | `TVStandby`, `TVWake` | `standby` \| `on` |
+| `CEC_TV_POWER_PREVIOUS` | `TVStandby`, `TVWake` | `on` \| `standby` \| empty string (no prior state known) |
+
+`*_PREVIOUS` env vars are **empty strings** the first time the
+corresponding event fires; scripts should check with `[ -z "$VAR" ]`.
+
+#### Known limitation: `TVWake`
+
+`TVWake` depends on the TV emitting an **unsolicited**
+`REPORT_POWER_STATUS` message when it powers on. Many TVs do this;
+some emit `REPORT_POWER_STATUS` only in response to a
+`GIVE_DEVICE_POWER_STATUS` query. On those TVs, `TVWake` will not
+fire through passive observation alone.
+
 ## Boolean Values
 
 The following string values are recognized as Boolean true:

@@ -5,6 +5,11 @@
 
 #include <libcec/cec.h>
 
+#include <unistd.h>
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -12,6 +17,29 @@
 namespace cec_control {
 
 namespace {
+
+/**
+ * Validate a single hook-path string: non-empty, absolute, executable.
+ * Returns the path unchanged if accepted; returns empty if the path
+ * was non-empty but failed a hard gate (relative). A non-executable
+ * absolute path is tolerated with a warning — the user may @c chmod+x
+ * without restarting, and @c posix_spawn will surface any residual
+ * failure at fire time.
+ */
+std::string validateHookPath(std::string path, std::string_view eventName) {
+    if (path.empty()) return path;
+    if (path.front() != '/') {
+        LOG_WARNING("Hook path for ", eventName,
+                    " must be absolute; disabling: ", path);
+        return std::string{};
+    }
+    if (::access(path.c_str(), X_OK) != 0) {
+        LOG_WARNING("Hook path for ", eventName,
+                    " not executable at startup; will retry at spawn time: ",
+                    std::strerror(errno), " (path=", path, ")");
+    }
+    return path;
+}
 
 /**
  * Parse a comma-separated list of CEC logical addresses (e.g. "0,1,5")
@@ -94,6 +122,34 @@ AppConfig loadAppConfig(const ConfigManager& cfg) {
     daemon.scanDevicesAtStartup =
         cfg.getBool("Daemon", "ScanDevicesAtStartup", false);
 
+    // Hooks section — one absolute-path entry per event. Validate at
+    // parse time: reject relative paths outright, warn (but keep) on
+    // missing X_OK so operators can fix permissions without a restart.
+    auto& hooks = config.hooks;
+    hooks.inputSwitch = validateHookPath(
+        cfg.getString("Hooks", "InputSwitch", ""), "InputSwitch");
+    hooks.tvStandby = validateHookPath(
+        cfg.getString("Hooks", "TVStandby", ""), "TVStandby");
+    hooks.tvWake = validateHookPath(
+        cfg.getString("Hooks", "TVWake", ""), "TVWake");
+
+    // Warn on typos. The known-key set is the three events above; any
+    // other key in [Hooks] is silently ignored by the parser, which is
+    // a usability footgun — a stray "TV-Wake" (hyphen) would look
+    // correct and do nothing. One warning per unknown key.
+    static constexpr std::array<std::string_view, 3> kKnownHookKeys{
+        "InputSwitch", "TVStandby", "TVWake",
+    };
+    for (const auto& [key, value] : cfg.section("Hooks")) {
+        const bool known =
+            std::find(kKnownHookKeys.begin(), kKnownHookKeys.end(), key) !=
+            kKnownHookKeys.end();
+        if (!known) {
+            LOG_WARNING("Unknown key in [Hooks]: ", key, " (ignored)");
+        }
+        (void)value;
+    }
+
     return config;
 }
 
@@ -106,6 +162,18 @@ void logAppConfig(const AppConfig& config) {
              (config.daemon.enablePowerMonitor ? "true" : "false"));
     LOG_INFO("Configuration: PowerOffOnStandby = ",
              (config.standby.enabled ? "true" : "false"));
+
+    // Only surface configured hooks; a silent [Hooks] section should
+    // not spam three "= (empty)" lines into the operator's view.
+    if (!config.hooks.inputSwitch.empty()) {
+        LOG_INFO("Configuration: Hooks.InputSwitch = ", config.hooks.inputSwitch);
+    }
+    if (!config.hooks.tvStandby.empty()) {
+        LOG_INFO("Configuration: Hooks.TVStandby = ", config.hooks.tvStandby);
+    }
+    if (!config.hooks.tvWake.empty()) {
+        LOG_INFO("Configuration: Hooks.TVWake = ", config.hooks.tvWake);
+    }
 }
 
 } // namespace cec_control

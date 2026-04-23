@@ -18,8 +18,11 @@ AdapterWorker::~AdapterWorker() {
 void AdapterWorker::start() {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_started) return;
-    m_started = true;
+    // Spawn before latching m_started: if std::thread's constructor
+    // throws (resource exhaustion), the object stays in its unstarted
+    // state and a later retry / destructor walks a consistent path.
     m_thread  = std::thread(&AdapterWorker::run, this);
+    m_started = true;
 }
 
 void AdapterWorker::stop() {
