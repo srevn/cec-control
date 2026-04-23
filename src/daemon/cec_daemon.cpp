@@ -64,7 +64,9 @@ bool CECDaemon::start() {
         // dispatcher's construction order, and so libcec-thread entry
         // points are stable for the lifetime of the adapter.
         ICecAdapter::Callbacks adapterCallbacks{
-            /*onTvStandby*/      [this]() { this->onAdapterTvStandby(); },
+            /*onObservation*/    [this](ICecAdapter::Observation obs) {
+                this->onAdapterObservation(obs);
+            },
             /*onConnectionLost*/ [this]() { this->onAdapterConnectionLost(); },
         };
         // Copy (not move) the adapter config: the daemon keeps
@@ -283,9 +285,10 @@ void CECDaemon::stop() {
     //      lifecycle, worker cannot dangle. Reset the dispatcher
     //      before the lifecycle (it holds a ref to it) and both
     //      before the worker (both hold refs to it). Destroy
-    //      m_standbyPolicy only after the worker has been joined,
-    //      so libcec's command thread cannot still fire the TV-
-    //      standby forwarder into a destroyed policy.
+    //      m_standbyPolicy only after the worker has been joined
+    //      so no observation closure posted by libcec's command
+    //      thread can still run against a destroyed policy (the
+    //      forwarder's in-closure null check is belt-and-braces).
     try {
         if (m_dbusMonitor) {
             m_dbusMonitor->detach();
@@ -461,16 +464,25 @@ void CECDaemon::handleCommand(Message command, ResponseSink reply) {
     m_dispatcher->dispatch(std::move(command), std::move(reply));
 }
 
-void CECDaemon::onAdapterTvStandby() {
-    // Fires on libcec's command thread. libcec's internal threads
-    // spawn inside openConnection() on the main thread before the
-    // policy is built; a callback arriving in the narrow window
-    // between Open() returning and m_standbyPolicy being assigned is
-    // silently dropped by the null check. The window is microseconds
-    // and in practice no TV-standby event fires during startup.
-    if (auto* policy = m_standbyPolicy.get()) {
-        policy->onTvStandby();
-    }
+void CECDaemon::onAdapterObservation(ICecAdapter::Observation obs) {
+    // Fires on libcec's command thread. Hop to main so subscribers
+    // run single-threaded and never execute inline under a libcec
+    // call. The closure captures the Observation by value — the type
+    // is trivially copyable and fits in a small buffer, so there is
+    // no heap allocation on the hot path beyond the usual
+    // std::function machinery.
+    //
+    // Libcec's internal threads spawn inside openConnection() on the
+    // main thread before subsystems are built; an observation
+    // arriving in the narrow window between Open() returning and
+    // subsystem assignment is absorbed by the in-closure null checks.
+    // The window is microseconds and in practice no bus event fires
+    // before construction completes.
+    m_work.post([this, obs]() {
+        if (auto* policy = m_standbyPolicy.get()) {
+            policy->observe(obs);
+        }
+    });
 }
 
 void CECDaemon::onAdapterConnectionLost() {

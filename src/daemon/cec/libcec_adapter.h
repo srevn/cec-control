@@ -110,7 +110,7 @@ private:
     //   - m_libcecConfig   (libcec keeps its own pointer to the
     //                       configuration we hand to CECInitialise)
     //   - m_connected                 (via cbParam → this → &field)
-    //   - m_tvStandbyCallback         (ditto)
+    //   - m_observationCallback       (ditto)
     //   - m_connectionLostCallback    (ditto)
     //
     // Those threads are joined by ICECAdapter::Close(), which runs as
@@ -145,8 +145,8 @@ private:
 
     // Install-once at construction; libcec reads them from its internal
     // threads without a lock. Never reassigned.
-    const std::function<void()> m_tvStandbyCallback;
-    const std::function<void()> m_connectionLostCallback;
+    const std::function<void(Observation)> m_observationCallback;
+    const std::function<void()>            m_connectionLostCallback;
 
     // libcec adapter handle. MUST stay last — see the block comment
     // above. The deleter calls CECDestroy(), which joins libcec's

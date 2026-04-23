@@ -9,6 +9,7 @@
 #include "../common/signal_source.h"
 #include "../common/timer_source.h"
 #include "app_config.h"
+#include "cec/adapter_interface.h"
 
 namespace cec_control {
 
@@ -132,14 +133,16 @@ private:
     void handleCommand(Message command, ResponseSink reply);
 
     /**
-     * Adapter callback forwarder: TV standby. Fires on libcec's
-     * command thread; delegates to @c StandbyPolicy (which reads an
-     * atomic and, if enabled, fires the suspend-request callback).
-     * The daemon owns the forwarder rather than wiring libcec directly
-     * to the policy so that the callback target is stable across
-     * policy/adapter construction order.
+     * Adapter callback forwarder: CEC bus observation. Fires on
+     * libcec's command thread; hops the observation through @c m_work
+     * so every subscriber (@c StandbyPolicy today, plus future
+     * consumers such as the hook subsystem) runs on the main thread
+     * with single-threaded semantics. The daemon owns the forwarder
+     * rather than wiring libcec directly to each subscriber so the
+     * callback target is stable across subsystem construction order
+     * and adding a subscriber stays a local change.
      */
-    void onAdapterTvStandby();
+    void onAdapterObservation(ICecAdapter::Observation obs);
 
     /**
      * Adapter callback forwarder: connection lost. Fires on libcec's
@@ -180,11 +183,13 @@ private:
     TimerSource    m_watchdogTimer;
 
     // Auto-suspend-on-TV-standby policy. Declared before m_worker so
-    // reverse-of-declaration destruction tears down the worker (and
-    // with it, libcec's command thread) first — no adapter callback
-    // can then fire into a destroyed policy. Null until start() builds
-    // it; the daemon forwarder null-guards the brief window between
-    // libcec's Open() and this assignment.
+    // reverse-of-declaration destruction joins libcec's command
+    // thread first: no observation closure the libcec thread queued
+    // on @c m_work can still be drained by the time the policy is
+    // destroyed, because the event loop has already stopped. The
+    // null check inside the forwarder's posted closure is belt-and-
+    // braces for the in-construction window between libcec's Open()
+    // and this assignment.
     std::unique_ptr<StandbyPolicy> m_standbyPolicy;
 
     // CEC adapter actor. Owns the libcec handle and the single thread

@@ -44,14 +44,43 @@ namespace cec_control {
 class ICecAdapter {
 public:
     /**
+     * Typed observation of a CEC bus event the daemon cares about.
+     *
+     * Produced by the backend's command-receive filter after it
+     * matches one of the opcodes of interest and delivered via
+     * @ref Callbacks::onObservation on a backend-internal thread. The
+     * @c kind tag selects the payload field that is meaningful for the
+     * event; other payload fields stay at their default sentinels and
+     * MUST NOT be read.
+     *
+     * Trivially copyable — passes through @c std::function and
+     * @c MainThreadWork closures without a heap allocation, which
+     * matters because the adapter hops every observation from the
+     * backend thread to the main thread via that queue.
+     */
+    struct Observation {
+        enum class Kind { TvStandby, TvPowerReport, ActiveSource };
+        Kind kind{};
+
+        /** Meaningful only when @c kind == @c Kind::ActiveSource. */
+        uint16_t physicalAddress{0};
+
+        /** Meaningful only when @c kind == @c Kind::TvPowerReport. */
+        CEC::cec_power_status power{CEC::CEC_POWER_STATUS_UNKNOWN};
+    };
+
+    /**
      * Outbound hooks the adapter fires from backend-internal threads.
      * Installed once at construction and never re-seated; any late
      * re-wiring would race readers on the backend's thread. Either
      * member may be empty — the adapter no-ops the corresponding event.
      */
     struct Callbacks {
-        /** Backend observed a @c STANDBY command from the TV. */
-        std::function<void()> onTvStandby;
+        /**
+         * Backend-observed CEC bus event; see @ref Observation. Fires
+         * on the backend's command-receive thread (libcec today).
+         */
+        std::function<void(Observation)> onObservation;
         /** Backend lost contact with the adapter hardware. */
         std::function<void()> onConnectionLost;
     };

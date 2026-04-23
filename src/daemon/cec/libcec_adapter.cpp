@@ -32,7 +32,7 @@ constexpr uint32_t kConnectTimeoutMs = 2000;
 LibCecAdapter::LibCecAdapter(AdapterConfig config, Callbacks callbacks)
     : m_config(std::move(config)),
       m_connected(false),
-      m_tvStandbyCallback(std::move(callbacks.onTvStandby)),
+      m_observationCallback(std::move(callbacks.onObservation)),
       m_connectionLostCallback(std::move(callbacks.onConnectionLost)) {
 
     m_libcecConfig.Clear();
@@ -363,15 +363,44 @@ void LibCecAdapter::cecCommandCallback(void* cbParam,
               ", destination=", static_cast<int>(command->destination),
               ", opcode=", static_cast<int>(command->opcode));
 
-    // Detect TV Standby command. Fire the callback unconditionally;
-    // the caller owns the policy decision (whether to act on the
-    // signal).
+    if (!adapter->m_observationCallback) return;
+
+    // Three opcodes are surfaced to the daemon as typed Observations;
+    // every other bus command is ignored here. Keeping the filter
+    // narrow is the whole point of doing it on this thread: daemon-
+    // side subscribers run single-threaded on the main loop and
+    // should not need to re-filter the stream.
+    const auto& params = command->parameters;
+
     if (command->initiator == CEC::CECDEVICE_TV &&
         command->opcode == CEC::CEC_OPCODE_STANDBY) {
-        LOG_INFO("TV power off command detected");
-        if (adapter->m_tvStandbyCallback) {
-            adapter->m_tvStandbyCallback();
-        }
+        LOG_INFO("TV standby opcode observed");
+        Observation obs;
+        obs.kind = Observation::Kind::TvStandby;
+        adapter->m_observationCallback(obs);
+        return;
+    }
+
+    if (command->initiator == CEC::CECDEVICE_TV &&
+        command->opcode == CEC::CEC_OPCODE_REPORT_POWER_STATUS &&
+        params.size >= 1) {
+        Observation obs;
+        obs.kind  = Observation::Kind::TvPowerReport;
+        obs.power = static_cast<CEC::cec_power_status>(params.data[0]);
+        adapter->m_observationCallback(obs);
+        return;
+    }
+
+    if (command->opcode == CEC::CEC_OPCODE_ACTIVE_SOURCE &&
+        params.size >= 2) {
+        // Physical address is 16 bits, big-endian on the wire.
+        Observation obs;
+        obs.kind = Observation::Kind::ActiveSource;
+        obs.physicalAddress = static_cast<uint16_t>(
+            (static_cast<uint16_t>(params.data[0]) << 8) |
+             static_cast<uint16_t>(params.data[1]));
+        adapter->m_observationCallback(obs);
+        return;
     }
 }
 

@@ -15,14 +15,15 @@ Message StandbyPolicy::apply(const Message& command) {
     if (command.data.empty()) {
         return Message(MessageType::RESP_ERROR);
     }
-    const bool enabled = command.data[0] > 0;
-    m_enabled.store(enabled, std::memory_order_release);
-    LOG_INFO("Auto-standby ", enabled ? "enabled" : "disabled");
+    m_enabled = command.data[0] > 0;
+    LOG_INFO("Auto-standby ", m_enabled ? "enabled" : "disabled");
     return Message(MessageType::RESP_SUCCESS);
 }
 
-void StandbyPolicy::onTvStandby() {
-    if (!m_enabled.load(std::memory_order_acquire)) {
+void StandbyPolicy::observe(const ICecAdapter::Observation& obs) {
+    if (obs.kind != ICecAdapter::Observation::Kind::TvStandby) return;
+
+    if (!m_enabled) {
         LOG_DEBUG("TV standby observed; auto-standby disabled - ignoring");
         return;
     }
@@ -36,7 +37,7 @@ void StandbyPolicy::onTvStandby() {
 }
 
 bool StandbyPolicy::isEnabled() const noexcept {
-    return m_enabled.load(std::memory_order_acquire);
+    return m_enabled;
 }
 
 } // namespace cec_control
