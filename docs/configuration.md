@@ -113,7 +113,7 @@ TVWake =
 
 | Event | Trigger |
 |---|---|
-| `InputSwitch` | Another CEC device broadcast `ACTIVE_SOURCE`, i.e. the TV's active input just changed. |
+| `InputSwitch` | The active source on the CEC bus changed to a different physical address — e.g. the TV's active input changed, or an AVR routed HDMI to a new device. |
 | `TVStandby`   | The TV reported it is going to standby. |
 | `TVWake`      | The TV reported it has powered on, after having been in standby. |
 

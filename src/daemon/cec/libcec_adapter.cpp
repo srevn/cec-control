@@ -365,12 +365,31 @@ void LibCecAdapter::cecCommandCallback(void* cbParam,
 
     if (!adapter->m_observationCallback) return;
 
-    // Three opcodes are surfaced to the daemon as typed Observations;
-    // every other bus command is ignored here. Keeping the filter
-    // narrow is the whole point of doing it on this thread: daemon-
-    // side subscribers run single-threaded on the main loop and
+    // A small set of opcodes is surfaced to the daemon as typed
+    // Observations; every other bus command is ignored here. Keeping
+    // the filter narrow is the whole point of doing it on this thread:
+    // daemon-side subscribers run single-threaded on the main loop and
     // should not need to re-filter the stream.
+    //
+    // ACTIVE_SOURCE, ROUTING_CHANGE and SET_STREAM_PATH all collapse
+    // to Observation::Kind::ActiveSource — each announces the new
+    // active source in a different way, and the hook subsystem's
+    // dedup collapses any redundant back-to-back emissions. We have
+    // to watch all three: when a routing change makes *this* host the
+    // active source, libcec sends ACTIVE_SOURCE on our behalf, but
+    // that outgoing frame never reaches commandReceived — only the
+    // upstream ROUTING_CHANGE / SET_STREAM_PATH does.
     const auto& params = command->parameters;
+
+    auto emitActiveSource = [&](std::size_t offset) {
+        Observation obs;
+        obs.kind = Observation::Kind::ActiveSource;
+        // Physical address is 16 bits, big-endian on the wire.
+        obs.physicalAddress = static_cast<uint16_t>(
+            (static_cast<uint16_t>(params.data[offset])     << 8) |
+             static_cast<uint16_t>(params.data[offset + 1]));
+        adapter->m_observationCallback(obs);
+    };
 
     if (command->initiator == CEC::CECDEVICE_TV &&
         command->opcode == CEC::CEC_OPCODE_STANDBY) {
@@ -393,13 +412,22 @@ void LibCecAdapter::cecCommandCallback(void* cbParam,
 
     if (command->opcode == CEC::CEC_OPCODE_ACTIVE_SOURCE &&
         params.size >= 2) {
-        // Physical address is 16 bits, big-endian on the wire.
-        Observation obs;
-        obs.kind = Observation::Kind::ActiveSource;
-        obs.physicalAddress = static_cast<uint16_t>(
-            (static_cast<uint16_t>(params.data[0]) << 8) |
-             static_cast<uint16_t>(params.data[1]));
-        adapter->m_observationCallback(obs);
+        emitActiveSource(0);
+        return;
+    }
+
+    // ROUTING_CHANGE payload: old address in [0..1], new address in
+    // [2..3]; we only care about the new path.
+    if (command->opcode == CEC::CEC_OPCODE_ROUTING_CHANGE &&
+        params.size >= 4) {
+        emitActiveSource(2);
+        return;
+    }
+
+    // SET_STREAM_PATH payload: new active address in [0..1].
+    if (command->opcode == CEC::CEC_OPCODE_SET_STREAM_PATH &&
+        params.size >= 2) {
+        emitActiveSource(0);
         return;
     }
 }
