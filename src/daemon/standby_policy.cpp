@@ -23,6 +23,14 @@ Message StandbyPolicy::apply(const Message& command) {
 void StandbyPolicy::observe(const ICecAdapter::Observation& obs) {
     if (obs.kind != ICecAdapter::Observation::Kind::TvStandby) return;
 
+    if (!m_armed) {
+        // Pre-arm drain. Any TvStandby queued between Open() and the
+        // loop's first drain reaches us before arm() does (FIFO) —
+        // absorb it rather than initiating a suspend from a stale
+        // edge. See the class-level "Arming gate" note.
+        LOG_DEBUG("TV standby observed pre-arming; absorbing");
+        return;
+    }
     if (!m_enabled) {
         LOG_DEBUG("TV standby observed; auto-standby disabled - ignoring");
         return;
@@ -34,6 +42,13 @@ void StandbyPolicy::observe(const ICecAdapter::Observation& obs) {
     LOG_INFO("TV standby observed with auto-standby enabled; "
              "initiating system suspend");
     m_suspendCallback();
+}
+
+void StandbyPolicy::arm() {
+    if (m_armed) return;
+    m_armed = true;
+    LOG_DEBUG("StandbyPolicy armed; TV standby observations will now "
+              "be processed");
 }
 
 bool StandbyPolicy::isEnabled() const noexcept {

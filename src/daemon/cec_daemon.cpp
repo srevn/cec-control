@@ -117,11 +117,28 @@ bool CECDaemon::start() {
         // before the dispatcher (which holds a reference to the
         // policy); the forwarder null-guards callbacks fired during
         // the narrow window between @c Open() and this assignment.
+        //
+        // The policy starts unarmed — it only begins processing
+        // observations after the @c arm() post scheduled at the end
+        // of @c start() drains. See @c StandbyPolicy 's "Arming gate"
+        // note for the rationale.
         m_standbyPolicy = std::make_unique<StandbyPolicy>(
             m_config.standby.enabled,
             [this]() {
                 m_work.post([this]() {
-                    if (m_dbusMonitor) m_dbusMonitor->suspendSystem();
+                    if (m_dbusMonitor) {
+                        m_dbusMonitor->suspendSystem();
+                    } else {
+                        // Null path: the D-Bus monitor failed to attach
+                        // (see @c setupPowerMonitor) or power monitoring
+                        // was disabled in the config. The auto-standby
+                        // policy still fired, but there is nothing
+                        // downstream to honour the request — log once
+                        // per occurrence so "why did my machine not
+                        // suspend" reports have a breadcrumb.
+                        LOG_INFO("Auto-standby suspend requested but no "
+                                 "D-Bus monitor is active; request dropped");
+                    }
                 });
             });
 
@@ -260,6 +277,20 @@ bool CECDaemon::start() {
         } else {
             LOG_INFO("Systemd watchdog not configured for this unit");
         }
+
+        // Arm the standby policy from inside the event loop's first
+        // drain. Any @c TvStandby observation libcec queued during the
+        // pre-drain window (between @c Open() above and the first
+        // @c MainThreadWork::drain) precedes this post in FIFO order
+        // and is absorbed by @c StandbyPolicy::observe 's pre-arm
+        // guard; from this post onwards observations are processed
+        // normally. No equivalent gate is applied to the hook
+        // subsystem — its contract is "fire on first observation"
+        // (so startup-time scripts can re-assert state), and the
+        // @c ActiveSource debounce already collapses bursts.
+        m_work.post([this]() {
+            if (m_standbyPolicy) m_standbyPolicy->arm();
+        });
 
         m_started = true;
         LOG_INFO("CEC daemon started successfully");
