@@ -54,6 +54,8 @@ struct HooksConfig {
     std::string inputSwitch;
     std::string tvStandby;
     std::string tvWake;
+    std::string hostActivated;
+    std::string hostDeactivated;
 };
 
 /**

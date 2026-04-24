@@ -179,6 +179,10 @@ InputSwitch = /usr/local/bin/cec-input-switch.sh
 TVStandby = /usr/local/bin/cec-tv-off.sh
 # Run when the TV reports that it has powered on (after standby).
 TVWake =
+# Run when this daemon's host becomes the active source on the bus
+HostActivated = /usr/local/bin/cec-host-activated.sh
+# Run when this daemon's host stops being the active source
+HostDeactivated =
 ```
 
 ## File Locations

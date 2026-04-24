@@ -138,6 +138,14 @@ void CecHookSubsystem::observe(const ICecAdapter::Observation& obs) {
             commitPending();
         }
         return;
+
+    case Kind::HostActivated:
+        fireHostActivated(obs.logical);
+        return;
+
+    case Kind::HostDeactivated:
+        fireHostDeactivated(obs.logical);
+        return;
     }
 }
 
@@ -202,6 +210,20 @@ void CecHookSubsystem::fireTvWake() {
     env.push_back("CEC_TV_POWER_PREVIOUS=" +
                   std::string{previousPowerString(m_lastTvPower)});
     submit("TVWake", m_config.tvWake, std::move(env));
+}
+
+void CecHookSubsystem::fireHostActivated(CEC::cec_logical_address logical) {
+    auto env = baseEnv("HostActivated");
+    env.push_back("CEC_HOST_LOGICAL=" +
+                  std::to_string(static_cast<int>(logical)));
+    submit("HostActivated", m_config.hostActivated, std::move(env));
+}
+
+void CecHookSubsystem::fireHostDeactivated(CEC::cec_logical_address logical) {
+    auto env = baseEnv("HostDeactivated");
+    env.push_back("CEC_HOST_LOGICAL=" +
+                  std::to_string(static_cast<int>(logical)));
+    submit("HostDeactivated", m_config.hostDeactivated, std::move(env));
 }
 
 std::vector<std::string>

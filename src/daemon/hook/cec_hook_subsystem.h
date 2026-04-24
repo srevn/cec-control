@@ -17,8 +17,8 @@ class TimerSource;
 /**
  * @class CecHookSubsystem
  * @brief Main-thread subscriber of CEC bus observations that fires
- *        user scripts on three events: @c InputSwitch, @c TVStandby,
- *        @c TVWake.
+ *        user scripts on five events: @c InputSwitch, @c TVStandby,
+ *        @c TVWake, @c HostActivated, @c HostDeactivated.
  *
  * ## Threading
  *
@@ -41,7 +41,11 @@ class TimerSource;
  * startup bursts and AVR ping-pong sequences — where the bus emits
  * several @c ACTIVE_SOURCE / @c ROUTING_CHANGE / @c SET_STREAM_PATH
  * frames within a few milliseconds — collapse to a single fire on the
- * settled address.
+ * settled address. The @c HostActivated and @c HostDeactivated paths
+ * fire synchronously without dedup: libcec edge-guards the emission
+ * in @c CCECBusDevice::MarkAs{Active,Inactive}Source, so one
+ * observation corresponds to one real transition of this client's
+ * active-source state on the bus.
  *
  *  - @c TvStandby opcode from TV → fire @c TVStandby iff cached TV
  *    power is not already @c Standby; set cache to @c Standby.
@@ -60,6 +64,14 @@ class TimerSource;
  *    hook fires and the cache advances. Startup bursts and transient
  *    bus "settling" traffic therefore collapse to a single fire on
  *    the final address, not one fire per observation.
+ *  - @c HostActivated / @c HostDeactivated → fire the corresponding
+ *    hook with @c CEC_HOST_LOGICAL set to the logical address that
+ *    libcec reports transitioned. No cache, no dedup: libcec is the
+ *    edge detector. These are narrower-scope signals than
+ *    @c InputSwitch (which fires on any device's active-source
+ *    change) — they fire only when @b this daemon's client is the
+ *    device whose activation flipped, which is the signal scripts
+ *    that want to re-assert AVR scene or display state want.
  *
  * ## Config lifetime
  *
@@ -129,6 +141,8 @@ private:
     void fireInputSwitch(uint16_t newAddr);
     void fireTvStandby();
     void fireTvWake();
+    void fireHostActivated(CEC::cec_logical_address logical);
+    void fireHostDeactivated(CEC::cec_logical_address logical);
 
     /**
      * Commit the pending active-source address: fire @c InputSwitch

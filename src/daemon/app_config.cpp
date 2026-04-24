@@ -132,13 +132,17 @@ AppConfig loadAppConfig(const ConfigManager& cfg) {
         cfg.getString("Hooks", "TVStandby", ""), "TVStandby");
     hooks.tvWake = validateHookPath(
         cfg.getString("Hooks", "TVWake", ""), "TVWake");
+    hooks.hostActivated = validateHookPath(
+        cfg.getString("Hooks", "HostActivated", ""), "HostActivated");
+    hooks.hostDeactivated = validateHookPath(
+        cfg.getString("Hooks", "HostDeactivated", ""), "HostDeactivated");
 
-    // Warn on typos. The known-key set is the three events above; any
-    // other key in [Hooks] is silently ignored by the parser, which is
-    // a usability footgun — a stray "TV-Wake" (hyphen) would look
+    // Warn on typos. The known-key set is the events above; any other
+    // key in [Hooks] is silently ignored by the parser, which is a
+    // usability footgun — a stray "TV-Wake" (hyphen) would look
     // correct and do nothing. One warning per unknown key.
-    static constexpr std::array<std::string_view, 3> kKnownHookKeys{
-        "InputSwitch", "TVStandby", "TVWake",
+    static constexpr std::array<std::string_view, 5> kKnownHookKeys{
+        "InputSwitch", "TVStandby", "TVWake", "HostActivated", "HostDeactivated",
     };
     for (const auto& [key, value] : cfg.section("Hooks")) {
         const bool known =
@@ -164,7 +168,7 @@ void logAppConfig(const AppConfig& config) {
              (config.standby.enabled ? "true" : "false"));
 
     // Only surface configured hooks; a silent [Hooks] section should
-    // not spam three "= (empty)" lines into the operator's view.
+    // not spam "= (empty)" lines into the operator's view.
     if (!config.hooks.inputSwitch.empty()) {
         LOG_INFO("Configuration: Hooks.InputSwitch = ", config.hooks.inputSwitch);
     }
@@ -173,6 +177,12 @@ void logAppConfig(const AppConfig& config) {
     }
     if (!config.hooks.tvWake.empty()) {
         LOG_INFO("Configuration: Hooks.TVWake = ", config.hooks.tvWake);
+    }
+    if (!config.hooks.hostActivated.empty()) {
+        LOG_INFO("Configuration: Hooks.HostActivated = ", config.hooks.hostActivated);
+    }
+    if (!config.hooks.hostDeactivated.empty()) {
+        LOG_INFO("Configuration: Hooks.HostDeactivated = ", config.hooks.hostDeactivated);
     }
 }
 

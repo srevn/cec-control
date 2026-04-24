@@ -63,6 +63,7 @@ LibCecAdapter::LibCecAdapter(AdapterConfig config, Callbacks callbacks)
     m_callbacks.logMessage      = &LibCecAdapter::cecLogCallback;
     m_callbacks.commandReceived = &LibCecAdapter::cecCommandCallback;
     m_callbacks.alert           = &LibCecAdapter::cecAlertCallback;
+    m_callbacks.sourceActivated = &LibCecAdapter::cecSourceActivatedCallback;
 }
 
 LibCecAdapter::~LibCecAdapter() {
@@ -430,6 +431,31 @@ void LibCecAdapter::cecCommandCallback(void* cbParam,
         emitActiveSource(0);
         return;
     }
+}
+
+void LibCecAdapter::cecSourceActivatedCallback(void* cbParam,
+                                                const CEC::cec_logical_address logicalAddress,
+                                                const uint8_t bActivated) {
+    auto* adapter = static_cast<LibCecAdapter*>(cbParam);
+    if (!adapter) return;
+
+    // Fires on libcec's callback-dispatch thread (CCECClient::Process
+    // drains a per-client queue), which is distinct from the command-
+    // receive thread that feeds commandReceived. libcec edge-gates the
+    // emission in CCECBusDevice::MarkAs{Active,Inactive}Source — the
+    // callback fires exactly once per internal transition of this
+    // client's active-source state, not once per bus frame — so no
+    // daemon-side dedup or debounce is needed.
+    LOG_INFO("CEC source ", bActivated ? "activated" : "deactivated",
+             ": logical=", static_cast<int>(logicalAddress));
+
+    if (!adapter->m_observationCallback) return;
+
+    Observation obs;
+    obs.kind    = bActivated ? Observation::Kind::HostActivated
+                             : Observation::Kind::HostDeactivated;
+    obs.logical = logicalAddress;
+    adapter->m_observationCallback(obs);
 }
 
 void LibCecAdapter::cecAlertCallback(void* cbParam,

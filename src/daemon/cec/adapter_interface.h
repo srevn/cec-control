@@ -46,12 +46,14 @@ public:
     /**
      * Typed observation of a CEC bus event the daemon cares about.
      *
-     * Produced by the backend's command-receive filter after it
-     * matches one of the opcodes of interest and delivered via
-     * @ref Callbacks::onObservation on a backend-internal thread. The
-     * @c kind tag selects the payload field that is meaningful for the
-     * event; other payload fields stay at their default sentinels and
-     * MUST NOT be read.
+     * Produced by the backend after it matches either a filtered
+     * opcode on the command-receive path (@c TvStandby /
+     * @c TvPowerReport / @c ActiveSource) or a client-local
+     * source-activation edge (@c HostActivated / @c HostDeactivated),
+     * and delivered via @ref Callbacks::onObservation on a backend-
+     * internal thread. The @c kind tag selects the payload field that
+     * is meaningful for the event; other payload fields stay at their
+     * default sentinels and MUST NOT be read.
      *
      * Trivially copyable — passes through @c std::function and
      * @c MainThreadWork closures without a heap allocation, which
@@ -59,7 +61,13 @@ public:
      * backend thread to the main thread via that queue.
      */
     struct Observation {
-        enum class Kind { TvStandby, TvPowerReport, ActiveSource };
+        enum class Kind {
+            TvStandby,
+            TvPowerReport,
+            ActiveSource,
+            HostActivated,
+            HostDeactivated,
+        };
         Kind kind{};
 
         /** Meaningful only when @c kind == @c Kind::ActiveSource. */
@@ -67,6 +75,14 @@ public:
 
         /** Meaningful only when @c kind == @c Kind::TvPowerReport. */
         CEC::cec_power_status power{CEC::CEC_POWER_STATUS_UNKNOWN};
+
+        /**
+         * Meaningful only when @c kind is @c Kind::HostActivated or
+         * @c Kind::HostDeactivated — the logical address of the
+         * backend's own client whose active-source state just
+         * changed. @c CECDEVICE_UNKNOWN on every other kind.
+         */
+        CEC::cec_logical_address logical{CEC::CECDEVICE_UNKNOWN};
     };
 
     /**

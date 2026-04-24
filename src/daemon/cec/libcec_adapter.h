@@ -184,6 +184,9 @@ private:
     static void cecCommandCallback(void* cbParam, const CEC::cec_command* command);
     static void cecAlertCallback(void* cbParam, const CEC::libcec_alert alert,
                                  const CEC::libcec_parameter param);
+    static void cecSourceActivatedCallback(void* cbParam,
+                                           const CEC::cec_logical_address logicalAddress,
+                                           const uint8_t bActivated);
 };
 
 } // namespace cec_control

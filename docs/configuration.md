@@ -99,7 +99,7 @@ hook disabled for that event.
 
 ```ini
 [Hooks]
-# Run when another device announces itself as the active source.
+# Run on any active-source change observed on the bus (any device).
 InputSwitch = /usr/local/bin/cec-input-switch.sh
 
 # Run when the TV reports that it is going to standby.
@@ -107,15 +107,29 @@ TVStandby = /usr/local/bin/cec-tv-off.sh
 
 # Run when the TV reports that it has powered on (after standby).
 TVWake =
+
+# Run when THIS daemon's host becomes the active source on the bus.
+HostActivated = /usr/local/bin/cec-host-activated.sh
+
+# Run when THIS daemon's host stops being the active source.
+HostDeactivated =
 ```
 
 #### Events
 
 | Event | Trigger |
 |---|---|
-| `InputSwitch` | The active source on the CEC bus settled on a different physical address — e.g. the TV's active input changed, or an AVR routed HDMI to a new device. Debounced with a ~200 ms window: bursts of `ACTIVE_SOURCE` / `ROUTING_CHANGE` / `SET_STREAM_PATH` frames within that window (common at startup and during AVR re-routes) collapse to a single fire on the final address. |
-| `TVStandby`   | The TV reported it is going to standby. |
-| `TVWake`      | The TV reported it has powered on, after having been in standby. |
+| `InputSwitch` | The active source on the CEC bus settled on a different physical address — e.g. the TV's active input changed, or an AVR routed HDMI to a new device. Fires for any device, not just this host. Debounced with a ~200 ms window: bursts of `ACTIVE_SOURCE` / `ROUTING_CHANGE` / `SET_STREAM_PATH` frames within that window (common at startup and during AVR re-routes) collapse to a single fire on the final address. |
+| `TVStandby`        | The TV reported it is going to standby. |
+| `TVWake`           | The TV reported it has powered on, after having been in standby. |
+| `HostActivated`    | **This** daemon's CEC client became the active source — typically because the TV routed to the HDMI port this host is plugged into, or the daemon was configured with `ActivateSource = true` and just asserted it. Fires once per edge, not once per bus frame. |
+| `HostDeactivated`  | **This** daemon's CEC client stopped being the active source — typically because another device became active. Fires once per edge. |
+
+##### Which one to pick?
+
+- Use **`InputSwitch`** when your script cares about *any* device on the bus becoming active — for example, a logger that records every input-switch regardless of which box won the routing.
+- **`HostActivated`** when your script should only run when the switching to *this* machine.
+- **`HostActivated`** and **`InputSwitch`** are not mutually exclusive. A routing event that makes this host active will fire both — which is correct: the bus active source *did* change, and this host *did* become it.
 
 #### Environment
 
@@ -126,7 +140,7 @@ set in the daemon's own environment: `PATH`, `HOME`, `LANG`, `LC_ALL`,
 
 | Variable | Present for | Value |
 |---|---|---|
-| `CEC_EVENT` | every event | `InputSwitch` \| `TVStandby` \| `TVWake` |
+| `CEC_EVENT` | every event | `InputSwitch` \| `TVStandby` \| `TVWake` \| `HostActivated` \| `HostDeactivated` |
 | `CEC_EVENT_TS` | every event | ISO-8601 UTC timestamp, e.g. `2026-04-23T12:34:56Z` |
 | `CEC_DAEMON_PID` | every event | decimal PID of the daemon, for log correlation |
 | `CEC_SOURCE_PHYSICAL` | `InputSwitch` | dotted nibble form, e.g. `2.0.0.0` |
@@ -134,6 +148,7 @@ set in the daemon's own environment: `PATH`, `HOME`, `LANG`, `LC_ALL`,
 | `CEC_SOURCE_PREVIOUS_PHYSICAL` | `InputSwitch` | dotted form of the previously fired active source (intermediate addresses absorbed by the debounce window are not reflected), or empty string on the first event |
 | `CEC_TV_POWER` | `TVStandby`, `TVWake` | `standby` \| `on` |
 | `CEC_TV_POWER_PREVIOUS` | `TVStandby`, `TVWake` | `on` \| `standby` \| empty string (no prior state known) |
+| `CEC_HOST_LOGICAL` | `HostActivated`, `HostDeactivated` | decimal CEC logical address of the affected client (e.g. `4` for `Playback 1`, `8` for `Playback 2`) |
 
 `*_PREVIOUS` env vars are **empty strings** the first time the
 corresponding event fires; scripts should check with `[ -z "$VAR" ]`.
