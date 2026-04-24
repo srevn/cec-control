@@ -183,6 +183,12 @@ private:
     // Registered with the loop only when a watchdog is actually configured
     // (see CECDaemon::start); otherwise the timerfd stays inert.
     TimerSource    m_watchdogTimer;
+    // Collapses back-to-back CEC @c ActiveSource observations into a
+    // single @c InputSwitch fire. Owned here (not inside
+    // @c CecHookSubsystem) so its fd registration follows the same
+    // shape as the other timer sources; the subsystem receives a
+    // reference at construction.
+    TimerSource    m_hookDebounceTimer;
 
     // Auto-suspend-on-TV-standby policy. Declared before m_worker so
     // reverse-of-declaration destruction joins libcec's command
@@ -199,12 +205,12 @@ private:
     // Destruction ordering — @c stop() below mirrors this explicitly
     // and the field order here is its fallback:
     //
-    //   * @c m_hooks holds a reference to @c m_hookExecutor (it
-    //     submits jobs through it), so @c m_hooks must be destroyed
-    //     first. Hence @c m_hookExecutor declared AFTER @c m_hooks is
-    //     wrong; keep them in this order (executor first, subsystem
-    //     second) so reverse-of-declaration gives us subsystem →
-    //     executor.
+    //   * @c m_hooks holds references to @c m_hookExecutor (submits
+    //     jobs through it) and to @c m_hookDebounceTimer (arms it
+    //     from @c observe). Both referents are declared earlier in
+    //     this block, so reverse-of-declaration destruction drops
+    //     @c m_hooks first; neither reference can dangle. Keep this
+    //     ordering if new collaborators are added.
     //   * @c m_hookExecutor owns a worker thread that only consumes
     //     its own queue and never calls back into the daemon — stop()
     //     joins it independently of libcec and signalfd.

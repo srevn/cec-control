@@ -113,7 +113,7 @@ TVWake =
 
 | Event | Trigger |
 |---|---|
-| `InputSwitch` | The active source on the CEC bus changed to a different physical address — e.g. the TV's active input changed, or an AVR routed HDMI to a new device. |
+| `InputSwitch` | The active source on the CEC bus settled on a different physical address — e.g. the TV's active input changed, or an AVR routed HDMI to a new device. Debounced with a ~200 ms window: bursts of `ACTIVE_SOURCE` / `ROUTING_CHANGE` / `SET_STREAM_PATH` frames within that window (common at startup and during AVR re-routes) collapse to a single fire on the final address. |
 | `TVStandby`   | The TV reported it is going to standby. |
 | `TVWake`      | The TV reported it has powered on, after having been in standby. |
 
@@ -131,7 +131,7 @@ set in the daemon's own environment: `PATH`, `HOME`, `LANG`, `LC_ALL`,
 | `CEC_DAEMON_PID` | every event | decimal PID of the daemon, for log correlation |
 | `CEC_SOURCE_PHYSICAL` | `InputSwitch` | dotted nibble form, e.g. `2.0.0.0` |
 | `CEC_SOURCE_PHYSICAL_RAW` | `InputSwitch` | raw 16-bit value, e.g. `0x2000` |
-| `CEC_SOURCE_PREVIOUS_PHYSICAL` | `InputSwitch` | dotted form of the previous active source, or empty string on the first event |
+| `CEC_SOURCE_PREVIOUS_PHYSICAL` | `InputSwitch` | dotted form of the previously fired active source (intermediate addresses absorbed by the debounce window are not reflected), or empty string on the first event |
 | `CEC_TV_POWER` | `TVStandby`, `TVWake` | `standby` \| `on` |
 | `CEC_TV_POWER_PREVIOUS` | `TVStandby`, `TVWake` | `on` \| `standby` \| empty string (no prior state known) |
 

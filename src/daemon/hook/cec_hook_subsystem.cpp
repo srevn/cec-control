@@ -1,6 +1,7 @@
 #include "cec_hook_subsystem.h"
 
 #include "../../common/logger.h"
+#include "../../common/timer_source.h"
 #include "hook_executor.h"
 
 #include <libcec/cec.h>
@@ -8,6 +9,7 @@
 #include <unistd.h>
 #include <time.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -16,6 +18,17 @@
 namespace cec_control {
 
 namespace {
+
+// Window over which back-to-back @c ActiveSource observations
+// collapse to a single @c InputSwitch fire. Sized to cover the
+// startup burst (observations arrive sub-millisecond apart) and
+// the AVR re-route ping-pong (seconds apart — out of scope, each
+// end fires) without introducing user-visible latency for a real
+// input switch (an AVR takes hundreds of milliseconds to respond
+// anyway). Fixed at a compile-time constant: a config knob is
+// easy to add if a real bus ever produces a wider burst, but
+// absent a reported need the simpler shape wins.
+constexpr auto kDebounceWindow = std::chrono::milliseconds(200);
 
 /**
  * Render a 16-bit CEC physical address in its conventional dotted-
@@ -76,9 +89,12 @@ void propagateIfSet(std::vector<std::string>& env,
 
 } // namespace
 
-CecHookSubsystem::CecHookSubsystem(HooksConfig config, HookExecutor& executor)
+CecHookSubsystem::CecHookSubsystem(HooksConfig config,
+                                    HookExecutor& executor,
+                                    TimerSource& debounceTimer)
     : m_config(std::move(config)),
       m_executor(executor),
+      m_debounceTimer(debounceTimer),
       m_daemonPid(::getpid()) {}
 
 void CecHookSubsystem::observe(const ICecAdapter::Observation& obs) {
@@ -109,26 +125,66 @@ void CecHookSubsystem::observe(const ICecAdapter::Observation& obs) {
         return;
 
     case Kind::ActiveSource:
-        if (m_lastPhysical && *m_lastPhysical == obs.physicalAddress) {
-            LOG_DEBUG("Hook dedup: active source unchanged (",
-                      dottedPhysicalAddress(obs.physicalAddress), ")");
-            return;
+        m_pendingPhysical = obs.physicalAddress;
+        LOG_DEBUG("Hook debounce: pending active source = ",
+                  dottedPhysicalAddress(obs.physicalAddress),
+                  ", timer (re)armed");
+        if (!m_debounceTimer.armOnce(kDebounceWindow)) {
+            // armOnce logs its own failure. Fall back to an
+            // immediate commit so we never silently lose a
+            // transition — the debounce is a convenience, not a
+            // correctness requirement.
+            LOG_WARNING("Hook debounce timer arm failed; committing synchronously");
+            commitPending();
         }
-        fireInputSwitch(obs.physicalAddress);
-        m_lastPhysical = obs.physicalAddress;
         return;
     }
+}
+
+void CecHookSubsystem::onDebounceTimerFired() {
+    // A zero expiration count means the read would have blocked —
+    // the most likely cause is that @c armOnce was called after
+    // the kernel flagged the fd ready but before this handler ran
+    // (e.g. an observation closure draining from @c MainThreadWork
+    // in the same epoll batch). @c timerfd_settime resets the
+    // expiration count, so the handler sees a spurious ready fd
+    // with nothing to commit; the freshly-armed timer will fire on
+    // its own schedule and commit then.
+    if (m_debounceTimer.consume() == 0) {
+        LOG_DEBUG("Hook debounce: spurious wake (arming superseded); skipping commit");
+        return;
+    }
+    commitPending();
+}
+
+void CecHookSubsystem::commitPending() {
+    if (!m_pendingPhysical.has_value()) {
+        // Normal when the timer fires after a shutdown/teardown
+        // sequence cleared the pending state. Nothing to do.
+        return;
+    }
+    const uint16_t committed = *m_pendingPhysical;
+    if (m_lastFiredPhysical && *m_lastFiredPhysical == committed) {
+        LOG_DEBUG("Hook debounce: active source settled unchanged (",
+                  dottedPhysicalAddress(committed), ")");
+        m_pendingPhysical.reset();
+        return;
+    }
+    fireInputSwitch(committed);
+    m_lastFiredPhysical = committed;
+    m_pendingPhysical.reset();
 }
 
 void CecHookSubsystem::fireInputSwitch(uint16_t newAddr) {
     auto env = baseEnv("InputSwitch");
     env.push_back("CEC_SOURCE_PHYSICAL=" + dottedPhysicalAddress(newAddr));
     env.push_back("CEC_SOURCE_PHYSICAL_RAW=" + rawPhysicalAddress(newAddr));
-    // First observation: no prior address, emit as empty string (the
-    // documented "no prior state" sentinel).
+    // First fire: no prior committed address, emit as empty string
+    // (the documented "no prior state" sentinel).
     env.push_back("CEC_SOURCE_PREVIOUS_PHYSICAL=" +
-                  (m_lastPhysical ? dottedPhysicalAddress(*m_lastPhysical)
-                                  : std::string{}));
+                  (m_lastFiredPhysical
+                       ? dottedPhysicalAddress(*m_lastFiredPhysical)
+                       : std::string{}));
     submit("InputSwitch", m_config.inputSwitch, std::move(env));
 }
 

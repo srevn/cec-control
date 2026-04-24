@@ -55,7 +55,8 @@ bool CECDaemon::start() {
     }
     if (!m_suspendSafetyTimer.valid() ||
         !m_reconnectRetryTimer.valid() ||
-        !m_watchdogTimer.valid()) {
+        !m_watchdogTimer.valid() ||
+        !m_hookDebounceTimer.valid()) {
         LOG_ERROR("Timer source(s) not initialised; aborting start");
         return false;
     }
@@ -132,7 +133,7 @@ bool CECDaemon::start() {
         m_hookExecutor = std::make_unique<HookExecutor>();
         m_hookExecutor->start();
         m_hooks = std::make_unique<CecHookSubsystem>(
-            m_config.hooks, *m_hookExecutor);
+            m_config.hooks, *m_hookExecutor, m_hookDebounceTimer);
 
         m_dispatcher = std::make_unique<CommandDispatcher>(
             m_config, *m_worker, m_work, *m_lifecycle, *m_standbyPolicy);
@@ -211,6 +212,16 @@ bool CECDaemon::start() {
         if (!m_loop.add(m_reconnectRetryTimer.fd(), READ,
                         [this](uint32_t) { m_supervisor->onReconnectRetryTimerFired(); })) {
             LOG_ERROR("Failed to register reconnect-retry timer with event loop");
+            return false;
+        }
+        // The hook subsystem arms this timer from observe() and never
+        // reads the fd directly; m_hooks is constructed before we get
+        // here and only reset in stop() after the loop exits, so no
+        // null check is needed — matches the other supervisor-owned
+        // timer handlers above.
+        if (!m_loop.add(m_hookDebounceTimer.fd(), READ,
+                        [this](uint32_t) { m_hooks->onDebounceTimerFired(); })) {
+            LOG_ERROR("Failed to register hook debounce timer with event loop");
             return false;
         }
 
